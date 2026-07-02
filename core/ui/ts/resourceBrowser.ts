@@ -1583,13 +1583,6 @@ export class ResourceBrowserModal {
         const sourceUrl = metadata.sourceUrl ?? "";
         const authorBadge = authorUsername ? `<span class="resource-browser-author">by: ${escapeHtml(authorUsername)}</span>` : "";
         const sourceLinkBadge = sourceUrl.startsWith("https://www.tone3000.com/") ? `<a class="resource-browser-attribution-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">↗ tone3000</a>` : "";
-        const localPath = (res.filePath ?? "").trim();
-        const localPathCopyButton = localPath
-          ? `<button class="resource-browser-action-icon-btn resource-browser-local-path-copy-btn" type="button" data-resource-id="${escapeHtml(res.id)}" title="Copy local file path" aria-label="Copy local file path"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`
-          : "";
-        const localPathBadge = localPath
-          ? `<span class="resource-browser-local-path-group">${localPathCopyButton}<span class="resource-browser-local-path" title="${escapeHtml(localPath)}">${escapeHtml(localPath)}</span></span>`
-          : "";
         const tags = getResourceTags(res);
         const tagsBadge = tags.length
           ? `<span class="resource-browser-tag-list">${tags.map((tag) => `<span class="resource-browser-tag-pill">${escapeHtml(tag)}</span>`).join("")}</span>`
@@ -1643,7 +1636,7 @@ export class ResourceBrowserModal {
                 <div class="results-item-meta resource-browser-item-meta">
                   <span>${escapeHtml(categoryLabel)}</span>
                   ${creatorBadge}
-                  ${architectureBadge}${gearDescBadge}${toneTypeBadge}${providerBadge}${authorBadge}${sourceLinkBadge}${localPathBadge}${tagsBadge}
+                  ${architectureBadge}${gearDescBadge}${toneTypeBadge}${providerBadge}${authorBadge}${sourceLinkBadge}${tagsBadge}
                 </div>
               </div>
               <div class="resource-browser-item-actions">
@@ -1755,7 +1748,12 @@ export class ResourceBrowserModal {
       rows.push(`
         <tr>
           <td class="resource-browser-details-label">File Path</td>
-          <td class="resource-browser-details-value resource-browser-details-mono">${escapeHtml(filePath)}</td>
+          <td class="resource-browser-details-value">
+            <span class="resource-browser-details-path-group">
+              <button class="resource-browser-action-icon-btn resource-browser-local-path-copy-btn" type="button" data-resource-id="${escapeHtml(res.id)}" title="Copy local file path" aria-label="Copy local file path"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <span class="resource-browser-details-mono">${escapeHtml(filePath)}</span>
+            </span>
+          </td>
         </tr>
       `);
     }
@@ -3109,7 +3107,7 @@ export class ResourceBrowserModal {
     }
 
     const isFav = Boolean(match.id) && this.isResourceFavorite(match.id);
-    const favBtn = `<button class="resource-browser-action-icon-btn resource-browser-item-fav-toggle resource-browser-folder-fav${isFav ? " is-active" : ""}" type="button" data-path="${escapeHtml(file.path)}" data-resource-type="${escapeHtml(file.resourceType)}" title="${isFav ? "Remove from favourites" : "Add to favourites"}" aria-pressed="${isFav ? "true" : "false"}" aria-label="Toggle favourite">${isFav ? "\u2605" : "\u2606"}</button>`;
+    const favBtn = `<button class="resource-browser-action-icon-btn resource-browser-item-fav-toggle${isFav ? " is-active" : ""}" type="button" data-path="${escapeHtml(file.path)}" data-resource-type="${escapeHtml(file.resourceType)}" title="${isFav ? "Remove from favourites" : "Add to favourites"}" aria-pressed="${isFav ? "true" : "false"}" aria-label="Toggle favourite">${isFav ? "\u2605" : "\u2606"}</button>`;
 
     const typeMatches = this.options?.resourceType === file.resourceType;
     const isPreviewing = this.folderPreviewPath === file.path;
@@ -3119,8 +3117,8 @@ export class ResourceBrowserModal {
       : "";
 
     const isExpanded = this.expandedFolderItemPath === file.path;
-    const detailsBtn = `<button class="resource-browser-action-icon-btn resource-browser-folder-details-btn" type="button" data-path="${escapeHtml(file.path)}" title="${isExpanded ? "Hide details" : "Show details"}" aria-expanded="${isExpanded ? "true" : "false"}" aria-label="File details">\u2139</button>`;
-    const editBtn = `<button class="resource-browser-action-icon-btn resource-browser-folder-edit-btn" type="button" data-path="${escapeHtml(file.path)}" data-resource-type="${escapeHtml(file.resourceType)}" title="Edit name, category and tags" aria-label="Edit resource">✎</button>`;
+    const detailsBtn = `<button class="resource-browser-action-icon-btn resource-browser-item-details-btn" type="button" data-path="${escapeHtml(file.path)}" title="${isExpanded ? "Hide details" : "Show details"}" aria-expanded="${isExpanded ? "true" : "false"}" aria-label="File details">\u2139</button>`;
+    const editBtn = `<button class="resource-browser-action-icon-btn resource-browser-item-edit-btn" type="button" data-path="${escapeHtml(file.path)}" data-resource-type="${escapeHtml(file.resourceType)}" title="Edit name, category and tags" aria-label="Edit resource"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`;
 
     return `
       <div class="resource-browser-folder-entry${isExpanded ? " is-details-expanded" : ""}${isPreviewing ? " is-previewing" : ""}" data-kind="file" data-path="${escapeHtml(file.path)}">
@@ -3131,8 +3129,8 @@ export class ResourceBrowserModal {
           </div>
           <div class="resource-browser-item-actions">
             ${favBtn}
-            ${detailsBtn}
             ${editBtn}
+            ${detailsBtn}
             ${selectPreviewBtn}
           </div>
         </div>
@@ -3164,7 +3162,7 @@ export class ResourceBrowserModal {
     const target = event.target as HTMLElement | null;
     if (!target) return;
 
-    const favBtn = target.closest(".resource-browser-folder-fav") as HTMLButtonElement | null;
+    const favBtn = target.closest(".resource-browser-item-fav-toggle") as HTMLButtonElement | null;
     if (favBtn) {
       const path = favBtn.dataset.path ?? "";
       const resourceType = (favBtn.dataset.resourceType ?? "") as ResourceType;
@@ -3181,7 +3179,7 @@ export class ResourceBrowserModal {
       return;
     }
 
-    const detailsBtn = target.closest(".resource-browser-folder-details-btn") as HTMLButtonElement | null;
+    const detailsBtn = target.closest(".resource-browser-item-details-btn") as HTMLButtonElement | null;
     if (detailsBtn) {
       const path = detailsBtn.dataset.path ?? "";
       if (path) {
@@ -3191,7 +3189,7 @@ export class ResourceBrowserModal {
       return;
     }
 
-    const editBtn = target.closest(".resource-browser-folder-edit-btn") as HTMLButtonElement | null;
+    const editBtn = target.closest(".resource-browser-item-edit-btn") as HTMLButtonElement | null;
     if (editBtn) {
       const path = editBtn.dataset.path ?? "";
       const resourceType = editBtn.dataset.resourceType as ResourceType;

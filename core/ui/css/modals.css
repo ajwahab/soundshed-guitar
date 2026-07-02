@@ -1373,27 +1373,8 @@
   height: 14px;
 }
 
-.resource-browser-folder-fav:hover {
-  color: var(--color-preset-favorite, #d8852f);
-}
-
-.resource-browser-folder-fav.is-active {
-  color: var(--color-preset-favorite, #d8852f);
-  border-color: var(--color-preset-favorite, #d8852f);
-}
-
 .resource-browser-folder-remove-btn {
   font-size: 16px;
-}
-
-.resource-browser-folder-details-btn {
-  font-size: 13px;
-}
-
-.resource-browser-folder-details-btn:hover,
-.resource-browser-folder-entry.is-details-expanded .resource-browser-folder-details-btn {
-  background: var(--bg-browser-hover);
-  color: var(--modal-text);
 }
 
 .resource-browser-folder-entry.is-previewing .resource-browser-folder-file-row {
@@ -1802,47 +1783,19 @@
   font-style: italic;
 }
 
-.resource-browser-local-path-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-}
-
 .resource-browser-local-path-copy-btn {
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--modal-text-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  opacity: 0.85;
-}
-
-.resource-browser-local-path-copy-btn:hover {
-  color: var(--modal-text);
-  opacity: 1;
+  flex-shrink: 0;
 }
 
 .resource-browser-local-path-copy-btn svg {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
 }
 
-.resource-browser-local-path {
-  display: inline-block;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace);
-  color: var(--modal-text-muted);
-  opacity: 0.95;
+.resource-browser-details-path-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .resource-browser-creator {
