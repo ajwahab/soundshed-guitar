@@ -20,6 +20,7 @@ import { showConfirm } from "./dialogs.js";
 import { arrayBufferToBase64, escapeHtml, findResourceById } from "./utils.js";
 import { FEATURE_FLAGS_CHANGED_EVENT, Features, isFeatureEnabled } from "./featureFlags.js";
 import type { AppSettingValue, LibraryResource } from "./types.js";
+import { deduplicateResourcesByHashAndPath, resolveResourceIdAlias } from "./resourceDedup.js";
 import type { Tone3000Architecture, Tone3000Model, Tone3000Tone } from "./tone3000ApiTypes.js";
 import {
   buildTone3000FavoritesUrl,
@@ -59,6 +60,35 @@ interface PreviewLoadingState {
 
 function normalizeFilterValue(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Resolves a Tone3000 category hint to the best-matching library category name.
+ * Matching is case-insensitive and keyword-based so it works regardless of how
+ * users have named their library categories.
+ *
+ * Examples: "pedal" matches "Pedal", "FX Pedals", "Pedals"
+ *           "full-rig"  matches "Full Rig", "Full-Rig", "Full Rigs"
+ *           "amp"       matches "Amp", "Amps", "Amplifiers" (not "Full Rig" entries)
+ */
+function resolveLibraryCategoryFromHint(
+  hint: "pedal" | "amp" | "full-rig" | "ir",
+  availableCategories: string[],
+): string | null {
+  // 1. Exact case-insensitive match
+  const exact = availableCategories.find((c) => c.toLowerCase() === hint);
+  if (exact) return exact;
+
+  // 2. Keyword-based fuzzy match
+  for (const cat of availableCategories) {
+    const lower = cat.toLowerCase();
+    if (hint === "pedal" && lower.includes("pedal")) return cat;
+    if (hint === "full-rig" && (lower.includes("full-rig") || lower.includes("full rig") || lower.includes("fullrig"))) return cat;
+    if (hint === "amp" && lower.includes("amp") && !lower.includes("full")) return cat;
+    if (hint === "ir" && (lower.includes("ir") || lower.includes("cab"))) return cat;
+  }
+
+  return null;
 }
 
 function splitTagValues(raw: string): string[] {
@@ -275,6 +305,7 @@ export class ResourceBrowserModal {
   private libraryNavigationState: ResourceNavigationState | null = null;
   // Per-type cache so preloads for different resource types don't clobber each other.
   private libraryNavigationStates: Map<string, ResourceNavigationState> = new Map();
+  private libraryResourceAliases: Map<string, Map<string, string>> = new Map(); // Maps resourceType -> (aliasId -> canonicalId)
   private folderNavigationState: ResourceNavigationState | null = null;
   private lastNavigationView: "library" | "folder" | null = null;
   
@@ -1017,6 +1048,23 @@ export class ResourceBrowserModal {
     // Update category options
     this.updateCategoryOptions();
     this.restoreStateForResourceType(options.resourceType);
+
+    // Pre-select the library category based on effect node type, overriding
+    // any persisted state. This ensures e.g. Neural FX always opens on Pedals.
+    if (this.libraryCategory) {
+      const categoryHint = options.resourceType === "ir"
+        ? "ir"
+        : options.tone3000CategoryFilter;
+      const availableCategories = Array.from(this.libraryCategory.options)
+        .map((o) => o.value)
+        .filter((v) => v !== "all");
+      const match = categoryHint
+        ? resolveLibraryCategoryFromHint(categoryHint, availableCategories)
+        : null;
+      if (match) {
+        this.libraryCategory.value = match;
+      }
+    }
     
     // Render library list
     this.renderLibraryList();
@@ -1045,6 +1093,8 @@ export class ResourceBrowserModal {
     this.saveCurrentStateForResourceType();
     
     this.modal.style.display = "flex";
+    // Scroll the already-selected item into view once the modal is visible
+    requestAnimationFrame(() => this.scrollSelectedLibraryItemIntoView());
   }
   
   close(): void {
@@ -1169,9 +1219,13 @@ export class ResourceBrowserModal {
     const tone3000CategoryFilter = this.options?.tone3000CategoryFilter;
     const currentCategory = this.libraryCategory?.value ?? "all";
     
+    // Deduplicate resources first
+    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupedResources = dedupResult.deduped;
+    
     // Collect unique categories
     const categories = new Set<string>();
-    resources.forEach((res) => {
+    dedupedResources.forEach((res) => {
       const cat = (res.category ?? "").trim() || "Uncategorized";
       categories.add(cat);
     });
@@ -1184,8 +1238,12 @@ export class ResourceBrowserModal {
       this.libraryCategory.disabled = false;
       if (currentCategory !== "all" && sorted.includes(currentCategory)) {
         this.libraryCategory.value = currentCategory;
-      } else if (resourceType === "nam" && tone3000CategoryFilter && sorted.includes(tone3000CategoryFilter)) {
-        this.libraryCategory.value = tone3000CategoryFilter;
+      } else if (resourceType === "nam" && tone3000CategoryFilter) {
+        const match = resolveLibraryCategoryFromHint(tone3000CategoryFilter, sorted);
+        this.libraryCategory.value = match ?? "all";
+      } else if (resourceType === "ir") {
+        const match = resolveLibraryCategoryFromHint("ir", sorted);
+        this.libraryCategory.value = match ?? "all";
       } else {
         this.libraryCategory.value = "all";
       }
@@ -1269,7 +1327,12 @@ export class ResourceBrowserModal {
   private buildLibraryNavigationState(resourceType: ResourceType): ResourceNavigationState {
     const resources = uiState.resourceLibrary[resourceType] ?? [];
     const filters = this.getLibraryFilterSnapshot(resourceType);
-    let filtered = resources.filter((res) => !res.fileMissing);
+    
+    // Deduplicate resources by hash and file path
+    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    this.libraryResourceAliases.set(resourceType, dedupResult.aliasById);
+    
+    let filtered = dedupResult.deduped.filter((res) => !res.fileMissing);
 
     if (filters.category !== "all") {
       filtered = filtered.filter((res) => ((res.category ?? "").trim() || "Uncategorized") === filters.category);
@@ -1485,7 +1548,13 @@ export class ResourceBrowserModal {
     
     const resourceType = this.options.resourceType;
     const resources = uiState.resourceLibrary[resourceType] ?? [];
-    this.renderLibraryFilterFacets(resources);
+    
+    // Deduplicate resources by hash and file path
+    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    this.libraryResourceAliases.set(resourceType, dedupResult.aliasById);
+    const dedupedResources = dedupResult.deduped;
+    
+    this.renderLibraryFilterFacets(dedupedResources);
     const query = (this.librarySearch?.value ?? "").trim().toLowerCase();
     const category = this.libraryCategory?.value ?? "all";
     const architecture = this.libraryArchitecture?.value ?? this.libraryArchitectureFilter ?? "all";
@@ -1493,7 +1562,7 @@ export class ResourceBrowserModal {
     const currentId = this.selectedResourceId;
     const activeTags = Array.from(this.libraryTagFilters);
     
-    let filtered = resources.filter((res) => !res.fileMissing);
+    let filtered = dedupedResources.filter((res) => !res.fileMissing);
     
     if (category !== "all") {
       filtered = filtered.filter((res) => {
@@ -1574,7 +1643,10 @@ export class ResourceBrowserModal {
       .map((res) => {
         const title = res.name?.trim() || res.id;
         const categoryLabel = (res.category ?? "").trim() || "Uncategorized";
-        const isSelected = res.id === currentId;
+        // Check if current ID matches this resource, or if current ID is aliased to this resource
+        const aliasMap = this.libraryResourceAliases.get(resourceType) || new Map();
+        const resolvedCurrentId = resolveResourceIdAlias(currentId, aliasMap);
+        const isSelected = res.id === currentId || res.id === resolvedCurrentId;
         const selectedClass = isSelected ? "results-item resource-browser-item is-selected" : "results-item resource-browser-item";
         const metadata = res.metadata ?? {};
         const provider = metadata.provider ?? "";

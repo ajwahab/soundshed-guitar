@@ -13,6 +13,7 @@ import { GenericKnob } from "./controls.js";
 import { buildBlendModelMappingsFromIds, inferParamValueFromName } from "./blendUtils.js";
 import { arrayBufferToBase64, buildArchiveFileName, generateResourceId, requestResourceData, sanitizeFilename } from "./archiveUtils.js";
 import { escapeHtml, sha256HexFromBase64, findResourceById } from "./utils.js";
+import { deduplicateResourcesByHashAndPath } from "./resourceDedup.js";
 
 type BlendEditorDependencies = {
   getBlendLibrary: () => BlendLibrary;
@@ -567,8 +568,13 @@ export class BlendEditorModal {
       return;
     }
     const resources = this.deps.getResourceLibrary()[this.browserResourceType] ?? [];
+    
+    // Deduplicate resources first
+    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupedResources = dedupResult.deduped;
+    
     const categories = Array.from(new Set(
-      resources.map((res) => (res.category ?? "").trim() || "Uncategorized"),
+      dedupedResources.map((res) => (res.category ?? "").trim() || "Uncategorized"),
     )).sort((a, b) => a.localeCompare(b));
 
     const previous = this.modelBrowserCategory.value || "all";
@@ -677,12 +683,17 @@ export class BlendEditorModal {
     }
 
     const resources = this.deps.getResourceLibrary()[this.browserResourceType] ?? [];
+    
+    // Deduplicate resources by hash and file path
+    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupedResources = dedupResult.deduped;
+    
     const query = (this.modelBrowserSearch?.value ?? "").trim().toLowerCase();
     const scope = this.modelBrowserScope?.value ?? "group";
     const category = this.modelBrowserCategory?.value ?? "all";
     const currentId = this.browserCurrentId;
 
-    let filtered = resources.slice();
+    let filtered = dedupedResources.slice();
     if (scope === "group" && this.browserResourceType === "nam") {
       if (!this.browserToneGroupId) {
         this.modelBrowserList.innerHTML = "<div class=\"blend-model-browser-empty\">No tone group is associated with this selection.</div>";
@@ -712,11 +723,16 @@ export class BlendEditorModal {
       return;
     }
 
+    // Resolve currentId through aliases in case it's a hidden duplicate
+    const resolvedCurrentId = dedupResult.aliasById.get(currentId) ?? currentId;
+
     this.modelBrowserList.innerHTML = filtered
       .map((res) => {
         const title = res.name?.trim() || res.id;
         const categoryLabel = (res.category ?? "").trim() || "Uncategorized";
-        const selectedClass = res.id === currentId ? "blend-model-browser-item is-selected" : "blend-model-browser-item";
+        // Check if current ID matches this resource, or if current ID is aliased to this resource
+        const isSelected = res.id === currentId || res.id === resolvedCurrentId;
+        const selectedClass = isSelected ? "blend-model-browser-item is-selected" : "blend-model-browser-item";
         return `
           <div class="${selectedClass}" data-model-id="${escapeHtml(res.id)}">
             <div>
