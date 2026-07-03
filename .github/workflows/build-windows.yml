@@ -39,6 +39,9 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install Typescript
+        run: npm install -g typescript
+
       - name: Build Windows installer
         shell: pwsh
         run: |

@@ -33,6 +33,9 @@ jobs:
           dev-id-installer-cert: ${{ secrets.DEV_ID_INSTALLER_CERT }}
           dev-id-installer-password: ${{ secrets.DEV_ID_INSTALLER_PASSWORD }}
 
+      - name: Install Typescript
+        run: npm install -g typescript
+      
       - name: Build universal artifacts (no pkg)
         run: |
           chmod +x ./build_macos.sh

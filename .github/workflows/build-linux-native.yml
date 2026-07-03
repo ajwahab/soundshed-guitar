@@ -72,6 +72,9 @@ jobs:
             libgl1-mesa-dev \
             libglu1-mesa-dev
 
+      - name: Install Typescript
+        run: npm install -g typescript
+
       - name: Report glibc baseline
         run: |
           set -euo pipefail
