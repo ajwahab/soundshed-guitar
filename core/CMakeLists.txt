@@ -284,6 +284,13 @@ if(NOT TARGET guitarfx_minimp3)
     add_library(guitarfx_minimp3 INTERFACE)
     target_include_directories(guitarfx_minimp3 INTERFACE
         "${guitarfx_minimp3_src_SOURCE_DIR}")
+
+    # minimp3's NEON SIMD code uses aggregate initializers that MSVC ARM64 rejects
+    # with C2078 ("too many initializers").  Disabling SIMD avoids the error while
+    # keeping the decoder fully functional (SIMD is an optional optimization).
+    if(MSVC AND CMAKE_GENERATOR_PLATFORM MATCHES "^ARM64(EC)?$")
+        target_compile_definitions(guitarfx_minimp3 INTERFACE MINIMP3_NO_SIMD)
+    endif()
 endif()
 
 # Wasmtime C API — embedded WebAssembly runtime used by the generic WASM effect host
