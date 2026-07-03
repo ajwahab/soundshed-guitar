@@ -33,6 +33,14 @@ jobs:
           dev-id-installer-cert: ${{ secrets.DEV_ID_INSTALLER_CERT }}
           dev-id-installer-password: ${{ secrets.DEV_ID_INSTALLER_PASSWORD }}
 
+      # Without this, the temporary keychain re-locks itself after its default
+      # idle timeout. The "Build universal artifacts" step below can easily run
+      # longer than that, so by the time we reach "Sign built bundles" the
+      # keychain is locked again and codesign silently blocks forever waiting
+      # for a GUI password prompt that headless CI can never answer.
+      - name: Keep signing keychain unlocked for the whole job
+        run: security set-keychain-settings -lut 21600 "${{ steps.keychain.outputs.keychain-path }}"
+
       - name: Install Typescript
         run: npm install -g typescript
       
@@ -42,6 +50,7 @@ jobs:
           ./build_macos.sh --universal --no-pkg
 
       - name: Sign built bundles
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           ARTEFACTS="juce/builds/SoundshedGuitar_artefacts/Release"
