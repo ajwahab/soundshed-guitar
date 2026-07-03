@@ -95,7 +95,7 @@ echo CMake configure succeeded.
 echo.
 
 :: --- Build UI ---------------------------------------------------------------
-echo [1/5] Building UI (npm ci && npm run build)...
+echo [1/5] Building UI ^(npm ci ^&^& npm run build^)...
 pushd "%UI_DIR%"
 call npm ci
 if !ERRORLEVEL! neq 0 (
