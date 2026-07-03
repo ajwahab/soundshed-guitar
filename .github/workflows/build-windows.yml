@@ -18,6 +18,9 @@ jobs:
 
     env:
       R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      HAS_GCP_AUTH: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+      HAS_WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
+      HAS_R2_CREDENTIALS: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -60,18 +63,18 @@ jobs:
           "installer_name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Authenticate to Google Cloud
-        if: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.HAS_GCP_AUTH == 'true' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
-        if: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.HAS_GCP_AUTH == 'true' }}
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Sign installer with Google KMS
-        if: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' && secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
+        if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' }}
         shell: pwsh
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -122,7 +125,7 @@ jobs:
         run: npm install -g wrangler@4
 
       - name: Upload artifact to Cloudflare R2
-        if: ${{ env.R2_BUCKET != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+        if: ${{ env.R2_BUCKET != '' && env.HAS_R2_CREDENTIALS == 'true' }}
         shell: pwsh
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

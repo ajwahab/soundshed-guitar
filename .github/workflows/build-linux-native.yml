@@ -1,0 +1,114 @@
+name: Build Linux (Native Runner)
+
+# Same build as build-linux.yml, but runs directly on the GitHub-hosted Ubuntu
+# runner instead of inside an ubuntu:20.04 container. This means binaries are
+# linked against whatever glibc ships with the runner image (newer than 2.31),
+# so artifacts from this workflow are less portable to older Linux distros
+# than the container-based build-linux.yml artifacts.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: linux-${{ matrix.arch }}-native
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            file \
+            git \
+            gnupg \
+            pkg-config \
+            cmake \
+            ninja-build \
+            zip \
+            p7zip-full \
+            nodejs \
+            npm \
+            gcc \
+            g++ \
+            gcc-x86-64-linux-gnu \
+            g++-x86-64-linux-gnu \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libasound2-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libcurl4-openssl-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev
+
+      - name: Report glibc baseline
+        run: |
+          set -euo pipefail
+          ldd --version | head -n1
+
+      - name: Build Linux distribution
+        run: |
+          set -euo pipefail
+          chmod +x ./build_linux.sh
+          ./build_linux.sh --arch "${{ matrix.arch }}" --zip
+
+      - name: Resolve Linux zip
+        id: zip
+        run: |
+          set -euo pipefail
+          ZIP_PATH="$(ls -1t SoundshedGuitar-*-Linux-${{ matrix.arch }}.zip | head -n1)"
+          test -n "$ZIP_PATH"
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$(basename "$ZIP_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-${{ matrix.arch }}-native-zip
+          path: ${{ steps.zip.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: Install Wrangler
+        if: ${{ env.R2_BUCKET != '' }}
+        run: npm install -g wrangler@4
+
+      - name: Upload artifact to Cloudflare R2
+        if: ${{ env.R2_BUCKET != '' }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          key="builds/${{ github.ref_name }}/${{ github.run_id }}/linux-native/${{ matrix.arch }}/${{ steps.zip.outputs.zip_name }}"
+          wrangler r2 object put "$R2_BUCKET/$key" --file "${{ steps.zip.outputs.zip_path }}"
