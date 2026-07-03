@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.4.0 (July 03, 2026)
+
+### MIDI & Automation
+* Added full MIDI parameter mapping and automation workflows.
+* Added direct MIDI setlist bank selection, plus bank up/down behavior fixes.
+* UI now updates parameter values immediately when controls change via MIDI.
+
+### DSP & Audio
+* Revised NAM calibration support for chained NAMs
+* Reviewed NAM calibration handling for stereo vs. mono signal paths and added a post high-pass DC blocker (5 Hz) to match the reference gateway.
+* Added low-latency mode for IR Cab and IR Reverb, with low latency now used by default for IR Reverb.
+* IR Reverb output balancing now uses L2-normalized gain for more consistent loudness.
+* Fixed EQ artifacting when adjusting EQ parameters.
+* Improved mono ping-pong delay behavior to preserve a correct mono main path.
+* Fixed blend effect behavior and improved live model blend preview.
+
+### Audio Import & Formats
+* IR Cab loading, riff import, and demo audio now support AIFF/AIFC and MP3 files in addition to WAV, via a new shared multi-format audio decoder.
+
+### Signal Analyzer
+* Added a new Signal Analyzer utility effect for real-time signal level diagnostics.
+* Added LUFS loudness measurements to the Signal Analyzer.
+* Added bark band perceptual analysis to the Signal Analyzer.
+* Signal Analyzer now supports mono/stereo input modes.
+
+### Presets, Library & Resources
+* Added a new folder browser with favorites and preview support for local resources.
+* Added tagging and filter-by-tag support to the resource and folder browser, plus general UI polish.
+* Added an architecture filter and improved navigation for NAM models in the resource browser.
+* Added prev/next selectors for stepping through resources without leaving the browser.
+* Added a calibration indicator to show when a NAM model includes calibration data.
+* Preset import now creates the destination folder when needed.
+* Fixed "Save New Preset" flow where a newly created preset could be empty.
+* Added library resource delete support.
+* Fixed Tone3000 BYOK loading/authorization flow and added favourites support in BYOK mode.
+* Improved startup and browsing performance by optimizing resource loading and deferring heavy tone/jam loads at startup.
+
+### Jam, UI & UX
+* Jam tab is now enabled with substantial layout and interaction improvements.
+* Fixed Jam video playback integration issues including CORS handling, scrolling, touch drag, and WebKit docking behavior.
+* Migrated UI icons to SVG assets for cleaner and more consistent cross-platform rendering.
+* Expanded and consolidated theme/layout work (including light/classic refinements) and improved general UI consistency.
+* Reworked UI assembly/components architecture for a more maintainable and flexible interface foundation.
+
+### Platform & Packaging
+* Windows installer now allows choosing a custom install location.
+
+### Stability & Internal Improvements
+* Reduced unnecessary UI updates caused by DSP performance stats.
+* Fixed live DSP stats updates.
+
 ## 1.3.0 (June 16, 2026)
 
 ### Neural Amp Modeler (NAM)
