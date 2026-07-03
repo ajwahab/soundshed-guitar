@@ -122,7 +122,7 @@ jobs:
         run: npm install -g wrangler@4
 
       - name: Upload artifact to Cloudflare R2
-        if: ${{ env.R2_BUCKET != '' }}
+        if: ${{ env.R2_BUCKET != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
         shell: pwsh
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
