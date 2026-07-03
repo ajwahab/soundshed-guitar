@@ -33,13 +33,16 @@ jobs:
           dev-id-installer-cert: ${{ secrets.DEV_ID_INSTALLER_CERT }}
           dev-id-installer-password: ${{ secrets.DEV_ID_INSTALLER_PASSWORD }}
 
-      # Without this, the temporary keychain re-locks itself after its default
-      # idle timeout. The "Build universal artifacts" step below can easily run
-      # longer than that, so by the time we reach "Sign built bundles" the
-      # keychain is locked again and codesign silently blocks forever waiting
-      # for a GUI password prompt that headless CI can never answer.
+      # Disable all auto-lock behaviour on the temporary signing keychain.
+      # Without any -l/-u flags, the keychain will never lock on sleep or after
+      # an idle timeout. This is required because:
+      #  - codesign passes --keychain explicitly so it can still reach a locked
+      #    keychain, but productsign has no such flag.
+      #  - productsign searches the user keychain list; if the keychain is
+      #    locked it blocks forever waiting for a GUI password prompt that
+      #    headless CI can never answer.
       - name: Keep signing keychain unlocked for the whole job
-        run: security set-keychain-settings -lut 21600 "${{ steps.keychain.outputs.keychain-path }}"
+        run: security set-keychain-settings "${{ steps.keychain.outputs.keychain-path }}"
 
       - name: Install Typescript
         run: npm install -g typescript
@@ -74,6 +77,7 @@ jobs:
 
       - name: Sign installer package
         id: pkg
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           VERSION="$(cat juce/VERSION)"
