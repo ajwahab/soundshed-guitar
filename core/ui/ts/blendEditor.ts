@@ -570,7 +570,9 @@ export class BlendEditorModal {
     const resources = this.deps.getResourceLibrary()[this.browserResourceType] ?? [];
     
     // Deduplicate resources first
-    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: this.browserCurrentId ? [this.browserCurrentId] : [],
+    });
     const dedupedResources = dedupResult.deduped;
     
     const categories = Array.from(new Set(
@@ -685,7 +687,9 @@ export class BlendEditorModal {
     const resources = this.deps.getResourceLibrary()[this.browserResourceType] ?? [];
     
     // Deduplicate resources by hash and file path
-    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: this.browserCurrentId ? [this.browserCurrentId] : [],
+    });
     const dedupedResources = dedupResult.deduped;
     
     const query = (this.modelBrowserSearch?.value ?? "").trim().toLowerCase();
@@ -1537,4 +1541,3 @@ function denormalizeValue(value: number, spec: ParamSpec): string {
   const raw = value < 0 ? value * 10 : spec.min + value * range;
   return raw.toFixed(1);
 }
-

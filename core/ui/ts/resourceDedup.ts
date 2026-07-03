@@ -13,6 +13,10 @@ export interface DeduplicationResult {
   aliasById: Map<string, string>;
 }
 
+export interface DeduplicationOptions {
+  preferredResourceIds?: Iterable<string>;
+}
+
 /**
  * Normalizes a file path for comparison.
  * Converts to lowercase and normalizes separators.
@@ -21,9 +25,44 @@ function normalizeFilePath(path: string): string {
   return path.toLowerCase().replace(/\\/g, "/");
 }
 
+function normalizeName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function parseNamArchitecture(value: string): "A1" | "A2" | "" {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized === "2" || normalized === "a2" || normalized.includes("slimmable")) {
+    return "A2";
+  }
+  if (normalized === "1" || normalized === "a1" || normalized.includes("wavenet")) {
+    return "A1";
+  }
+
+  return "";
+}
+
+function getNamArchitecture(resource: LibraryResource): "A1" | "A2" | "" {
+  const metadata = resource.metadata ?? {};
+  const architectureToken =
+    metadata.architectureVersion
+    ?? metadata.architecture_version
+    ?? metadata.architecture
+    ?? "";
+
+  return parseNamArchitecture(architectureToken);
+}
+
 /**
  * Determines if a resource should be considered as the "canonical" entry.
- * Priority: !fileMissing > has more metadata > alphabetically first by id
+ * Priority:
+ * 1. !fileMissing
+ * 2. For same-named NAM duplicates, prefer A2 architecture over A1
+ * 3. richer metadata
+ * 4. alphabetical by id
  */
 function isCanonicalCandidate(
   candidate: LibraryResource,
@@ -34,6 +73,20 @@ function isCanonicalCandidate(
   const currentFileExists = !current.fileMissing;
   if (candidateFileExists !== currentFileExists) {
     return candidateFileExists;
+  }
+
+  // For same-named NAM duplicates, prefer A2 variants over A1.
+  if (normalizeName(candidate.name || candidate.id) === normalizeName(current.name || current.id)) {
+    const candidateArchitecture = getNamArchitecture(candidate);
+    const currentArchitecture = getNamArchitecture(current);
+    if (candidateArchitecture !== currentArchitecture) {
+      if (candidateArchitecture === "A2" && currentArchitecture === "A1") {
+        return true;
+      }
+      if (candidateArchitecture === "A1" && currentArchitecture === "A2") {
+        return false;
+      }
+    }
   }
 
   // Prefer entries with richer metadata (tags or description)
@@ -62,7 +115,8 @@ function isCanonicalCandidate(
  * @returns Object with deduped list and alias mapping for backward compatibility
  */
 export function deduplicateResourcesByHashAndPath(
-  resources: LibraryResource[]
+  resources: LibraryResource[],
+  options?: DeduplicationOptions,
 ): DeduplicationResult {
   if (!resources.length) {
     return {
@@ -93,17 +147,29 @@ export function deduplicateResourcesByHashAndPath(
   // Select canonical entry from each group and build alias mapping
   const deduped: LibraryResource[] = [];
   const aliasById = new Map<string, string>();
+  const preferredResourceIds = new Set<string>();
+  if (options?.preferredResourceIds) {
+    for (const preferredId of options.preferredResourceIds) {
+      if (preferredId) {
+        preferredResourceIds.add(preferredId);
+      }
+    }
+  }
 
   for (const group of groups.values()) {
     if (group.length === 0) {
       continue;
     }
 
-    // Sort group to find canonical entry
-    let canonical = group[0];
-    for (let i = 1; i < group.length; i++) {
-      if (isCanonicalCandidate(group[i], canonical)) {
-        canonical = group[i];
+    const preferredGroupEntries = group.filter((resource) => preferredResourceIds.has(resource.id));
+    const candidatePool = preferredGroupEntries.length > 0 ? preferredGroupEntries : group;
+
+    // Pick canonical entry from the selected candidate pool.
+    let canonical = candidatePool[0];
+    for (let i = 1; i < candidatePool.length; i++) {
+      const candidate = candidatePool[i];
+      if (isCanonicalCandidate(candidate, canonical)) {
+        canonical = candidate;
       }
     }
 

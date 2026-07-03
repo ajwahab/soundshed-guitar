@@ -19,6 +19,7 @@ import { showConfirm } from "./dialogs.js";
 import { EffectTypeRegistry, getNodeEffectInfo, type EffectTypeInfo } from "./presetV2.js";
 import { EffectGuids } from "./effectGuids.js";
 import { getBadgeIcon, getFxCategoryIcon, getFxEffectIcon, renderIcon } from "./iconAssets.js";
+import { deduplicateResourcesByHashAndPath, resolveResourceIdAlias } from "./resourceDedup.js";
 import {
   CATEGORY_METADATA,
   focusFxSelectorCategory,
@@ -460,8 +461,53 @@ function getLibraryResource(resourceType: string | undefined, resourceId: string
   return findResourceById(resources, resourceId);
 }
 
+function getDeduplicatedLibraryResources(
+  resourceType: string | undefined,
+  preferredResourceIds: Iterable<string> = [],
+): {
+  resources: LibraryResource[];
+  aliasById: Map<string, string>;
+} {
+  const resources = resourceType ? (uiState.resourceLibrary[resourceType] || []) : [];
+  if (resourceType !== "nam" && resourceType !== "ir") {
+    return {
+      resources,
+      aliasById: new Map(),
+    };
+  }
+
+  const dedupResult = deduplicateResourcesByHashAndPath(resources, { preferredResourceIds });
+  return {
+    resources: dedupResult.deduped,
+    aliasById: dedupResult.aliasById,
+  };
+}
+
+function getCanonicalLibraryResourceId(resourceType: string | undefined, resourceId: string): string {
+  if (!resourceId) {
+    return resourceId;
+  }
+
+  const { aliasById } = getDeduplicatedLibraryResources(resourceType);
+  return resolveResourceIdAlias(resourceId, aliasById);
+}
+
+function collectPreferredNodeResourceIds(node: GraphNode, resourceType: string): string[] {
+  const resources = (node as unknown as { resources?: ResourceRef[] }).resources ?? [];
+  return resources
+    .filter((resource) => {
+      const refType = resource.resourceType ?? resource.type ?? "";
+      // Legacy refs may only carry id/resourceId with no type; still treat those
+      // ids as preferred so deduplication never removes the currently selected item.
+      return !refType || refType === resourceType;
+    })
+    .filter((resource) => Boolean(resource.resourceId ?? resource.id))
+    .map((resource) => resource.resourceId ?? resource.id ?? "")
+    .filter((resourceId) => Boolean(resourceId));
+}
+
 function getLibraryResourceName(resourceType: string | undefined, resourceId: string): string {
-  const match = getLibraryResource(resourceType, resourceId);
+  const match = getLibraryResource(resourceType, getCanonicalLibraryResourceId(resourceType, resourceId));
   return match?.name?.trim() ?? "";
 }
 
@@ -893,6 +939,37 @@ function resolveResourceBrowserTone3000CategoryFilter(
   }
 
   return undefined;
+}
+
+function resolveResourceBrowserLibraryCategoryHint(
+  node: GraphNode,
+  resourceType: "nam" | "ir",
+): "ir" | "reverb" | undefined {
+  if (resourceType !== "ir") {
+    return undefined;
+  }
+
+  const category = getNodeEffectInfo(node)?.category || getNodeCategory(node);
+  if (category === "reverb") {
+    return "reverb";
+  }
+  if (category === "cab") {
+    return "ir";
+  }
+
+  return undefined;
+}
+
+function resolveResourceNavigationCategoryHint(
+  node: GraphNode,
+  preset: Preset,
+  resourceType: "nam" | "ir",
+): string | undefined {
+  if (resourceType === "nam") {
+    return resolveResourceBrowserTone3000CategoryFilter(node, preset);
+  }
+
+  return resolveResourceBrowserLibraryCategoryHint(node, resourceType);
 }
 
 function hasCabIrInSameSignalPath(nodeId: string, preset: Preset): boolean {
@@ -3200,19 +3277,27 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     }
   }
 
-  // Preload library navigation cache so prev/next buttons work without opening
-  // the resource browser modal first. Do this synchronously before the resource
-  // selector HTML is rendered so the buttons' initial disabled state is correct.
+  // Refresh the resource navigation cache in the background so prev/next buttons
+  // become available without opening the browser, but do not block panel render.
   {
-    const navCacheTypes = new Set<"nam" | "ir">();
+    const navCacheRequests = new Map<string, { resourceType: "nam" | "ir"; categoryHint?: string }>();
     if (typeInfo?.requiresResource) {
       const rt = typeInfo.resourceType;
-      if (rt === "nam" || rt === "ir") navCacheTypes.add(rt);
+      if (rt === "nam" || rt === "ir") {
+        const categoryHint = resolveResourceNavigationCategoryHint(node, preset, rt);
+        navCacheRequests.set(`${rt}:${categoryHint ?? ""}`, { resourceType: rt, categoryHint });
+      }
     }
     (typeInfo?.exposedResources ?? []).forEach((er) => {
-      if (er.resourceType === "nam" || er.resourceType === "ir") navCacheTypes.add(er.resourceType as "nam" | "ir");
+      if (er.resourceType === "nam" || er.resourceType === "ir") {
+        const resourceType = er.resourceType as "nam" | "ir";
+        const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
+        navCacheRequests.set(`${resourceType}:${categoryHint ?? ""}`, { resourceType, categoryHint });
+      }
     });
-    navCacheTypes.forEach((rt) => resourceBrowserModal.preloadLibraryNavigationCache(rt));
+    navCacheRequests.forEach(({ resourceType, categoryHint }) => {
+      resourceBrowserModal.preloadLibraryNavigationCache(resourceType, { categoryHint });
+    });
   }
 
   // Build resource selector if this node type requires a resource,
@@ -3232,13 +3317,15 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             : resourceType === "wasm"
               ? ".wasm"
               : "*";
-        const resources = uiState.resourceLibrary[resourceType] || [];
+        const preferredResourceIds = collectPreferredNodeResourceIds(node, resourceType);
+        const { resources, aliasById } = getDeduplicatedLibraryResources(resourceType, preferredResourceIds);
         const emptyDisplayName = resourceType === "ir"
           ? "No IR selected"
           : resourceType === "nam"
             ? "No model selected"
             : "No resource selected";
         const current = getNodeResourceAtIndex(node, resourceIndex);
+        const resolvedCurrentId = resolveResourceIdAlias(current.id ?? "", aliasById);
         const displayName = current.id
           ? getNodeResourceDisplayName(node, resourceIndex, resourceType)
           : emptyDisplayName;
@@ -3250,8 +3337,11 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         const canBrowseFile = exposedResource.allowBrowseFile ?? true;
         const isLibraryPicker = resourceType === "nam" || resourceType === "ir";
         const isPluginPicker = resourceType === "plugin";
+        const navigationCategoryHint = isLibraryPicker
+          ? resolveResourceNavigationCategoryHint(node, preset, resourceType)
+          : undefined;
         const resourceOptions = resources.map((res: LibraryResource) => {
-          const selected = current.id === res.id && !current.filePath ? "selected" : "";
+          const selected = resolvedCurrentId === res.id && !current.filePath ? "selected" : "";
           return `<option value="${res.id}" ${selected}>${res.name}</option>`;
         }).join("");
         const customOption = current.filePath
@@ -3273,6 +3363,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           resourceType,
           resourceIndex,
           exposedResourceId: exposedResource.resourceId,
+          navigationCategoryHint,
           allowBrowseFile: canBrowseFile,
           currentResourceId: current.id,
           currentDisplayName: displayName,
@@ -3357,7 +3448,8 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       .join("");
   } else if (typeInfo?.requiresResource && typeInfo.resourceType) {
     const resourceType = typeInfo.resourceType;
-    const resources = uiState.resourceLibrary[resourceType] || [];
+    const preferredResourceIds = collectPreferredNodeResourceIds(node, resourceType);
+    const { resources, aliasById } = getDeduplicatedLibraryResources(resourceType, preferredResourceIds);
     const browseAccept = resourceType === "nam" ? ".nam,.json" : resourceType === "ir" ? ".wav" : "*";
     const blendId = (node as unknown as { config?: Record<string, string> }).config?.blendId;
     if (blendId) {
@@ -3373,10 +3465,13 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         `;
     } else {
 
-    const buildOptions = (currentId: string) => resources.map((res: LibraryResource) => {
-      const selected = res.id === currentId ? "selected" : "";
-      return `<option value="${res.id}" ${selected}>${res.name}</option>`;
-    }).join("");
+    const buildOptions = (currentId: string) => {
+      const resolvedCurrentId = resolveResourceIdAlias(currentId, aliasById);
+      return resources.map((res: LibraryResource) => {
+        const selected = res.id === resolvedCurrentId ? "selected" : "";
+        return `<option value="${res.id}" ${selected}>${res.name}</option>`;
+      }).join("");
+    };
 
     const buildSelector = (index: number, label: string, includeIndexAttr: boolean) => {
       const current = getNodeResourceAtIndex(node, index);
@@ -3397,11 +3492,14 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         && !getLibraryResource(resourceType, current.id);
       const missingClass = isMissing ? "resource-picker-label is-missing" : "resource-picker-label";
       const navResourceType = resourceType === "nam" || resourceType === "ir" ? resourceType : null;
+      const navigationCategoryHint = navResourceType
+        ? resolveResourceNavigationCategoryHint(node, preset, navResourceType)
+        : undefined;
       const prevSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1)
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1, { categoryHint: navigationCategoryHint })
         : null;
       const nextSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1)
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1, { categoryHint: navigationCategoryHint })
         : null;
       const navPrevButton = navResourceType ? `
         <button
@@ -3442,6 +3540,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         displayName: label,
         resourceType,
         resourceIndex: index,
+        navigationCategoryHint,
         allowBrowseFile: true,
         currentResourceId: current.id,
         currentDisplayName: displayName,
@@ -4319,12 +4418,14 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
     );
 
     if (prevButton) {
-      const prev = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1);
+      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
+      const prev = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1, { categoryHint });
       prevButton.disabled = !prev;
       prevButton.setAttribute("aria-disabled", prev ? "false" : "true");
     }
     if (nextButton) {
-      const next = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1);
+      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
+      const next = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1, { categoryHint });
       nextButton.disabled = !next;
       nextButton.setAttribute("aria-disabled", next ? "false" : "true");
     }
@@ -4393,12 +4494,16 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       const tone3000CategoryFilter = resourceType === "nam"
         ? resolveResourceBrowserTone3000CategoryFilter(node, preset)
         : undefined;
+      const libraryCategoryHint = resourceType === "ir"
+        ? resolveResourceBrowserLibraryCategoryHint(node, resourceType)
+        : undefined;
       resourceBrowserModal.open({
         resourceType,
         currentId: current.id,
         nodeId,
         resourceIndex,
         exposedResourceId,
+        libraryCategoryHint,
         tone3000CategoryFilter,
         onSelect: (resourceId) => {
           sendNodeResourceUpdate(nodeId, resourceType, resourceId, "", resourceIndex, undefined, exposedResourceId);
@@ -4441,11 +4546,13 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       }
 
       const current = getNodeResourceAtIndex(node, resourceIndex);
+      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
       const next = resourceBrowserModal.getAdjacentResourceSelection(
         resourceType,
         current.id ?? "",
         current.filePath ?? "",
         direction,
+        { categoryHint },
       );
       if (!next) {
         return;

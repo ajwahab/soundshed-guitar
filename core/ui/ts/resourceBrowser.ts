@@ -37,6 +37,7 @@ type ResourceBrowserOptions = {
   nodeId?: string;
   resourceIndex?: number;
   exposedResourceId?: string;
+  libraryCategoryHint?: string;
   tone3000CategoryFilter?: "pedal" | "amp" | "full-rig";
   toneGroupId?: string | null;
   toneGroupTitle?: string | null;
@@ -71,21 +72,24 @@ function normalizeFilterValue(value: string): string {
  *           "full-rig"  matches "Full Rig", "Full-Rig", "Full Rigs"
  *           "amp"       matches "Amp", "Amps", "Amplifiers" (not "Full Rig" entries)
  */
-function resolveLibraryCategoryFromHint(
-  hint: "pedal" | "amp" | "full-rig" | "ir",
-  availableCategories: string[],
-): string | null {
+function resolveLibraryCategoryFromHint(hint: string, availableCategories: string[]): string | null {
+  const normalizedHint = hint.trim().toLowerCase();
+  if (!normalizedHint) {
+    return null;
+  }
+
   // 1. Exact case-insensitive match
-  const exact = availableCategories.find((c) => c.toLowerCase() === hint);
+  const exact = availableCategories.find((c) => c.toLowerCase() === normalizedHint);
   if (exact) return exact;
 
   // 2. Keyword-based fuzzy match
   for (const cat of availableCategories) {
     const lower = cat.toLowerCase();
-    if (hint === "pedal" && lower.includes("pedal")) return cat;
-    if (hint === "full-rig" && (lower.includes("full-rig") || lower.includes("full rig") || lower.includes("fullrig"))) return cat;
-    if (hint === "amp" && lower.includes("amp") && !lower.includes("full")) return cat;
-    if (hint === "ir" && (lower.includes("ir") || lower.includes("cab"))) return cat;
+    if (normalizedHint === "pedal" && lower.includes("pedal")) return cat;
+    if (normalizedHint === "full-rig" && (lower.includes("full-rig") || lower.includes("full rig") || lower.includes("fullrig"))) return cat;
+    if (normalizedHint === "amp" && lower.includes("amp") && !lower.includes("full")) return cat;
+    if (normalizedHint === "ir" && (lower.includes("ir") || lower.includes("cab"))) return cat;
+    if (normalizedHint === "reverb" && lower.includes("reverb")) return cat;
   }
 
   return null;
@@ -222,6 +226,10 @@ interface ResourceNavigationState {
   items: ResourceNavigationResult[];
 }
 
+interface NavigationCacheOptions {
+  categoryHint?: string;
+}
+
 interface LibraryFilterSnapshot {
   query: string;
   category: string;
@@ -305,6 +313,7 @@ export class ResourceBrowserModal {
   private libraryNavigationState: ResourceNavigationState | null = null;
   // Per-type cache so preloads for different resource types don't clobber each other.
   private libraryNavigationStates: Map<string, ResourceNavigationState> = new Map();
+  private pendingLibraryNavigationRefreshes: Map<string, number> = new Map();
   private libraryResourceAliases: Map<string, Map<string, string>> = new Map(); // Maps resourceType -> (aliasId -> canonicalId)
   private folderNavigationState: ResourceNavigationState | null = null;
   private lastNavigationView: "library" | "folder" | null = null;
@@ -995,6 +1004,29 @@ export class ResourceBrowserModal {
     return `<div class="resource-browser-empty">To view your favourites, add your own Tone3000 API key under Settings.</div>`;
   }
 
+  private resolveDefaultImportCategory(fallbackCategory: string): string {
+    if (this.options?.resourceType === "ir" && this.options.libraryCategoryHint === "reverb") {
+      return "reverb";
+    }
+
+    return fallbackCategory.trim() || "Local";
+  }
+
+  private resolveSelectedResourceCategory(resourceType: ResourceType): string {
+    if (!this.selectedResourceId) {
+      return "";
+    }
+
+    const resources = uiState.resourceLibrary[resourceType] ?? [];
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: [this.selectedResourceId],
+    });
+    const canonicalId = resolveResourceIdAlias(this.selectedResourceId, dedupResult.aliasById);
+    const selectedResource = findResourceById(dedupResult.deduped, canonicalId)
+      ?? findResourceById(resources, this.selectedResourceId);
+    return (selectedResource?.category ?? "").trim() || "Uncategorized";
+  }
+
   private browseForLibraryFile(): void {
     if (!this.options?.nodeId) {
       return;
@@ -1006,6 +1038,7 @@ export class ResourceBrowserModal {
       resourceType: this.options.resourceType,
       resourceIndex: this.options.resourceIndex,
       exposedResourceId: this.options.exposedResourceId,
+      category: this.resolveDefaultImportCategory("Local"),
     });
   }
 
@@ -1052,9 +1085,8 @@ export class ResourceBrowserModal {
     // Pre-select the library category based on effect node type, overriding
     // any persisted state. This ensures e.g. Neural FX always opens on Pedals.
     if (this.libraryCategory) {
-      const categoryHint = options.resourceType === "ir"
-        ? "ir"
-        : options.tone3000CategoryFilter;
+      const categoryHint = options.libraryCategoryHint
+        ?? (options.resourceType === "ir" ? "ir" : options.tone3000CategoryFilter);
       const availableCategories = Array.from(this.libraryCategory.options)
         .map((o) => o.value)
         .filter((v) => v !== "all");
@@ -1063,6 +1095,12 @@ export class ResourceBrowserModal {
         : null;
       if (match) {
         this.libraryCategory.value = match;
+      }
+
+      const selectedCategory = this.resolveSelectedResourceCategory(options.resourceType);
+      if (selectedCategory && this.libraryCategory.value !== "all" && this.libraryCategory.value !== selectedCategory) {
+        const hasSelectedCategory = availableCategories.includes(selectedCategory);
+        this.libraryCategory.value = hasSelectedCategory ? selectedCategory : "all";
       }
     }
     
@@ -1220,7 +1258,9 @@ export class ResourceBrowserModal {
     const currentCategory = this.libraryCategory?.value ?? "all";
     
     // Deduplicate resources first
-    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: this.selectedResourceId ? [this.selectedResourceId] : [],
+    });
     const dedupedResources = dedupResult.deduped;
     
     // Collect unique categories
@@ -1242,7 +1282,7 @@ export class ResourceBrowserModal {
         const match = resolveLibraryCategoryFromHint(tone3000CategoryFilter, sorted);
         this.libraryCategory.value = match ?? "all";
       } else if (resourceType === "ir") {
-        const match = resolveLibraryCategoryFromHint("ir", sorted);
+        const match = resolveLibraryCategoryFromHint(this.options?.libraryCategoryHint ?? "ir", sorted);
         this.libraryCategory.value = match ?? "all";
       } else {
         this.libraryCategory.value = "all";
@@ -1324,18 +1364,57 @@ export class ResourceBrowserModal {
     };
   }
 
-  private buildLibraryNavigationState(resourceType: ResourceType): ResourceNavigationState {
+  private buildLibraryNavigationCacheKey(resourceType: ResourceType, categoryHint?: string): string {
+    const normalizedHint = (categoryHint ?? "").trim().toLowerCase();
+    return normalizedHint ? `${resourceType}:${normalizedHint}` : resourceType;
+  }
+
+  private dispatchLibraryNavigationCacheUpdated(resourceType: ResourceType, categoryHint?: string): void {
+    document.dispatchEvent(new CustomEvent("resource-browser:navigation-cache-updated", {
+      detail: {
+        resourceType,
+        categoryHint: (categoryHint ?? "").trim().toLowerCase(),
+        view: "library",
+      },
+    }));
+  }
+
+  private navigationStatesEqual(left: ResourceNavigationState | null | undefined, right: ResourceNavigationState | null | undefined): boolean {
+    if (!left || !right) {
+      return left === right;
+    }
+    if (left.resourceType !== right.resourceType || left.items.length !== right.items.length) {
+      return false;
+    }
+    return left.items.every((item, index) => {
+      const other = right.items[index];
+      return item.resourceId === other.resourceId && item.filePath === other.filePath;
+    });
+  }
+
+  private buildLibraryNavigationState(resourceType: ResourceType, options?: NavigationCacheOptions): ResourceNavigationState {
     const resources = uiState.resourceLibrary[resourceType] ?? [];
     const filters = this.getLibraryFilterSnapshot(resourceType);
     
     // Deduplicate resources by hash and file path
-    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: this.selectedResourceId ? [this.selectedResourceId] : [],
+    });
     this.libraryResourceAliases.set(resourceType, dedupResult.aliasById);
-    
-    let filtered = dedupResult.deduped.filter((res) => !res.fileMissing);
 
-    if (filters.category !== "all") {
-      filtered = filtered.filter((res) => ((res.category ?? "").trim() || "Uncategorized") === filters.category);
+    const dedupedResources = dedupResult.deduped;
+    const availableCategories = Array.from(new Set(
+      dedupedResources.map((res) => (res.category ?? "").trim() || "Uncategorized"),
+    ));
+    const resolvedCategoryHint = options?.categoryHint
+      ? (resolveLibraryCategoryFromHint(options.categoryHint, availableCategories) ?? options.categoryHint)
+      : "";
+    const effectiveCategory = resolvedCategoryHint || filters.category;
+
+    let filtered = dedupedResources.filter((res) => !res.fileMissing);
+
+    if (effectiveCategory !== "all") {
+      filtered = filtered.filter((res) => ((res.category ?? "").trim() || "Uncategorized") === effectiveCategory);
     }
 
     if (resourceType === "nam" && filters.architecture !== "all") {
@@ -1393,14 +1472,35 @@ export class ResourceBrowserModal {
     };
   }
 
-  public preloadLibraryNavigationCache(resourceType: ResourceType): void {
-    const state = this.buildLibraryNavigationState(resourceType);
-    this.libraryNavigationStates.set(resourceType, state);
-    // Also populate the single-slot state if it isn't already set for this type,
-    // so the modal's own internal navigation works even without the modal being opened first.
-    if (!this.libraryNavigationState || this.libraryNavigationState.resourceType === resourceType) {
-      this.libraryNavigationState = state;
+  public preloadLibraryNavigationCache(resourceType: ResourceType, options?: NavigationCacheOptions): void {
+    const categoryHint = options?.categoryHint;
+    const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, categoryHint);
+    if (this.pendingLibraryNavigationRefreshes.has(cacheKey)) {
+      return;
     }
+
+    const refreshHandle = window.setTimeout(() => {
+      this.pendingLibraryNavigationRefreshes.delete(cacheKey);
+
+      const state = this.buildLibraryNavigationState(resourceType, options);
+      const previous = this.libraryNavigationStates.get(cacheKey) ?? null;
+      this.libraryNavigationStates.set(cacheKey, state);
+      const modalCacheKey = this.options
+        ? this.buildLibraryNavigationCacheKey(
+          this.options.resourceType,
+          this.options.libraryCategoryHint ?? this.options.tone3000CategoryFilter,
+        )
+        : "";
+      if (!this.libraryNavigationState || (this.lastNavigationView !== "folder" && cacheKey === modalCacheKey)) {
+        this.libraryNavigationState = state;
+      }
+
+      if (!this.navigationStatesEqual(previous, state)) {
+        this.dispatchLibraryNavigationCacheUpdated(resourceType, categoryHint);
+      }
+    }, 0);
+
+    this.pendingLibraryNavigationRefreshes.set(cacheKey, refreshHandle);
   }
 
   /// Resolves a NAM architecture badge (A1/A2), falling back to the NAM
@@ -1550,7 +1650,9 @@ export class ResourceBrowserModal {
     const resources = uiState.resourceLibrary[resourceType] ?? [];
     
     // Deduplicate resources by hash and file path
-    const dedupResult = deduplicateResourcesByHashAndPath(resources);
+    const dedupResult = deduplicateResourcesByHashAndPath(resources, {
+      preferredResourceIds: this.selectedResourceId ? [this.selectedResourceId] : [],
+    });
     this.libraryResourceAliases.set(resourceType, dedupResult.aliasById);
     const dedupedResources = dedupResult.deduped;
     
@@ -1624,14 +1726,10 @@ export class ResourceBrowserModal {
       resourceType,
       items: filtered.map((res) => ({ resourceId: res.id })),
     };
-    this.libraryNavigationStates.set(resourceType, this.libraryNavigationState);
+    const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, category);
+    this.libraryNavigationStates.set(cacheKey, this.libraryNavigationState);
     this.lastNavigationView = "library";
-    document.dispatchEvent(new CustomEvent("resource-browser:navigation-cache-updated", {
-      detail: {
-        resourceType,
-        view: "library",
-      },
-    }));
+    this.dispatchLibraryNavigationCacheUpdated(resourceType, category);
 
     if (!filtered.length) {
       this.libraryList.innerHTML = `<div class="results-empty resource-browser-empty">No ${resourceType === "ir" ? "IRs" : "models"} match the current filters.</div>`;
@@ -2024,7 +2122,7 @@ export class ResourceBrowserModal {
     }
 
     const fileName = file.name ?? path.split(/[\\/]/).pop() ?? path;
-    const defaultCategory = (this.folderListing?.name || "Folder").trim() || "Folder";
+    const defaultCategory = this.resolveDefaultImportCategory((this.folderListing?.name || "Folder").trim() || "Folder");
     this.openEditPopoverForValues({
       resourceId: "",
       resourceType,
@@ -3299,7 +3397,7 @@ export class ResourceBrowserModal {
     const listing = this.folderListing;
     const file = listing?.files.find((f) => f.path === path);
     const fileName = file?.name ?? path.split(/[\\/]/).pop() ?? path;
-    const category = listing?.name || "Folder";
+    const category = this.resolveDefaultImportCategory(listing?.name || "Folder");
     const tags = overrides?.tags ?? this.getFolderFileTags(file ?? {
       name: fileName,
       path,
@@ -3380,21 +3478,29 @@ export class ResourceBrowserModal {
     currentResourceId: string,
     currentFilePath: string,
     offset: number,
+    options?: NavigationCacheOptions,
   ): ResourceNavigationResult | null {
     // Prefer folder navigation only when the folder state actually matches the
     // requested resource type; otherwise fall through to the per-type library cache.
     const usingFolderState = this.lastNavigationView === "folder"
       && this.folderNavigationState?.resourceType === resourceType;
+    const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, options?.categoryHint);
     const state = usingFolderState
       ? this.folderNavigationState
-      : (this.libraryNavigationStates.get(resourceType) ?? this.libraryNavigationState);
+      : (this.libraryNavigationStates.get(cacheKey)
+        ?? this.libraryNavigationStates.get(resourceType)
+        ?? this.libraryNavigationState);
     if (!state || state.resourceType !== resourceType || !state.items.length) {
       return null;
     }
 
     const currentKeys = usingFolderState
       ? [currentFilePath, currentResourceId]
-      : [currentResourceId, currentFilePath];
+      : [
+        resolveResourceIdAlias(currentResourceId, this.libraryResourceAliases.get(resourceType) ?? new Map()),
+        currentResourceId,
+        currentFilePath,
+      ];
     const currentIndex = state.items.findIndex((item) => currentKeys.some((key) => (
       key
       && (item.filePath === key || item.resourceId === key)

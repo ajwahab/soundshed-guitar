@@ -5175,6 +5175,7 @@ void PluginController::HandleBrowseNodeResourceRequest(const nlohmann::json& pay
     std::string resourceType = payload.value("resourceType", "nam");
     const int resourceIndex = payload.value("resourceIndex", -1);
     const std::string exposedResourceId = payload.value("exposedResourceId", "");
+    const std::string category = payload.value("category", "");
     const bool openPluginEditorAfterLoad = payload.value("openPluginEditorAfterLoad", false);
 
     BrowseFileType fileType = BrowseFileType::Any;
@@ -5183,7 +5184,7 @@ void PluginController::HandleBrowseNodeResourceRequest(const nlohmann::json& pay
     else if (resourceType == "plugin") fileType = BrowseFileType::PluginFile;
 
     mHost.BrowseFileAsync(fileType, "Select Resource",
-        [this, nodeId, resourceType, resourceIndex, exposedResourceId, openPluginEditorAfterLoad](const BrowseFileResult& result)
+        [this, nodeId, resourceType, resourceIndex, exposedResourceId, category, openPluginEditorAfterLoad](const BrowseFileResult& result)
         {
             if (result.success)
             {
@@ -5192,7 +5193,7 @@ void PluginController::HandleBrowseNodeResourceRequest(const nlohmann::json& pay
                 payload["resourceType"] = resourceType;
                 payload["nodeId"] = nodeId;
                 payload["name"] = result.path.stem().string();
-                payload["category"] = "Local";
+                payload["category"] = category.empty() ? std::string{"Local"} : category;
                 payload["metadata"] = nlohmann::json::object({{"provider", kLocalResourceProvider}});
                 if (resourceIndex >= 0)
                     payload["resourceIndex"] = resourceIndex;

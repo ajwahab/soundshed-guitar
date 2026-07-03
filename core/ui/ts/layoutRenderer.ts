@@ -26,6 +26,7 @@ export interface LayoutResourceControlDef {
   resourceType: string;
   resourceIndex: number;
   exposedResourceId?: string;
+  navigationCategoryHint?: string;
   allowBrowseFile?: boolean;
   currentResourceId?: string;
   currentDisplayName: string;
@@ -434,6 +435,7 @@ function renderControls(
             currentResourceId,
             currentFilePath,
             -1,
+            { categoryHint: resourceDef.navigationCategoryHint },
           )
           : null;
         const nextSelection = resourceDef?.resourceType === "nam" || resourceDef?.resourceType === "ir"
@@ -442,6 +444,7 @@ function renderControls(
             currentResourceId,
             currentFilePath,
             1,
+            { categoryHint: resourceDef.navigationCategoryHint },
           )
           : null;
         const prevDisabled = prevSelection ? "" : " disabled";
