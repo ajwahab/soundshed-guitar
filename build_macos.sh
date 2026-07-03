@@ -86,7 +86,7 @@ echo "════════════════════════�
 if [[ "$SKIP_TS" == false ]]; then
     echo ""
     echo "▶ Building UI (TypeScript)…"
-    (cd "$UI_DIR" && npm run build)
+    (cd "$UI_DIR" && npm ci && npm run build)
     echo "  ✓ UI bundle built"
 fi
 

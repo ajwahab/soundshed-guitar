@@ -450,7 +450,7 @@ build_for_arch() {
     if [[ "$SKIP_TS" == false && "$UI_ALREADY_BUILT" == false ]]; then
         echo ""
         echo "▶ Building UI (TypeScript)…"
-        (cd "$UI_DIR" && npm run build)
+        (cd "$UI_DIR" && npm ci && npm run build)
         echo "  ✓ UI bundle built"
         UI_ALREADY_BUILT=true
     fi
