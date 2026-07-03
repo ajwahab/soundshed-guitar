@@ -10,6 +10,17 @@
 #   --no-pkg        Skip macOS installer .pkg assembly
 #   --dist-dir <p>  Override the output staging directory (default: macos-dist)
 
+# For macOS signing, using xcode > to get Developer ID Application cert, Developer ID INstaller cert
+#   https://github.com/sudara/basic-macos-keychain-action/tree/v1/
+#   https://melatonin.dev/blog/how-to-code-sign-and-notarize-macos-audio-plugins-in-ci/
+#   DEV_ID_APP_CERT, the exported cert from Xcode which has then been base64-encoded.
+#   DEV_ID_APP_PASSWORD, the password you supplied to Xcode at the time of cert export.
+#   DEVELOPER_ID_APPLICATION, the name or the hashed id of the specific cert identity, as found via security find-identity -v.
+#   To sign installers, you will need:
+#   DEV_ID_INSTALLER_CERT
+#   DEV_ID_INSTALLER_PASSWORD
+#   DEVELOPER_ID_INSTALLER
+
 set -euo pipefail
 
 # ── Resolve workspace root (directory containing this script) ─────────────────
