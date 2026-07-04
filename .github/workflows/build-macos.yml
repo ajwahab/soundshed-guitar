@@ -81,6 +81,20 @@ jobs:
           chmod +x ./build_macos.sh
           ./build_macos.sh --universal --no-pkg
 
+      - name: Prune bundled ui node_modules (pre-sign)
+        run: |
+          set -euo pipefail
+          ARTEFACTS="juce/builds/SoundshedGuitar_artefacts/Release"
+          removed=0
+
+          while IFS= read -r -d '' dir; do
+            rm -rf "$dir"
+            removed=$((removed + 1))
+            echo "Removed $dir"
+          done < <(find "$ARTEFACTS" -type d -path "*/Contents/Resources/ui/node_modules" -print0)
+
+          echo "Pruned $removed ui/node_modules director$( [[ $removed -eq 1 ]] && echo 'y' || echo 'ies' ) before signing"
+
       - name: Sign built bundles
         timeout-minutes: 15
         run: |
