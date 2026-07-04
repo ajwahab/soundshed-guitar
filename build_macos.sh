@@ -190,6 +190,22 @@ copy_artifact "$SRC_AU"   "$AU_DST"
 copy_artifact "$SRC_CLAP" "$CLAP_DST"
 copy_artifact "$SRC_AAX"  "$AAX_DST"
 
+strip_ui_node_modules() {
+    local root_dir="$1"
+    local removed_count=0
+
+    while IFS= read -r -d '' nm_dir; do
+        rm -rf "$nm_dir"
+        removed_count=$((removed_count + 1))
+    done < <(find "$root_dir" -type d -name node_modules -print0 2>/dev/null)
+
+    if [[ $removed_count -gt 0 ]]; then
+        echo "  ✓ Removed ${removed_count} node_modules director$( [[ $removed_count -eq 1 ]] && echo 'y' || echo 'ies' ) from staged output"
+    fi
+}
+
+strip_ui_node_modules "$DIST_DIR"
+
 require_staged_artifact() {
     local path="$1"
     local label="$2"
@@ -232,7 +248,6 @@ if [[ "$BUILD_PKG" == true ]]; then
     VERSION="$(cat "${SCRIPT_DIR}/juce/VERSION" 2>/dev/null || echo "1.0.0")"
     PKG_STAGING="${DIST_DIR}/pkg-staging"
     COMPONENTS_DIR="${PKG_STAGING}/components"
-    SCRIPTS_DIR="${PKG_STAGING}/scripts"
     PKG_OUT="${DIST_DIR}/SoundshedGuitar-${VERSION}.pkg"
 
     echo ""
@@ -247,7 +262,7 @@ if [[ "$BUILD_PKG" == true ]]; then
     fi
 
     rm -rf "$PKG_STAGING"
-    mkdir -p "$COMPONENTS_DIR" "$SCRIPTS_DIR"
+    mkdir -p "$COMPONENTS_DIR"
 
     # Payload roots — each mirrors the filesystem layout from / so pkgbuild can
     # install each bundle to its correct system destination.
@@ -256,73 +271,32 @@ if [[ "$BUILD_PKG" == true ]]; then
     ROOT_AU="${PKG_STAGING}/root-au"
     ROOT_CLAP="${PKG_STAGING}/root-clap"
     ROOT_AAX="${PKG_STAGING}/root-aax"
-    ROOT_SHARED="${PKG_STAGING}/root-shared"
 
     mkdir -p "${ROOT_STANDALONE}/Applications"
     mkdir -p "${ROOT_VST3}/Library/Audio/Plug-Ins/VST3"
     mkdir -p "${ROOT_AU}/Library/Audio/Plug-Ins/Components"
     mkdir -p "${ROOT_CLAP}/Library/Audio/Plug-Ins/CLAP"
     mkdir -p "${ROOT_AAX}/Library/Application Support/Avid/Audio/Plug-Ins"
-    mkdir -p "${ROOT_SHARED}/Library/Application Support/Soundshed/Guitar"
+    
 
-    # Copy a bundle into a pkg root, stripping Contents/Resources/ui/ so the
-    # UI is not duplicated across the component packages.
-    stage_stripped() {
+    # Copy a pre-signed bundle into a pkg root without mutating its contents.
+    # Any modification after signing invalidates notarization.
+    stage_bundle() {
         local src="$1"
         local dst_dir="$2"
         if [[ -e "$src" ]]; then
             cp -R "$src" "${dst_dir}/"
-            rm -rf "${dst_dir}/$(basename "$src")/Contents/Resources/ui"
-            echo "  ✓ Staged (ui stripped): $(basename "$src")"
+            echo "  ✓ Staged: $(basename "$src")"
         else
             echo "  ⚠ Skipping (not found): $(basename "$src")"
         fi
     }
 
-    stage_stripped "${APP_DST}/${PRODUCT}.app"      "${ROOT_STANDALONE}/Applications"
-    stage_stripped "${VST3_DST}/${PRODUCT}.vst3"    "${ROOT_VST3}/Library/Audio/Plug-Ins/VST3"
-    stage_stripped "${AU_DST}/${PRODUCT}.component" "${ROOT_AU}/Library/Audio/Plug-Ins/Components"
-    stage_stripped "${CLAP_DST}/${PRODUCT}.clap"    "${ROOT_CLAP}/Library/Audio/Plug-Ins/CLAP"
-    stage_stripped "${AAX_DST}/${PRODUCT}.aaxplugin" "${ROOT_AAX}/Library/Application Support/Avid/Audio/Plug-Ins"
-
-    # Stage the shared UI resources (sourced from the standalone app — all
-    # bundles carry identical copies so the source doesn't matter).
-    SRC_UI="${APP_DST}/${PRODUCT}.app/Contents/Resources/ui"
-    if [[ ! -d "$SRC_UI" ]]; then
-        echo "  ✗ Cannot locate shared ui/ at: ${SRC_UI#"$SCRIPT_DIR/"}" >&2
-        exit 1
-    fi
-    SHARED_UI_ROOT="${ROOT_SHARED}/Library/Application Support/Soundshed/Guitar"
-    cp -R "$SRC_UI" "${SHARED_UI_ROOT}/ui"
-    echo "  ✓ Staged shared ui/ ($(du -sh "${SHARED_UI_ROOT}/ui" | cut -f1))"
-
-    # ── Postinstall script ────────────────────────────────────────────────────
-    # Runs after the shared-resources component is installed (last in the
-    # package order). Copies the shared ui/ tree into every plugin bundle the
-    # user chose to install, skipping any that were deselected.
-    cat > "${SCRIPTS_DIR}/postinstall" <<'POSTINSTALL'
-#!/usr/bin/env bash
-set -euo pipefail
-SHARED_UI="/Library/Application Support/Soundshed/Guitar/ui"
-
-BUNDLE_UI_DIRS=(
-    "/Applications/Soundshed Guitar.app/Contents/Resources/ui"
-    "/Library/Audio/Plug-Ins/VST3/Soundshed Guitar.vst3/Contents/Resources/ui"
-    "/Library/Audio/Plug-Ins/Components/Soundshed Guitar.component/Contents/Resources/ui"
-    "/Library/Audio/Plug-Ins/CLAP/Soundshed Guitar.clap/Contents/Resources/ui"
-    "/Library/Application Support/Avid/Audio/Plug-Ins/Soundshed Guitar.aaxplugin/Contents/Resources/ui"
-)
-
-for ui_dst in "${BUNDLE_UI_DIRS[@]}"; do
-    # Only populate bundles that were actually installed
-    bundle_contents="$(dirname "$(dirname "$ui_dst")")"
-    if [[ -d "$bundle_contents" ]]; then
-        rm -rf "$ui_dst"
-        cp -R "$SHARED_UI" "$ui_dst"
-    fi
-done
-POSTINSTALL
-    chmod +x "${SCRIPTS_DIR}/postinstall"
+    stage_bundle "${APP_DST}/${PRODUCT}.app"      "${ROOT_STANDALONE}/Applications"
+    stage_bundle "${VST3_DST}/${PRODUCT}.vst3"    "${ROOT_VST3}/Library/Audio/Plug-Ins/VST3"
+    stage_bundle "${AU_DST}/${PRODUCT}.component" "${ROOT_AU}/Library/Audio/Plug-Ins/Components"
+    stage_bundle "${CLAP_DST}/${PRODUCT}.clap"    "${ROOT_CLAP}/Library/Audio/Plug-Ins/CLAP"
+    stage_bundle "${AAX_DST}/${PRODUCT}.aaxplugin" "${ROOT_AAX}/Library/Application Support/Avid/Audio/Plug-Ins"
 
     # ── Component packages ────────────────────────────────────────────────────
     echo ""
@@ -368,16 +342,6 @@ POSTINSTALL
         "${COMPONENTS_DIR}/aax.pkg"
     echo "  ✓ aax.pkg"
 
-    # shared.pkg is built LAST so its postinstall runs after all bundles exist.
-    pkgbuild \
-        --root "$ROOT_SHARED" \
-        --identifier "com.soundshed.guitar.shared" \
-        --version "$VERSION" \
-        --install-location "/" \
-        --scripts "$SCRIPTS_DIR" \
-        "${COMPONENTS_DIR}/shared.pkg"
-    echo "  ✓ shared.pkg (with postinstall)"
-
     # ── Distribution XML ──────────────────────────────────────────────────────
     DIST_XML="${PKG_STAGING}/distribution.xml"
     cat > "$DIST_XML" <<DISTXML
@@ -394,7 +358,6 @@ POSTINSTALL
         <line choice="choice-au"/>
         <line choice="choice-clap"/>
         <line choice="choice-aax"/>
-        <line choice="choice-shared"/>
     </choices-outline>
 
     <!-- Optional formats: user can deselect any of these -->
@@ -424,20 +387,11 @@ POSTINSTALL
         <pkg-ref id="com.soundshed.guitar.aax"/>
     </choice>
 
-    <!-- Shared resources: required, greyed-out in the UI.
-         Installed last so its postinstall finds all selected bundles. -->
-    <choice id="choice-shared" title="Shared Resources"
-            description="Shared UI resources required by all formats."
-            enabled="false" selected="true" start_selected="true">
-        <pkg-ref id="com.soundshed.guitar.shared"/>
-    </choice>
-
     <pkg-ref id="com.soundshed.guitar.standalone">#standalone.pkg</pkg-ref>
     <pkg-ref id="com.soundshed.guitar.vst3">#vst3.pkg</pkg-ref>
     <pkg-ref id="com.soundshed.guitar.au">#au.pkg</pkg-ref>
     <pkg-ref id="com.soundshed.guitar.clap">#clap.pkg</pkg-ref>
     <pkg-ref id="com.soundshed.guitar.aax">#aax.pkg</pkg-ref>
-    <pkg-ref id="com.soundshed.guitar.shared">#shared.pkg</pkg-ref>
 </installer-gui-script>
 DISTXML
 
