@@ -114,4 +114,4 @@ jobs:
         run: |
           set -euo pipefail
           key="builds/${{ github.ref_name }}/${{ github.run_id }}/linux-native/${{ matrix.arch }}/${{ steps.zip.outputs.zip_name }}"
-          wrangler r2 object put "$R2_BUCKET/$key" --file "${{ steps.zip.outputs.zip_path }}"
+          wrangler r2 object put "$R2_BUCKET/$key" --file "${{ steps.zip.outputs.zip_path }}" --remote

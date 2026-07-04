@@ -171,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           key="builds/${{ github.ref_name }}/${{ github.run_id }}/macos/universal/${{ steps.pkg.outputs.pkg_name }}"
-          wrangler r2 object put "$R2_BUCKET/$key" --file "${{ steps.pkg.outputs.pkg_path }}"
+          wrangler r2 object put "$R2_BUCKET/$key" --file "${{ steps.pkg.outputs.pkg_path }}" --remote
 
       - name: Remove temporary signing keychain
         if: always()
