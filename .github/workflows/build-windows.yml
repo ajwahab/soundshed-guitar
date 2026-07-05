@@ -8,9 +8,27 @@ permissions:
   id-token: write
 
 jobs:
+  validate-signing-config:
+    name: Validate signing config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check KMS secrets are complete when signing is enabled
+        env:
+          HAS_GCP_AUTH: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+          HAS_WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
+          HAS_KMS_CONFIG: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_KMS_LOCATION != '' && secrets.GCP_KMS_KEYRING != '' && secrets.GCP_KMS_KEY != '' && secrets.GCP_KMS_KEY_VERSION != '' }}
+        run: |
+          if [[ "$HAS_GCP_AUTH" == "true" && "$HAS_WINDOWS_SIGNING_CERT" == "true" && "$HAS_KMS_CONFIG" != "true" ]]; then
+            echo "::error::Signing is enabled (GCP auth + certificate present) but one or more KMS secrets are missing."
+            echo "::error::Ensure all of the following secrets are set: GCP_PROJECT_ID, GCP_KMS_LOCATION, GCP_KMS_KEYRING, GCP_KMS_KEY, GCP_KMS_KEY_VERSION"
+            exit 1
+          fi
+          echo "Signing configuration is valid."
+
   build:
     name: windows-${{ matrix.arch }}
     runs-on: windows-latest
+    needs: validate-signing-config
     strategy:
       fail-fast: false
       matrix:
