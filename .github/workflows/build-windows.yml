@@ -20,6 +20,7 @@ jobs:
       R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       HAS_GCP_AUTH: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
       HAS_WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
+      HAS_KMS_CONFIG: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_KMS_LOCATION != '' && secrets.GCP_KMS_KEYRING != '' && secrets.GCP_KMS_KEY != '' && secrets.GCP_KMS_KEY_VERSION != '' }}
       HAS_R2_CREDENTIALS: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
 
     steps:
@@ -71,7 +72,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Install Cloud KMS CNG provider
-        if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' }}
+        if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' && env.HAS_KMS_CONFIG == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -93,7 +94,7 @@ jobs:
           }
 
       - name: Sign installer with SignTool (Google Cloud KMS)
-        if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' }}
+        if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' && env.HAS_KMS_CONFIG == 'true' }}
         shell: pwsh
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
