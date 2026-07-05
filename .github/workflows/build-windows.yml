@@ -16,11 +16,11 @@ jobs:
         env:
           HAS_GCP_AUTH: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
           HAS_WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
-          HAS_KMS_CONFIG: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_KMS_LOCATION != '' && secrets.GCP_KMS_KEYRING != '' && secrets.GCP_KMS_KEY != '' && secrets.GCP_KMS_KEY_VERSION != '' }}
+          HAS_KMS_CONFIG: ${{ secrets.GCP_KMS_KEY_ID != '' }}
         run: |
           if [[ "$HAS_GCP_AUTH" == "true" && "$HAS_WINDOWS_SIGNING_CERT" == "true" && "$HAS_KMS_CONFIG" != "true" ]]; then
-            echo "::error::Signing is enabled (GCP auth + certificate present) but one or more KMS secrets are missing."
-            echo "::error::Ensure all of the following secrets are set: GCP_PROJECT_ID, GCP_KMS_LOCATION, GCP_KMS_KEYRING, GCP_KMS_KEY, GCP_KMS_KEY_VERSION"
+            echo "::error::Signing is enabled (GCP auth + certificate present) but the KMS secret is missing."
+            echo "::error::Ensure the following secret is set: GCP_KMS_KEY_ID (full resource path, e.g. projects/PROJECT/locations/LOCATION/keyRings/KEYRING/cryptoKeys/KEY/cryptoKeyVersions/VERSION)"
             exit 1
           fi
           echo "Signing configuration is valid."
@@ -38,7 +38,7 @@ jobs:
       R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       HAS_GCP_AUTH: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
       HAS_WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 != '' }}
-      HAS_KMS_CONFIG: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_KMS_LOCATION != '' && secrets.GCP_KMS_KEYRING != '' && secrets.GCP_KMS_KEY != '' && secrets.GCP_KMS_KEY_VERSION != '' }}
+      HAS_KMS_CONFIG: ${{ secrets.GCP_KMS_KEY_ID != '' }}
       HAS_R2_CREDENTIALS: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
 
     steps:
@@ -115,11 +115,7 @@ jobs:
         if: ${{ env.HAS_GCP_AUTH == 'true' && env.HAS_WINDOWS_SIGNING_CERT == 'true' && env.HAS_KMS_CONFIG == 'true' }}
         shell: pwsh
         env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_KMS_LOCATION: ${{ secrets.GCP_KMS_LOCATION }}
-          GCP_KMS_KEYRING: ${{ secrets.GCP_KMS_KEYRING }}
-          GCP_KMS_KEY: ${{ secrets.GCP_KMS_KEY }}
-          GCP_KMS_KEY_VERSION: ${{ secrets.GCP_KMS_KEY_VERSION }}
+          GCP_KMS_KEY_ID: ${{ secrets.GCP_KMS_KEY_ID }}
           WINDOWS_SIGNING_CERT_CHAIN_PEM_B64: ${{ secrets.WINDOWS_SIGNING_CERT_CHAIN_PEM_B64 }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -134,13 +130,12 @@ jobs:
             throw 'signtool.exe not found; ensure the Windows SDK is installed on the runner'
           }
 
-          $keyVersion = "projects/$env:GCP_PROJECT_ID/locations/$env:GCP_KMS_LOCATION/keyRings/$env:GCP_KMS_KEYRING/cryptoKeys/$env:GCP_KMS_KEY/cryptoKeyVersions/$env:GCP_KMS_KEY_VERSION"
           $installerPath = '${{ steps.installer.outputs.installer_path }}'
 
           & $signtool.FullName sign /v /debug /fd sha256 /t http://timestamp.digicert.com `
             /f .\codesign-chain.pem `
             /csp "Google Cloud KMS Provider" `
-            /kc "$keyVersion" `
+            /kc "$env:GCP_KMS_KEY_ID" `
             "$installerPath"
 
           if ($LASTEXITCODE -ne 0) {
