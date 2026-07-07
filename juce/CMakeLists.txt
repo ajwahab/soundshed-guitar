@@ -477,16 +477,16 @@ function(soundshed_copy_ui_resources FORMAT_TARGET)
         )
     endif()
 
-    if(APPLE)
+  #  if(APPLE)
         # For non-standalone target bundles, remove microphone permissions from Info.plist
         # to prevent macOS from repeatedly asking for microphone access when loaded inside a DAW.
-        if(NOT FORMAT_TARGET STREQUAL "${PROJECT_NAME}_Standalone")
-            add_custom_command(TARGET ${FORMAT_TARGET} POST_BUILD
-                COMMENT "Removing NSMicrophoneUsageDescription from ${FORMAT_TARGET} Info.plist"
-                COMMAND /usr/bin/plutil -remove NSMicrophoneUsageDescription "$<TARGET_BUNDLE_DIR:${FORMAT_TARGET}>/Contents/Info.plist" || true
-            )
-        endif()
-    endif()
+   #     if(NOT FORMAT_TARGET STREQUAL "${PROJECT_NAME}_Standalone")
+   #         add_custom_command(TARGET ${FORMAT_TARGET} POST_BUILD
+   #             COMMENT "Removing NSMicrophoneUsageDescription from ${FORMAT_TARGET} Info.plist"
+   #             COMMAND /usr/bin/plutil -remove NSMicrophoneUsageDescription "$<TARGET_BUNDLE_DIR:${FORMAT_TARGET}>/Contents/Info.plist" || true
+   #         )
+   #     endif()
+   # endif()
 
 endfunction()
 

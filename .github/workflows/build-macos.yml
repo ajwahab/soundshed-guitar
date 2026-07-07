@@ -104,12 +104,17 @@ jobs:
 
           sign_if_exists() {
             local path="$1"
+            local entitlements="${2:-}"
             if [[ -e "$path" ]]; then
-              codesign --force --keychain "${{ steps.keychain.outputs.keychain-path }}" -s "${{ secrets.DEVELOPER_ID_APPLICATION }}" --deep --strict --options runtime --timestamp "$path"
+              local args=(--force --keychain "${{ steps.keychain.outputs.keychain-path }}" -s "${{ secrets.DEVELOPER_ID_APPLICATION }}" --deep --strict --options runtime --timestamp)
+              if [[ -n "$entitlements" ]]; then
+                args+=(--entitlements "$entitlements")
+              fi
+              codesign "${args[@]}" "$path"
             fi
           }
 
-          sign_if_exists "$ARTEFACTS/Standalone/$PRODUCT.app"
+          sign_if_exists "$ARTEFACTS/Standalone/$PRODUCT.app" "core/macos.standalone.entitlements"
           sign_if_exists "$ARTEFACTS/VST3/$PRODUCT.vst3"
           sign_if_exists "$ARTEFACTS/AU/$PRODUCT.component"
           sign_if_exists "$ARTEFACTS/CLAP/$PRODUCT.clap"
