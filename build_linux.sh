@@ -316,12 +316,16 @@ prune_ui_payload() {
         "$ui_root/node_modules" \
         "$ui_root/tests" \
         "$ui_root/Testing" \
-        "$ui_root/ts"
+        "$ui_root/ts" \
+        "$ui_root/scripts" \
+        "$ui_root/ui-components"
 
     rm -f \
         "$ui_root/package.json" \
         "$ui_root/package-lock.json" \
-        "$ui_root/tsconfig.json"
+        "$ui_root/tsconfig.json" \
+        "$ui_root/vitest.config.ts" \
+        "$ui_root/index.template.html"
 }
 
 prune_staged_ui_payloads() {

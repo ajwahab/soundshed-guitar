@@ -194,13 +194,25 @@ strip_ui_node_modules() {
     local root_dir="$1"
     local removed_count=0
 
-    while IFS= read -r -d '' nm_dir; do
-        rm -rf "$nm_dir"
+    while IFS= read -r -d '' ui_dir; do
+        rm -rf \
+            "$ui_dir/node_modules" \
+            "$ui_dir/ts" \
+            "$ui_dir/tests" \
+            "$ui_dir/Testing" \
+            "$ui_dir/scripts" \
+            "$ui_dir/ui-components"
+        rm -f \
+            "$ui_dir/package.json" \
+            "$ui_dir/package-lock.json" \
+            "$ui_dir/tsconfig.json" \
+            "$ui_dir/vitest.config.ts" \
+            "$ui_dir/index.template.html"
         removed_count=$((removed_count + 1))
-    done < <(find "$root_dir" -type d -name node_modules -print0 2>/dev/null)
+    done < <(find "$root_dir" -type d -path "*/Contents/Resources/ui" -print0 2>/dev/null)
 
     if [[ $removed_count -gt 0 ]]; then
-        echo "  ✓ Removed ${removed_count} node_modules director$( [[ $removed_count -eq 1 ]] && echo 'y' || echo 'ies' ) from staged output"
+        echo "  ✓ Pruned non-runtime UI files from ${removed_count} staged ui director$( [[ $removed_count -eq 1 ]] && echo 'y' || echo 'ies' )"
     fi
 }
 
