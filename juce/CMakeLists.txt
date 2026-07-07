@@ -262,7 +262,7 @@ set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded CACHE STRING "" FORCE)
 
 # JUCE is setup in the /JUCE folder and this build enforces a pinned JUCE version.
 # If your checkout drifts, configure will fail with an actionable message.
-set(GUITARFX_REQUIRED_JUCE_VERSION "8.0.13")
+set(GUITARFX_REQUIRED_JUCE_VERSION "8.0.14")
 set(_guitarfx_juce_core_header "${CMAKE_CURRENT_SOURCE_DIR}/JUCE/modules/juce_core/juce_core.h")
 if(NOT EXISTS "${_guitarfx_juce_core_header}")
     message(FATAL_ERROR "Missing JUCE checkout at ${_guitarfx_juce_core_header}. Ensure JUCE is available in juce/JUCE.")
