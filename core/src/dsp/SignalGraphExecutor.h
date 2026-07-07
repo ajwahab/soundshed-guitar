@@ -103,6 +103,7 @@ namespace guitarfx
 
     // Queries
     [[nodiscard]] std::string FindFirstNodeOfType(const std::string &type) const;
+    [[nodiscard]] std::vector<std::string> FindNodesOfType(const std::string &type, bool includeDisabled = true) const;
     [[nodiscard]] std::string FindFirstNodeOfTypes(const std::vector<std::string> &types) const;
     [[nodiscard]] std::vector<std::string> GetNodeTypes() const;
 

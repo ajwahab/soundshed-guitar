@@ -99,6 +99,11 @@ public:
     void SetOnNodeParamApplied(std::function<void(const std::string&, const std::string&, double)> cb)
     { mOnNodeParamApplied = std::move(cb); }
 
+    /// Callback invoked after a node.* bypass target is applied.
+    /// Receives (effectType, enabled). Called under mDSPMutex.
+    void SetOnNodeBypassApplied(std::function<void(const std::string&, bool)> cb)
+    { mOnNodeBypassApplied = std::move(cb); }
+
     /// Handle a MIDI event — matches against slot MIDI maps and applies.
     void HandleMidi(const MidiEvent& ev);
 
@@ -143,6 +148,7 @@ private:
 
     // Callback fired after a node.* param apply succeeds
     std::function<void(const std::string&, const std::string&, double)> mOnNodeParamApplied;
+    std::function<void(const std::string&, bool)> mOnNodeBypassApplied;
 };
 
 } // namespace guitarfx

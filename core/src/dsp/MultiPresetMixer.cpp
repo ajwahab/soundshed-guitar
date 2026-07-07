@@ -839,11 +839,26 @@ namespace guitarfx
   {
     for (const auto &inst : mInstances)
     {
-      const auto nodeId = inst.executor.FindFirstNodeOfType(effectType);
-      if (!nodeId.empty())
-        return std::make_pair(inst.cfg.id, nodeId);
+      const auto nodeIds = inst.executor.FindNodesOfType(effectType, false);
+      if (!nodeIds.empty())
+        return std::make_pair(inst.cfg.id, nodeIds.front());
     }
     return std::nullopt;
+  }
+
+  bool MultiPresetMixer::SetNodeEnabledByType(const std::string &effectType, bool enabled)
+  {
+    bool updated = false;
+    for (const auto &inst : mInstances)
+    {
+      const auto nodeIds = inst.executor.FindNodesOfType(effectType, true);
+      for (const auto &nodeId : nodeIds)
+      {
+        SetNodeEnabled(inst.cfg.id, nodeId, enabled);
+        updated = true;
+      }
+    }
+    return updated;
   }
 
   bool MultiPresetMixer::SetNodeParamByType(const std::string &effectType, const std::string &paramId, double value)

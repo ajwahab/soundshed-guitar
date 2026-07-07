@@ -1,6 +1,8 @@
 # Tests for SoundshedGuitarCore
 
 set(TEST_SOURCES
+    AutomationBypassEndToEndTests.cpp
+    AutomationSlotMidiToggleTests.cpp
     CustomEffectLibraryTests.cpp
     DefaultPresetIntegrityTests.cpp
     DSPPerformanceTests.cpp

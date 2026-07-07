@@ -89,6 +89,7 @@ struct AutomationSlot
     std::atomic<float> value{0.0f};
     std::atomic<int> lastSource{static_cast<int>(AutomationSource::UI)};
     std::atomic<float> lastNormalized{0.0f};  ///< For trigger edge detection
+    std::atomic<bool> lastToggleGate{false};  ///< For MIDI toggle edge detection
     std::atomic<bool> pendingApply{false};
 
     AutomationSlot() = default;

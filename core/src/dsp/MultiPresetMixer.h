@@ -234,6 +234,10 @@ namespace guitarfx
     /// Returns true if a matching node was found and updated.
     bool SetNodeParamByType(const std::string &effectType, const std::string &paramId, double value);
 
+    /// Apply enabled/bypass state to all nodes of a given effect type across active presets.
+    /// Returns true if at least one node was updated.
+    bool SetNodeEnabledByType(const std::string &effectType, bool enabled);
+
     // Push the current tempo (BPM) to all tempo-aware nodes in every preset and global chain.
     // Call once per audio block before Process().
     void SetTempo(double bpm);

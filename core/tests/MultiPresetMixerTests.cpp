@@ -328,5 +328,71 @@ int main()
     }
   }
 
+  // Type-based node bypass should update all matching nodes and preserve enabled-node lookup semantics
+  {
+    MultiPresetMixer mixer;
+    ResourceLibrary lib;
+    mixer.SetResourceLibrary(&lib);
+    mixer.Prepare(kTestSampleRate, kTestBlockSize);
+
+    const std::string presetId = "typeBypass";
+    const auto preset = MakeLinearPreset("typeBypassPreset", {"delay_digital", "delay_digital"});
+    if (!mixer.AddActivePreset(preset, presetId, "TypeBypass"))
+    {
+      std::cerr << "Failed to add type-by-bypass preset" << std::endl;
+      allPassed = false;
+    }
+
+    const auto initial = mixer.FindFirstEnabledNodeOfType("delay_digital");
+    if (!initial || initial->second != "n0")
+    {
+      std::cerr << "Expected first enabled delay node to be n0 before bypass updates" << std::endl;
+      allPassed = false;
+    }
+
+    if (!mixer.SetNodeEnabledByType("delay_digital", false))
+    {
+      std::cerr << "Expected SetNodeEnabledByType to disable matching delay nodes" << std::endl;
+      allPassed = false;
+    }
+
+    if (mixer.FindFirstEnabledNodeOfType("delay_digital").has_value())
+    {
+      std::cerr << "Expected no enabled delay nodes after disabling all by type" << std::endl;
+      allPassed = false;
+    }
+
+    if (mixer.SetNodeParamByType("delay_digital", "mix", 0.4))
+    {
+      std::cerr << "SetNodeParamByType should no-op when all matching nodes are disabled" << std::endl;
+      allPassed = false;
+    }
+
+    if (!mixer.SetNodeEnabledByType("delay_digital", true))
+    {
+      std::cerr << "Expected SetNodeEnabledByType to re-enable matching delay nodes" << std::endl;
+      allPassed = false;
+    }
+
+    const auto reenabled = mixer.FindFirstEnabledNodeOfType("delay_digital");
+    if (!reenabled || reenabled->second != "n0")
+    {
+      std::cerr << "Expected first enabled delay node to be n0 after re-enabling by type" << std::endl;
+      allPassed = false;
+    }
+
+    if (!mixer.SetNodeParamByType("delay_digital", "mix", 0.4))
+    {
+      std::cerr << "SetNodeParamByType should target enabled delay nodes after re-enable" << std::endl;
+      allPassed = false;
+    }
+
+    if (mixer.SetNodeEnabledByType("type_that_does_not_exist", false))
+    {
+      std::cerr << "Expected SetNodeEnabledByType to report false for unmatched types" << std::endl;
+      allPassed = false;
+    }
+  }
+
   return allPassed ? 0 : 1;
 }

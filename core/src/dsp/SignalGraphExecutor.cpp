@@ -1304,6 +1304,11 @@ namespace guitarfx
 
   void SignalGraphExecutor::SetNodeEnabled(const std::string &nodeId, bool enabled)
   {
+    if (auto* node = mGraph.FindNode(nodeId))
+    {
+      node->enabled = enabled;
+    }
+
     auto *state = FindNodeState(nodeId);
     if (state && state->processor)
     {
@@ -1417,14 +1422,44 @@ namespace guitarfx
 
   std::string SignalGraphExecutor::FindFirstNodeOfType(const std::string &type) const
   {
-    for (const auto &node : mGraph.nodes)
+    const auto nodeIds = FindNodesOfType(type, true);
+    return nodeIds.empty() ? std::string{} : nodeIds.front();
+  }
+
+  std::vector<std::string> SignalGraphExecutor::FindNodesOfType(const std::string &type, bool includeDisabled) const
+  {
+    // Resolve the requested type and each node's stored type to canonical IDs so
+    // that alias/UUID mismatches (e.g. address uses "gain" while the graph node
+    // stores the canonical UUID, or vice versa) still match. Without this, by-type
+    // automation (bypass and params) silently no-ops when the forms differ.
+    auto &registry = EffectRegistry::Instance();
+    const auto resolvedType = registry.Resolve(type);
+
+    std::vector<std::string> result;
+    for (const auto &nodeId : mExecutionOrder)
     {
-      if (node.type == type)
+      const auto stateIt = mNodeStates.find(nodeId);
+      if (stateIt == mNodeStates.end() || registry.Resolve(stateIt->second.type) != resolvedType)
       {
-        return node.id;
+        continue;
+      }
+
+      bool enabled = true;
+      if (stateIt->second.processor)
+      {
+        enabled = stateIt->second.processor->IsEnabled();
+      }
+      else if (const auto* node = mGraph.FindNode(nodeId))
+      {
+        enabled = node->enabled;
+      }
+
+      if (includeDisabled || enabled)
+      {
+        result.push_back(nodeId);
       }
     }
-    return {};
+    return result;
   }
 
   std::string SignalGraphExecutor::FindFirstNodeOfTypes(const std::vector<std::string> &types) const

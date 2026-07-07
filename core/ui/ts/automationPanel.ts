@@ -211,6 +211,7 @@ function renderSlotRow(slot: AutomationSlot, registry: AutomationRegistryEntry[]
   const entry = registry.find((e) => e.address === slot.address);
   const rangeText = entry ? `(${entry.min}..${entry.max}${entry.unit ? " " + entry.unit : ""})` : "";
   const isLearn = pendingLearnSlotId === slot.slotId;
+  const showTestButton = Boolean(entry?.isTrigger) || !slot.isDefault;
 
   let midiText = "—";
   if (slot.midiMap) {
@@ -237,7 +238,7 @@ function renderSlotRow(slot: AutomationSlot, registry: AutomationRegistryEntry[]
         <button class="automation-learn-btn ${isLearn ? "active" : ""}" data-slot-id="${escapeHtml(slot.slotId)}">
           ${isLearn ? "Listening…" : "Learn"}
         </button>
-        ${entry?.isTrigger ? `<button class="automation-test-btn" data-slot-id="${escapeHtml(slot.slotId)}" title="Fire this command now">Test</button>` : ""}
+        ${showTestButton ? `<button class="automation-test-btn" data-slot-id="${escapeHtml(slot.slotId)}" title="Fire this mapping now">Test</button>` : ""}
         ${!slot.isDefault ? `<button class="automation-target-btn" data-slot-id="${escapeHtml(slot.slotId)}" title="Edit target parameter">${editingSlotId === slot.slotId ? "Close" : "Target"}</button>` : ""}
         ${!slot.isDefault ? `<button class="automation-remove-btn" data-slot-id="${escapeHtml(slot.slotId)}">${getXMarkSvg()}</button>` : ""}
       </div>
@@ -273,7 +274,17 @@ function wireSlotEvents(container: HTMLElement): void {
   container.querySelectorAll<HTMLButtonElement>(".automation-test-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const slotId = btn.dataset.slotId || "";
-      postMessage({ type: "setAutomationValue", slotId, value: 1.0, source: "ui" });
+      const slot = uiState.automation?.slots.find((s) => s.slotId === slotId);
+      const entry = uiState.automation?.registry.find((e) => e.address === (slot?.address ?? ""));
+
+      let value = 1.0;
+      if (slot && (isBypassAddress(slot.address) || slot.midiMap?.mode === 2)) {
+        value = slot.value < 0.5 ? 1.0 : 0.0;
+      } else if (!entry?.isTrigger && slot) {
+        value = slot.value < 0.99 ? 1.0 : 0.0;
+      }
+
+      postMessage({ type: "setAutomationValue", slotId, value, source: "ui" });
       blurActive();
     });
   });
@@ -345,10 +356,11 @@ function buildTargetOptions(registry: AutomationRegistryEntry[]): TargetOption[]
 
   for (const eff of effects) {
     const group = eff.category || "Effects";
+    const effLabel = eff.displayName || eff.type;
+    opts.push({ address: `node.${eff.type}.bypassed`, label: `${effLabel}: Bypass`, group });
     for (const p of eff.parameters) {
       const address = `node.${eff.type}.${p.key}`;
       const paramLabel = p.name || p.key;
-      const effLabel = eff.displayName || eff.type;
       opts.push({ address, label: `${effLabel}: ${paramLabel}`, group });
     }
   }
@@ -364,11 +376,18 @@ function deriveLabel(address: string, registry: AutomationRegistryEntry[]): stri
   if (nodeMatch) {
     const eff = EffectTypeRegistry.get(nodeMatch[1]);
     const effName = eff?.displayName || nodeMatch[1];
+    if (nodeMatch[2] === "bypassed" || nodeMatch[2] === "bypass" || nodeMatch[2] === "enabled") {
+      return `${effName}: Bypass`;
+    }
     const param = eff?.parameters.find((p) => p.key === nodeMatch[2]);
     const paramName = param?.name || nodeMatch[2];
     return `${effName}: ${paramName}`;
   }
   return "Custom";
+}
+
+function isBypassAddress(address: string): boolean {
+  return /^node\.[^.]+\.(bypassed|bypass|enabled)$/.test(address);
 }
 
 function renderTargetEditor(slot: AutomationSlot, registry: AutomationRegistryEntry[]): string {

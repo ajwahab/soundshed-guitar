@@ -25,6 +25,7 @@ AutomationSlot::AutomationSlot(const AutomationSlot& other)
     , value(other.value.load())
     , lastSource(other.lastSource.load())
     , lastNormalized(other.lastNormalized.load())
+    , lastToggleGate(other.lastToggleGate.load())
     , pendingApply(other.pendingApply.load())
 {
 }
@@ -43,6 +44,7 @@ AutomationSlot& AutomationSlot::operator=(const AutomationSlot& other)
         value.store(other.value.load());
         lastSource.store(other.lastSource.load());
         lastNormalized.store(other.lastNormalized.load());
+        lastToggleGate.store(other.lastToggleGate.load());
         pendingApply.store(other.pendingApply.load());
     }
     return *this;
@@ -536,6 +538,10 @@ bool AutomationSlotTable::ApplySlotLocked(AutomationSlot& slot)
     // Node.* address — lazy resolution via the single prefix handler
     if (ParamRegistry::IsNodeAddress(slot.address))
     {
+        constexpr const char* kBypassedParamId = "bypassed";
+        constexpr const char* kBypassParamId = "bypass";
+        constexpr const char* kEnabledParamId = "enabled";
+
         std::string effectType, paramId;
         if (!ParamRegistry::ParseNodeAddress(slot.address, effectType, paramId))
             return false;
@@ -544,12 +550,24 @@ bool AutomationSlotTable::ApplySlotLocked(AutomationSlot& slot)
         if (mEffectRegistry)
             effectType = mEffectRegistry->Resolve(effectType);
 
-        // Compute native value — node params use 0..1 range directly
-        // (the effect's SetParam already knows the parameter's native range)
-        const double native = static_cast<double>(slot.value.load());
-
         if (mMixer)
         {
+            if (paramId == kBypassedParamId || paramId == kBypassParamId || paramId == kEnabledParamId)
+            {
+                const bool enabled = (paramId == kEnabledParamId)
+                    ? (slot.value.load() >= 0.5f)
+                    : (slot.value.load() < 0.5f);
+                const bool ok = mMixer->SetNodeEnabledByType(effectType, enabled);
+                if (ok && mOnNodeBypassApplied)
+                {
+                    mOnNodeBypassApplied(effectType, enabled);
+                }
+                return ok;
+            }
+
+            // Compute native value — node params use 0..1 range directly
+            // (the effect's SetParam already knows the parameter's native range)
+            const double native = static_cast<double>(slot.value.load());
             const bool ok = mMixer->SetNodeParamByType(effectType, paramId, native);
             if (ok && mOnNodeParamApplied)
                 mOnNodeParamApplied(effectType, paramId, native);
@@ -642,7 +660,10 @@ void AutomationSlotTable::HandleMidi(const MidiEvent& ev)
         dataValue = ev.data2; // typically 0 for PC
         break;
     case 0x09: // Note On
-        eventType = MidiControlMap::EventType::NoteOn;
+        // MIDI spec: Note On with velocity 0 is equivalent to Note Off.
+        eventType = (ev.data2 == 0)
+            ? MidiControlMap::EventType::NoteOff
+            : MidiControlMap::EventType::NoteOn;
         controller = ev.data1;
         dataValue = ev.data2; // velocity
         break;
@@ -667,8 +688,7 @@ void AutomationSlotTable::HandleMidi(const MidiEvent& ev)
         // (NoteOff is not useful as a controller)
         if (eventType == MidiControlMap::EventType::NoteOff)
         {
-            // If NoteOn with velocity 0 was decoded as NoteOff, still allow it
-            // but only if it was really a Note On 0 case — skip for simplicity
+            return;
         }
 
         MidiControlMap captured;
@@ -689,11 +709,23 @@ void AutomationSlotTable::HandleMidi(const MidiEvent& ev)
             continue;
 
         const auto& mm = slot.midiMap.value();
-        if (mm.eventType != eventType)
-            continue;
         if (mm.channel != -1 && mm.channel != channel)
             continue;
         if (mm.controller != controller)
+            continue;
+
+        const bool isNoteOnToggleRelease = (mm.mode == MidiControlMap::Mode::Toggle)
+            && (mm.eventType == MidiControlMap::EventType::NoteOn)
+            && (eventType == MidiControlMap::EventType::NoteOff);
+        if (isNoteOnToggleRelease)
+        {
+            // NoteOn mappings receive releases as NoteOff/NoteOn(vel=0):
+            // reset the gate so the next key press can fire, but do not toggle on release.
+            slot.lastToggleGate.store(false);
+            continue;
+        }
+
+        if (mm.eventType != eventType)
             continue;
 
         float normalized = 0.0f;
@@ -712,11 +744,52 @@ void AutomationSlotTable::HandleMidi(const MidiEvent& ev)
             break;
         }
         case MidiControlMap::Mode::Toggle:
-            if (eventType == MidiControlMap::EventType::NoteOn && dataValue > 0)
+        {
+            bool gateHigh = false;
+            if (eventType == MidiControlMap::EventType::ProgramChange)
+            {
+                // Program change events are already discrete, so every match toggles once.
+                gateHigh = true;
+            }
+            else if (eventType == MidiControlMap::EventType::NoteOff)
+            {
+                // Releasing a key must not fire a second toggle.
+                slot.lastToggleGate.store(false);
+                continue;
+            }
+            else if (eventType == MidiControlMap::EventType::NoteOn)
+            {
+                // For NoteOn mappings, treat each NoteOn press as a discrete toggle
+                // so re-activation works even when release events are not delivered.
+                gateHigh = dataValue > 0;
+                if (!gateHigh)
+                {
+                    slot.lastToggleGate.store(false);
+                    continue;
+                }
+                slot.lastToggleGate.store(true);
                 normalized = (slot.value.load() < 0.5f) ? 1.0f : 0.0f;
+                break;
+            }
+            else if (eventType == MidiControlMap::EventType::PitchBend)
+            {
+                gateHigh = dataValue >= 8192;
+            }
             else
-                continue; // Only toggle on Note On
+            {
+                gateHigh = dataValue >= 64;
+            }
+
+            const bool fire = (eventType == MidiControlMap::EventType::ProgramChange)
+                ? true
+                : (!slot.lastToggleGate.load() && gateHigh);
+            slot.lastToggleGate.store(gateHigh);
+            if (!fire)
+                continue;
+
+            normalized = (slot.value.load() < 0.5f) ? 1.0f : 0.0f;
             break;
+        }
         case MidiControlMap::Mode::Pickup:
         {
             const float target = static_cast<float>(dataValue) / 127.0f;

@@ -1444,6 +1444,20 @@ export function handleIncomingMessage(message: string): void {
       }
       break;
     }
+    case "signalPathNodeBypassUpdated": {
+      const update = payload as { nodeId?: string; bypassed?: boolean };
+      if (typeof update.nodeId === "string" && typeof update.bypassed === "boolean") {
+        const preset = getActivePresetForRender();
+        const node = preset?.graph?.nodes?.find((n) => n.id === update.nodeId);
+        if (node) {
+          (node as unknown as { bypassed?: boolean }).bypassed = update.bypassed;
+          (node as unknown as { enabled?: boolean }).enabled = !update.bypassed;
+        }
+        refreshSelectedNodeParams();
+        renderActivePreset();
+      }
+      break;
+    }
     case "globalSignalChainChanged":
     case "globalChain": {
       const chainPayload = payload as { config?: import("./types.js").GlobalSignalChainConfig; globalSignalChain?: import("./types.js").GlobalSignalChainConfig };

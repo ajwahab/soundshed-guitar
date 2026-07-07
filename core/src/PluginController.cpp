@@ -2255,6 +2255,50 @@ void PluginController::Initialize()
             }
         });
 
+    mAutomationSlots.SetOnNodeBypassApplied(
+        [this](const std::string& effectType, bool enabled)
+        {
+            if (!mActivePreset)
+                return;
+
+            const auto resolvedType = EffectRegistry::Instance().Resolve(effectType);
+            bool updated = false;
+            std::vector<std::string> updatedNodeIds;
+            const auto applyBypassToGraph = [&](SignalGraph& graph)
+            {
+                for (auto& node : graph.nodes)
+                {
+                    if (EffectRegistry::Instance().Resolve(node.type) != resolvedType)
+                        continue;
+                    node.enabled = enabled;
+                    updated = true;
+                    updatedNodeIds.push_back(node.id);
+                }
+            };
+
+            // Keep both the active scene graph and mActivePreset->graph in sync.
+            // BroadcastState calls SyncActivePresetSceneGraph(), which copies the
+            // active scene graph into mActivePreset->graph.
+            const std::string activeSceneId = GetResolvedActiveSceneId();
+            if (auto* scene = FindPresetScene(*mActivePreset, activeSceneId))
+                applyBypassToGraph(scene->graph);
+            applyBypassToGraph(mActivePreset->graph);
+
+            if (!updated)
+                return;
+
+            mActivePresetJson = PresetStorage::SerializeToJson(*mActivePreset);
+            if (!mActivePresetId.empty())
+                mMixerPresetJsonCache[mActivePresetId] = mActivePresetJson;
+            mPendingStateBroadcast = true;
+
+            {
+                std::lock_guard<std::mutex> lock(mPendingNodeBypassMutex);
+                for (const auto& nodeId : updatedNodeIds)
+                    mPendingNodeBypassNotifies.push_back({nodeId, !enabled});
+            }
+        });
+
     // Load automation.json
     const auto automationData = LoadUiStorageJson("automation.json", nlohmann::json::object());
     if (!automationData.empty())
@@ -3557,6 +3601,24 @@ void PluginController::OnIdle()
             msg["nodeId"] = n.nodeId;
             msg["key"] = n.paramKey;
             msg["value"] = n.value;
+            SendMessageToUI(msg.dump());
+        }
+    }
+
+    // Drain deferred node-bypass notifications (from automation by effect type)
+    {
+        std::vector<PendingNodeBypassNotify> notifies;
+        {
+            std::lock_guard<std::mutex> lock(mPendingNodeBypassMutex);
+            notifies = std::move(mPendingNodeBypassNotifies);
+            mPendingNodeBypassNotifies.clear();
+        }
+        for (const auto& n : notifies)
+        {
+            nlohmann::json msg;
+            msg["type"] = "signalPathNodeBypassUpdated";
+            msg["nodeId"] = n.nodeId;
+            msg["bypassed"] = n.bypassed;
             SendMessageToUI(msg.dump());
         }
     }

@@ -509,6 +509,14 @@ private:
     std::mutex mPendingNodeParamMutex;
     std::vector<PendingNodeParamNotify> mPendingNodeParamNotifies;
 
+    struct PendingNodeBypassNotify
+    {
+        std::string nodeId;
+        bool bypassed = false;
+    };
+    std::mutex mPendingNodeBypassMutex;
+    std::vector<PendingNodeBypassNotify> mPendingNodeBypassNotifies;
+
     // Deferred setlist preset apply (drained in OnIdle to avoid DSP lock recursion)
     std::mutex mPendingSetlistMutex;
     std::optional<int> mPendingSetlistPresetIndex;
