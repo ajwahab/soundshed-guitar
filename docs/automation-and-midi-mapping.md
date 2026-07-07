@@ -25,7 +25,7 @@ A single string with a small, fixed prefix vocabulary:
 | Prefix | Example | Resolved by |
 |---|---|---|
 | `global.` | `global.inputTrim`, `global.outputTrim`, `global.transpose` | `ParamRegistry` static table of global mixer controls |
-| `node.<effectType>.<paramId>` | `node.amp_nam.inputGain`, `node.reverb_room.mix` | Lazy lookup: node of `effectType` in the active graph selected by the slot's optional `nodeSelector` (default = first in topological order) |
+| `node.<effectType>.<paramId>` | `node.amp_nam.inputGain`, `node.reverb_room.mix`, `node.delay_digital.bypassed` | Lazy lookup: node of `effectType` in the active graph. Parameter targets use first-enabled-node semantics; bypass target applies to all matching nodes of the type. |
 | `setlist.<control>` | `setlist.preset1..8`, `setlist.bankUp`, `setlist.bankDown`, `setlist.bankSelect` | Setlist cursor / structural controls |
 
 The prefix vocabulary is the *only* special case, and it is a fixed three-token grammar — not a per-feature enum. New global mixer params reuse `global.*`; new setlist structural controls reuse `setlist.*`; new node params need no registration at all (the effect's `EffectTypeInfo::parameters` already declares them).
@@ -390,7 +390,7 @@ Address picker for custom slots:
 
 1. Pick a prefix: `global`, `node`, or `setlist`.
 2. For `global` / `setlist`: dropdown of everything in `ParamRegistry` (label + range + unit shown).
-3. For `node`: pick effect type from `EffectRegistry::GetAllTypes()` → pick parameter from that type's `EffectTypeInfo::parameters`. The address is `node.<effectType>.<paramId>`. Resolution is automatic against matching nodes in the graph at apply time, so there is no node-instance picker. An optional **node selector** field (text input, placeholder "first") lets the user enter a future selector expression (e.g. `2`, `last`, `label:Lead`); v1 accepts and stores it but only implements the default (first). The picker shows a live "resolved to: node X (label)" hint if a matching node currently exists, or "unbound — activates when this effect is added" if not.
+3. For `node`: pick effect type from `EffectRegistry::GetAllTypes()` → pick parameter from that type's `EffectTypeInfo::parameters` (plus the reserved bypass target). The address is `node.<effectType>.<paramId>`. Resolution is automatic against matching nodes in the graph at apply time, so there is no node-instance picker. An optional **node selector** field (text input, placeholder "first") lets the user enter a future selector expression (e.g. `2`, `last`, `label:Lead`); v1 accepts and stores it but only implements the default (first). `node.<effectType>.bypassed` is a special target and applies to all matching nodes of that effect type.
 
 New UI ↔ Engine messages (added to `core/src/dispatcher/MessageDispatchState.cpp` and `docs/user-interface.md`):
 
@@ -427,6 +427,7 @@ State broadcast: include a compact `automationState` array in the existing `stat
 - `node.*` address on a missing effect type (no node of that type in graph): apply is a no-op, value retained; adding a node of that type resumes writes.
 - `node.*` address where the only matching node is disabled/bypassed: apply is a no-op until `enabled=true` (existing bypass semantics preserved).
 - `node.*` address with multiple matching nodes and no `nodeSelector`: only the first in topological order is driven.
+- `node.*.bypassed` target with multiple matching nodes: bypass state is applied to all matching nodes of the selected type.
 - `node.*` address with `nodeSelector` set to an unrecognized value: falls back to first, slot flagged as "selector not supported".
 - `node.*` address with `nodeSelector="2"` (future grammar, not yet implemented): v1 falls back to first; once implemented, selects the 2nd matching node and is a no-op if fewer than 2 exist.
 - `global.*` address: apply calls the bound setter with the correct native-range value.
