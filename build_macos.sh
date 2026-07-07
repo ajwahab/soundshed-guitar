@@ -302,8 +302,20 @@ if [[ "$BUILD_PKG" == true ]]; then
     echo ""
     echo "  Building component packages…"
 
+    # Force BundleIsRelocatable off so the installer always places the app at
+    # /Applications rather than reusing/relocating a copy found elsewhere on
+    # disk (which can silently leave old, unsigned/unnotarized builds in
+    # place).
+    STANDALONE_COMPONENT_PLIST="${PKG_STAGING}/standalone-component.plist"
+    pkgbuild \
+        --analyze \
+        --root "$ROOT_STANDALONE" \
+        "$STANDALONE_COMPONENT_PLIST"
+    plutil -replace BundleIsRelocatable -bool NO "$STANDALONE_COMPONENT_PLIST"
+
     pkgbuild \
         --root "$ROOT_STANDALONE" \
+        --component-plist "$STANDALONE_COMPONENT_PLIST" \
         --identifier "com.soundshed.guitar.standalone" \
         --version "$VERSION" \
         --install-location "/" \
