@@ -12,6 +12,19 @@
 namespace guitarfx
 {
 
+namespace
+{
+bool IsBypassNodeAddress(const std::string& address)
+{
+    std::string effectType;
+    std::string paramId;
+    if (!ParamRegistry::ParseNodeAddress(address, effectType, paramId))
+        return false;
+
+    return paramId == "bypassed" || paramId == "bypass" || paramId == "enabled";
+}
+} // namespace
+
 // ── AutomationSlot copy helpers ──────────────────────────────────────────
 
 AutomationSlot::AutomationSlot(const AutomationSlot& other)
@@ -538,10 +551,6 @@ bool AutomationSlotTable::ApplySlotLocked(AutomationSlot& slot)
     // Node.* address — lazy resolution via the single prefix handler
     if (ParamRegistry::IsNodeAddress(slot.address))
     {
-        constexpr const char* kBypassedParamId = "bypassed";
-        constexpr const char* kBypassParamId = "bypass";
-        constexpr const char* kEnabledParamId = "enabled";
-
         std::string effectType, paramId;
         if (!ParamRegistry::ParseNodeAddress(slot.address, effectType, paramId))
             return false;
@@ -552,9 +561,9 @@ bool AutomationSlotTable::ApplySlotLocked(AutomationSlot& slot)
 
         if (mMixer)
         {
-            if (paramId == kBypassedParamId || paramId == kBypassParamId || paramId == kEnabledParamId)
+            if (IsBypassNodeAddress(slot.address))
             {
-                const bool enabled = (paramId == kEnabledParamId)
+                const bool enabled = (paramId == "enabled")
                     ? (slot.value.load() >= 0.5f)
                     : (slot.value.load() < 0.5f);
                 const bool ok = mMixer->SetNodeEnabledByType(effectType, enabled);
@@ -729,12 +738,31 @@ void AutomationSlotTable::HandleMidi(const MidiEvent& ev)
             continue;
 
         float normalized = 0.0f;
+        const bool isBypassAddress = IsBypassNodeAddress(slot.address);
         switch (mm.mode)
         {
         case MidiControlMap::Mode::Absolute:
-            normalized = (eventType == MidiControlMap::EventType::PitchBend)
-                ? static_cast<float>(dataValue) / 16383.0f
-                : static_cast<float>(dataValue) / 127.0f;
+            if (isBypassAddress
+                && (eventType == MidiControlMap::EventType::NoteOn
+                    || eventType == MidiControlMap::EventType::ProgramChange))
+            {
+                // Discrete events commonly carry only "on" values. For bypass
+                // targets, flip state so both directions work from a single press.
+                normalized = (slot.value.load() < 0.5f) ? 1.0f : 0.0f;
+            }
+            else if (eventType == MidiControlMap::EventType::PitchBend)
+            {
+                normalized = static_cast<float>(dataValue) / 16383.0f;
+            }
+            else if (eventType == MidiControlMap::EventType::ProgramChange)
+            {
+                // Program Change carries the program number in data1 (controller).
+                normalized = static_cast<float>(controller) / 127.0f;
+            }
+            else
+            {
+                normalized = static_cast<float>(dataValue) / 127.0f;
+            }
             break;
         case MidiControlMap::Mode::Relative:
         {
