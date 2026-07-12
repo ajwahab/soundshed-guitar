@@ -1,0 +1,65 @@
+{
+  "plugins": [
+    {
+      "pluginId": "hypertune_vst3",
+      "pluginLabel": "HyperTune Metal (VST3)",
+      "pluginPath": "C:/Program Files/Common Files/VST3/PolyChrome DSP/HyperTune Metal.vst3",
+      "semitones": [-12, -7, -5, -3, -2, -1, 0, 2, 5, 7, 12],
+      "transposeParameter": {
+        "name": "Transpose",
+        "mapping": "text"
+      },
+      "comment": "Neutral settings so only Transpose colours the DI — gate/focus off, unity I/O, full wet.",
+      "parameterOverrides": [
+        { "name": "Power", "value": 1.0 },
+        { "name": "Focus Drive", "value": 0.0 },
+        { "name": "Gate Threshold", "value": 0.0 },
+        { "name": "Gate Amount", "value": 0.0 },
+        { "name": "Blend", "value": 1.0 },
+        { "name": "Mix", "value": 1.0 },
+        { "name": "Global Input", "value": 0.5 },
+        { "name": "Global Output", "value": 0.5 },
+        { "name": "Bypass", "value": 0.0 }
+      ]
+    },
+    {
+      "pluginId": "archetype_misha_mansoor_x_vst3",
+      "pluginLabel": "Archetype Misha Mansoor X (VST3)",
+      "pluginPath": "C:/Program Files/Common Files/VST3/Archetype Misha Mansoor X.vst3",
+      "semitones": [-12, -7, -5, -3, -2, -1, 0, 2, 5, 7, 12],
+      "transposeParameter": {
+        "name": "Transpose",
+        "mapping": "text"
+      },
+      "comment": "Disable every effect section so only Transpose colours the DI — fair comparison vs native transpose.",
+      "parameterOverrides": [
+        { "name": "Gate Active", "value": 0.0 },
+        { "name": "Doubler Active", "value": 0.0 },
+        { "name": "Active Special FX Section", "value": 0.0 },
+        { "name": "Laser Active", "value": 0.0 },
+        { "name": "Glitch Active", "value": 0.0 },
+        { "name": "Active Pre FX Section", "value": 0.0 },
+        { "name": "Horizon Devices Compressor Active", "value": 0.0 },
+        { "name": "Tape Echo Active", "value": 0.0 },
+        { "name": "Dual Octaver Active", "value": 0.0 },
+        { "name": "Horizon Devices Precision Drive Active", "value": 0.0 },
+        { "name": "Chaos Active", "value": 0.0 },
+        { "name": "Active Amp Section", "value": 0.0 },
+        { "name": "Active Cab Section", "value": 0.0 },
+        { "name": "Cab L Active", "value": 0.0 },
+        { "name": "Room L Active", "value": 0.0 },
+        { "name": "Cab R Active", "value": 0.0 },
+        { "name": "Room R Active", "value": 0.0 },
+        { "name": "Active EQ Section", "value": 0.0 },
+        { "name": "Clean Amp EQ Active", "value": 0.0 },
+        { "name": "Rhythm Amp EQ Active", "value": 0.0 },
+        { "name": "Lead Amp EQ Active", "value": 0.0 },
+        { "name": "Active Post FX Section", "value": 0.0 },
+        { "name": "Modulator Active", "value": 0.0 },
+        { "name": "Stereo Delay Active", "value": 0.0 },
+        { "name": "Reverb Active", "value": 0.0 },
+        { "name": "Bypass", "value": 0.0 }
+      ]
+    }
+  ]
+}

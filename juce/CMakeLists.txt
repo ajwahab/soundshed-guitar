@@ -640,6 +640,48 @@ if(WIN32)
         SKIP_RETURN_CODE 77
         TIMEOUT 900
     )
+
+    # Offline renderer that automates external plugins' transpose parameter for
+    # the transpose benchmark (see tools/transpose-benchmark/). Not a ctest.
+    add_executable(TransposeExternalRender
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/TransposeExternalRenderTool.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/JuceHostedPluginEffect.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/JuceHostedPluginEffect.h"
+    )
+
+    target_include_directories(TransposeExternalRender
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/source"
+    )
+
+    target_compile_definitions(TransposeExternalRender
+        PRIVATE
+            JUCE_PLUGINHOST_VST3=1
+            JUCE_VST3_CAN_REPLACE_VST2=0
+            JUCE_MODAL_LOOPS_PERMITTED=1
+            GUITARFX_ENABLE_PLUGIN_HOST_TEST_API=1
+            GUITARFX_DEMO_AUDIO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/ui/demo"
+    )
+
+    target_link_libraries(TransposeExternalRender
+        PRIVATE
+            SoundshedGuitarCore
+            nlohmann_json::nlohmann_json
+            juce_audio_utils
+            juce_audio_processors
+            juce_dsp
+            juce_gui_basics
+            juce_gui_extra
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags
+    )
+
+    set_target_properties(TransposeExternalRender PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "GuitarFX/Tools"
+    )
 endif()
 
 # A separate target for Benchmarks (keeps the Tests target fast)

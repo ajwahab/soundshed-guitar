@@ -1,0 +1,23 @@
+{
+  "pluginId": "archetype_misha_mansoor_x_vst3",
+  "entries": [
+    {
+      "sample": "guitar-riff-01.wav",
+      "semitones": -12,
+      "wav": "external/Archetype_Misha_Mansoor_X_guitar-riff-01_m12.wav",
+      "reportedLatencySamples": 0
+    },
+    {
+      "sample": "guitar-riff-01.wav",
+      "semitones": -7,
+      "wav": "external/Archetype_Misha_Mansoor_X_guitar-riff-01_m7.wav",
+      "reportedLatencySamples": 0
+    },
+    {
+      "sample": "DI_Guitar_L.wav",
+      "semitones": -12,
+      "wav": "external/Archetype_Misha_Mansoor_X_DI_Guitar_L_m12.wav",
+      "reportedLatencySamples": 0
+    }
+  ]
+}

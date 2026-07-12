@@ -24,6 +24,7 @@ set(TEST_SOURCES
     StereoProcessingTests.cpp
     SynthSawEffectTests.cpp
     TestWavLoad.cpp
+    TransposeBenchmark.cpp
 )
 
 if(GUITARFX_CORE_ENABLE_WASM_EFFECTS)
@@ -72,6 +73,7 @@ foreach(test_source IN LISTS TEST_SOURCES)
     target_compile_definitions(${test_name}
         PRIVATE
             GUITARFX_TEST_RESOURCES_DIR="${GUITARFX_TEST_RESOURCES_DIR}"
+            GUITARFX_DEMO_AUDIO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ui/demo"
     )
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test-resources")
@@ -103,7 +105,7 @@ foreach(test_source IN LISTS TEST_SOURCES)
     add_test(NAME ${test_name} COMMAND ${test_name})
 
     # Label slow benchmarks so they are excluded from default test runs
-    if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest")
+    if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest" OR test_name STREQUAL "TransposeBenchmark")
         set_tests_properties(${test_name} PROPERTIES LABELS "benchmark")
     endif()
 endforeach()
