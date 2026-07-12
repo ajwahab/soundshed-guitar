@@ -50,7 +50,9 @@ p {
 .resource-nav-icon,
 .resource-clear-icon,
 .plugin-host-favorite-icon,
-.plugin-host-remove-icon {
+.plugin-host-remove-icon,
+.parallel-flow-icon,
+.preset-favorite-icon {
   display: inline-block;
   vertical-align: middle;
   background-color: currentColor;

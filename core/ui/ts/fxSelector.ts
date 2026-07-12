@@ -24,7 +24,6 @@ const fxSearchInput = document.getElementById("fx-search-input") as HTMLInputEle
 const fxSelectorToggle = document.getElementById("fx-selector-toggle") as HTMLButtonElement | null;
 const fxSelectorHeader = document.querySelector(".fx-selector-header") as HTMLElement | null;
 const signalPathBar = document.getElementById("signal-path-bar");
-const floatingAddFxButton = document.getElementById("signal-path-floating-add-fx") as HTMLButtonElement | null;
 
 // State
 let activeCategory = "amp"; // Currently selected category tab
@@ -53,8 +52,6 @@ function syncFxSelectorCollapsedState(options?: { focusSearch?: boolean }): void
     fxSelectorToggle.title = isCollapsed ? "Expand FX Library" : "Collapse FX Library";
   }
   signalPathBar?.classList.toggle("fx-library-collapsed", isCollapsed);
-  floatingAddFxButton?.setAttribute("aria-hidden", String(!isCollapsed));
-
   if (!isCollapsed && options?.focusSearch) {
     fxSearchInput?.focus();
   }
@@ -196,10 +193,6 @@ export function initFxSelector(): void {
       return;
     }
     setFxSelectorCollapsed(!isFxSelectorCollapsed());
-  });
-
-  floatingAddFxButton?.addEventListener("click", () => {
-    expandFxSelector({ focusSearch: true });
   });
 
   // Search input

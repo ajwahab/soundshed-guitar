@@ -81,12 +81,10 @@
 
 .effect-visualization {
   min-height: 400px;
-  padding: 16px;
-  background: var(--bg-dark-primary);
-  background-image: var(--effect-visual-bg, none);
+  padding:0px;
+
   background-size: cover;
   background-repeat: no-repeat;
-  border-radius: 14px;
   position: relative;
   overflow: visible;
   box-shadow: var(--shadow-md);

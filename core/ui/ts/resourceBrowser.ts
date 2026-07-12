@@ -2447,7 +2447,7 @@ export class ResourceBrowserModal {
             : isLoadingPreview
               ? "resource-browser-model is-preview-loading"
               : "resource-browser-model";
-          const previewLabel = isPreviewing ? `${getStopSvg()} Stop` : isLoadingPreview ? "Loading..." : `${getPlaySvg()} Preview`;
+          const previewLabel = isPreviewing ? `${getStopSvg()} Stop` : isLoadingPreview ? "Loading..." : `Preview`;
           
           return `
             <div class="${previewClass}" data-model-id="${String(model.id)}">
@@ -2465,7 +2465,7 @@ export class ResourceBrowserModal {
                         data-model-id="${String(model.id)}"
                         data-model-url="${escapeHtml(model.model_url)}"
                         data-model-name="${escapeHtml(model.name)}">
-                  Select &amp; Import
+                  Select
                 </button>
               </div>
             </div>

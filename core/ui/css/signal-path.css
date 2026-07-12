@@ -2,12 +2,13 @@
 
 /* Signal Path Bar */
 .signal-path-bar {
+  --signal-path-scroll-height: 96px;
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: none;
   padding: 0;
   gap: 0;
-  min-height: 64px;
+  min-height: 0;
   flex-shrink: 0;
   position: relative;
   background: var(--bg-secondary);
@@ -218,7 +219,9 @@
 
 /* ── Inline mixer panel (shown when Mix tab active) ────────────────── */
 .inline-mixer-panel {
-  flex: 1;
+  flex: 0 0 auto;
+  height: var(--signal-path-scroll-height, 96px);
+  min-height: 48px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -323,9 +326,13 @@
 /* ── end inline mixer ───────────────────────────────────────────────── */
 
 .signal-path-scroll {
-  flex: 1;
+  position: relative;
+  flex: 0 0 auto;
+  height: var(--signal-path-scroll-height, 96px);
+  min-height: 48px;
   overflow-x: auto;
-  overflow-y: hidden;
+  /* Prefer density + zoom-to-fit so splits don't need vertical scroll; auto is a last-resort fallback. */
+  overflow-y: auto;
   padding: 8px 12px;
 }
 
@@ -334,17 +341,72 @@
   padding-bottom: 12px;
 }
 
+/* Drag handle under the visualisation — resizes the signal path area */
+.signal-path-resize-handle {
+  flex: 0 0 auto;
+  height: 8px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-top: 1px solid var(--border-medium);
+  background: var(--bg-secondary);
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  z-index: 5;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.signal-path-resize-handle:hover,
+.signal-path-resize-handle:focus-visible,
+body.signal-path-resizing .signal-path-resize-handle {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--bg-secondary));
+  border-top-color: color-mix(in srgb, var(--color-accent) 45%, var(--border-medium));
+  outline: none;
+}
+
+.signal-path-resize-handle-grip {
+  width: 48px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  pointer-events: none;
+  transform: scaleX(0.75);
+  transform-origin: center;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.signal-path-resize-handle:hover .signal-path-resize-handle-grip,
+.signal-path-resize-handle:focus-visible .signal-path-resize-handle-grip,
+body.signal-path-resizing .signal-path-resize-handle-grip {
+  transform: scaleX(1);
+  background: color-mix(in srgb, var(--color-accent) 70%, var(--text-muted));
+}
+
+body.signal-path-resizing {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
+body.signal-path-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
 .signal-path-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 8px 12px 10px;
-  border-top: 1px solid var(--border-medium);
+  border-top: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
   background: var(--bg-secondary);
 }
 
 .signal-path-toolbar.scene-toolbar-empty {
-  justify-content: flex-end;
+  display: none;
 }
 
 .signal-path-scene-toolbar {
@@ -352,108 +414,92 @@
   min-width: 0;
 }
 
-.signal-path-floating-add-fx {
-  position: static;
+.signal-path-add-menu {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: var(--z-dropdown, 120);
+}
+
+.signal-path-add-menu-trigger {
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  margin-left: auto;
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--border-medium));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-panel) 82%, var(--color-accent) 18%);
-  color: var(--text-primary);
-  box-shadow: none;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  padding: 0;
+  border: 2px solid #4a4a58;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #3a3a44 0%, #2e2e38 100%);
+  color: var(--text-secondary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
+  font-size: 16px;
+  line-height: 1;
+  font-weight: bold;
   cursor: pointer;
-  opacity: 0;
-  transform: none;
-  pointer-events: none;
-  transition: opacity 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+  transition: all 0.2s ease;
 }
 
-.signal-path-toolbar-scene-btn {
-  position: static;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 32%, var(--border-medium));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-panel) 88%, var(--color-accent) 12%);
-  color: var(--text-primary);
-  box-shadow: none;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  opacity: 0;
-  transform: none;
-  pointer-events: none;
-  transition: opacity 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+.signal-path-add-menu-trigger:hover,
+.signal-path-add-menu-trigger[aria-expanded="true"] {
+  border-color: var(--color-accent);
+  background: linear-gradient(180deg, var(--color-primary) 0%, #c85830 100%);
+  color: white;
+  box-shadow: 0 0 12px rgba(224, 120, 72, 0.5);
+  transform: scale(1.1);
 }
 
-.signal-path-toolbar-scene-btn:hover {
+.signal-path-add-menu-trigger:active {
+  transform: scale(0.95);
+}
+
+.signal-path-add-menu-trigger:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.signal-path-add-menu-options {
+  position: fixed;
+  display: flex;
+  min-width: 132px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border-medium);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+}
+
+.signal-path-add-menu-options[hidden] {
+  display: none;
+}
+
+.signal-path-add-menu-options button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.signal-path-add-menu-options button:hover,
+.signal-path-add-menu-options button:focus-visible {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--bg-panel) 76%, var(--color-accent) 24%);
+  outline: none;
 }
 
-.signal-path-toolbar-scene-btn:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+.signal-path-bar.mix-tab-active .signal-path-add-menu {
+  display: none;
 }
 
-.signal-path-toolbar-scene-btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  font-size: 13px;
-  line-height: 1;
-}
-
-.signal-path-floating-add-fx:hover {
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--bg-panel) 70%, var(--color-accent) 30%);
-}
-
-.signal-path-floating-add-fx:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-.signal-path-floating-add-fx-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
-  font-size: 13px;
-  line-height: 1;
-}
-
-.signal-path-bar.fx-library-collapsed:not(.mix-tab-active) .signal-path-floating-add-fx {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.signal-path-bar.fx-library-collapsed:not(.mix-tab-active) .signal-path-toolbar-scene-btn {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.signal-path-bar.mix-tab-active .signal-path-floating-add-fx,
-.signal-path-bar.mix-tab-active .signal-path-toolbar-scene-btn {
-  opacity: 0;
+.signal-path-add-menu.is-disabled {
+  opacity: 0.45;
   pointer-events: none;
 }
 
@@ -472,9 +518,6 @@
     width: 100%;
   }
 
-  .signal-path-floating-add-fx {
-    margin-left: 0;
-  }
 }
 
 .signal-path-nodes {
@@ -483,7 +526,9 @@
   gap: 0;
   padding: 4px 0;
   min-width: max-content;
+  min-height: 100%;
   justify-content: center;
+  box-sizing: border-box;
 }
 
 .signal-node {
@@ -670,6 +715,185 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+}
+
+/*
+ * Density modes driven only by available signal-path area height
+ * (set via data-density on .signal-path-bar from layout adapt JS).
+ * Escalates compact/micro and then zoom-to-fit so parallel splits
+ * do not require vertical scrolling.
+ */
+
+.signal-path-bar[data-density="compact"] .signal-path-scroll,
+.signal-path-bar[data-density="micro"] .signal-path-scroll {
+  padding: 4px 8px;
+}
+
+/* Icon-only compact */
+.signal-path-bar[data-density="compact"] .signal-path-nodes,
+.signal-path-bar[data-density="micro"] .signal-path-nodes {
+  padding: 0;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node,
+.signal-path-bar[data-density="micro"] .signal-node {
+  min-width: 40px;
+  width: 40px;
+  min-height: 40px;
+  padding: 6px;
+  gap: 0;
+  border-radius: 8px;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node .node-info,
+.signal-path-bar[data-density="compact"] .signal-node .node-label,
+.signal-path-bar[data-density="micro"] .signal-node .node-info,
+.signal-path-bar[data-density="micro"] .signal-node .node-label {
+  display: none;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node .node-icon,
+.signal-path-bar[data-density="micro"] .signal-node .node-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node .node-icon .fx-effect-icon,
+.signal-path-bar[data-density="micro"] .signal-node .node-icon .fx-effect-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-icon,
+.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-icon {
+  display: none;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-layout-thumb,
+.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-layout-thumb {
+  position: static;
+  top: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  opacity: 1;
+}
+
+/* Compact connectors: 100% more spacing than the previous tight defaults (16→32, 12→24). */
+.signal-path-bar[data-density="compact"] .signal-connector {
+  width: 32px;
+}
+
+.signal-path-bar[data-density="micro"] .signal-connector {
+  width: 24px;
+}
+
+.signal-path-bar[data-density="compact"] .signal-arrow,
+.signal-path-bar[data-density="micro"] .signal-arrow {
+  font-size: 12px;
+  margin: 0 4px;
+}
+
+.signal-path-bar[data-density="compact"] .node-bypass-badge,
+.signal-path-bar[data-density="micro"] .node-bypass-badge {
+  top: 1px;
+  right: 1px;
+  font-size: 6px;
+  padding: 1px 3px;
+}
+
+.signal-path-bar[data-density="compact"] .node-missing-badge,
+.signal-path-bar[data-density="micro"] .node-missing-badge {
+  top: auto;
+  bottom: 2px;
+  left: 2px;
+  right: auto;
+  font-size: 9px;
+  padding: 0 3px;
+}
+
+.signal-path-bar[data-density="compact"] .node-clip-indicator,
+.signal-path-bar[data-density="micro"] .node-clip-indicator {
+  right: 3px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+}
+
+.signal-path-bar[data-density="compact"] .signal-node-delete,
+.signal-path-bar[data-density="micro"] .signal-node-delete {
+  width: 14px;
+  height: 14px;
+  font-size: 11px;
+  line-height: 12px;
+}
+
+/* Tighter parallel layout when space is limited */
+.signal-path-bar[data-density="compact"] .signal-graph-container,
+.signal-path-bar[data-density="micro"] .signal-graph-container {
+  gap: 4px;
+  padding: 0;
+}
+
+.signal-path-bar[data-density="compact"] .parallel-branches {
+  gap: 4px;
+  padding: 4px 2px;
+  margin: 0 2px;
+}
+
+.signal-path-bar[data-density="compact"] .parallel-branch {
+  padding: 2px 4px;
+}
+
+.signal-path-bar[data-density="compact"] .parallel-split,
+.signal-path-bar[data-density="compact"] .parallel-join {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 2px;
+}
+
+/* Micro: smallest tiles for very short areas / multi-branch fit */
+.signal-path-bar[data-density="micro"] .signal-node {
+  min-width: 32px;
+  width: 32px;
+  min-height: 32px;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.signal-path-bar[data-density="micro"] .signal-node .node-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.signal-path-bar[data-density="micro"] .signal-node .node-icon .fx-effect-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-layout-thumb {
+  width: 22px;
+  height: 22px;
+}
+
+.signal-path-bar[data-density="micro"] .parallel-branches {
+  gap: 2px;
+  padding: 2px 1px;
+  margin: 0 1px;
+}
+
+.signal-path-bar[data-density="micro"] .parallel-branch {
+  padding: 1px 2px;
+  border-radius: 4px;
+}
+
+.signal-path-bar[data-density="micro"] .parallel-split,
+.signal-path-bar[data-density="micro"] .parallel-join {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 1px;
+  border-width: 1px;
+  border-radius: 4px;
 }
 
 .node-type {
@@ -874,9 +1098,6 @@
   align-items: center;
   justify-content: center;
   padding: 4px;
-  background: linear-gradient(180deg, #3a3a44 0%, #2e2e38 100%);
-  border: 2px solid var(--text-secondary);
-  border-radius: 6px;
   min-width: 32px;
   min-height: 32px;
 }
@@ -892,49 +1113,18 @@
 }
 
 .parallel-flow-icon {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  width: 32px;
+  height: 32px;
 }
 
-.parallel-collapse-btn {
-  position: absolute;
-  top: 2px;
-  left: 2px;
+.signal-path-bar[data-density="compact"] .parallel-flow-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.signal-path-bar[data-density="micro"] .parallel-flow-icon {
   width: 16px;
   height: 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(0, 0, 0, 0.25);
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 12px;
-  line-height: 14px;
-  padding: 0;
-  cursor: pointer;
-  opacity: 0;
-  transform: scale(0.95);
-  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
-}
-
-.parallel-join:hover .parallel-collapse-btn,
-.parallel-join:focus-within .parallel-collapse-btn {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.parallel-collapse-btn:hover {
-  background: rgba(255, 80, 80, 0.25);
-  color: rgba(255, 255, 255, 0.95);
-  border-color: rgba(255, 80, 80, 0.35);
-}
-
-.parallel-collapse-btn:focus {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 1px;
 }
 
 .parallel-branches {
@@ -942,9 +1132,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 8px 4px;
-  background: rgba(90, 90, 104, 0.15);
+  background: rgba(90, 90, 104, 0.08);
   border-radius: 8px;
-  border: 1px dashed #4a4a58;
+  border: 1px dashed color-mix(in srgb, var(--border-medium) 55%, transparent);
   margin: 0 4px;
 }
 
@@ -954,11 +1144,17 @@
   align-items: center;
   gap: 0;
   padding: 4px 8px;
+  /* Keep a faint branch tint without loud accent fills that add visual noise. */
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--parallel-branch-accent) 12%, rgba(46, 46, 56, 0.66)) 0%, rgba(46, 46, 56, 0.5) 38%, rgba(46, 46, 56, 0.44) 100%);
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--parallel-branch-accent) 5%, rgba(46, 46, 56, 0.28)) 0%,
+      rgba(46, 46, 56, 0.18) 42%,
+      rgba(46, 46, 56, 0.12) 100%
+    );
   border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--parallel-branch-accent) 34%, rgba(255, 255, 255, 0.12));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--parallel-branch-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--parallel-branch-accent) 12%, rgba(255, 255, 255, 0.06));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--parallel-branch-accent) 5%, transparent);
   position: relative;
 }
 
@@ -1686,7 +1882,6 @@
   flex-direction: column;
   gap: 16px;
   padding: 18px 22px 20px;
-  border-radius: 24px;
   border: 1px solid rgba(149, 164, 198, 0.26);
   background:
     linear-gradient(180deg, rgba(84, 26, 30, 0.18) 0%, rgba(17, 20, 29, 0.1) 18%, rgba(17, 20, 29, 0.06) 100%),
@@ -1790,38 +1985,89 @@
   letter-spacing: 0.1em;
 }
 
-.default-effect-shell-chip-status {
-  border-color: rgba(255, 179, 117, 0.26);
-  color: #ffd5b3;
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.default-effect-shell-chip-architecture {
-  border-color: rgba(128, 230, 188, 0.32);
-  color: #c8f5e6;
-  background: linear-gradient(180deg, rgba(22, 64, 54, 0.68) 0%, rgba(10, 30, 24, 0.88) 100%);
-}
-
+.default-effect-shell-chip-architecture,
 .default-effect-shell-chip-calibration-complete {
   border-color: rgba(128, 230, 188, 0.32);
   color: #c8f5e6;
   background: linear-gradient(180deg, rgba(22, 64, 54, 0.68) 0%, rgba(10, 30, 24, 0.88) 100%);
 }
 
-.default-effect-shell-chip-status:hover {
-  transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 14px rgba(0, 0, 0, 0.18);
+.default-effect-shell-toggle {
+  position: relative;
+  width: 54px;
+  min-height: 28px;
+  padding: 0 25px 0 7px;
+  border: 1px solid var(--color-accent-dark);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(0, 0, 0, 0.2) 100%),
+    var(--color-accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: 0.3s;
 }
 
-.default-effect-shell-chip-status:focus-visible {
+.default-effect-shell-toggle-track {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: 0.3s;
+}
+
+.default-effect-shell-toggle-label {
+  display: block;
+  line-height: 26px;
+  text-align: left;
+}
+
+.default-effect-shell-toggle:hover {
+  background: var(--color-accent-hover);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+.default-effect-shell-toggle:focus-visible {
   outline: 2px solid rgba(255, 190, 120, 0.8);
   outline-offset: 2px;
 }
 
-.default-effect-shell.is-bypassed .default-effect-shell-chip-status {
-  border-color: rgba(220, 134, 134, 0.26);
-  color: #f1c7c7;
+.default-effect-shell-toggle.bypassed {
+  border-color: color-mix(in srgb, var(--border-medium) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 84%, black);
+  color: var(--text-muted);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  padding-left: 25px;
+  padding-right: 7px;
+}
+
+.default-effect-shell-toggle.bypassed .default-effect-shell-toggle-track {
+  background: color-mix(in srgb, var(--text-muted) 86%, white);
+  transform: translateX(0);
+}
+
+.default-effect-shell-toggle:not(.bypassed) .default-effect-shell-toggle-track {
+  transform: translateX(26px);
+}
+
+.default-effect-shell-toggle:not(.bypassed) .default-effect-shell-toggle-label {
+  text-align: left;
+}
+
+.default-effect-shell-toggle.bypassed .default-effect-shell-toggle-label {
+  text-align: right;
+}
+
+.default-effect-shell-toggle.bypassed:hover {
+  background: color-mix(in srgb, var(--bg-primary) 76%, var(--text-primary));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
 }
 
 .default-effect-shell-rail {
@@ -2236,6 +2482,10 @@
 
   .default-effect-shell-content.has-equipment-image {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .default-effect-shell-rail {
+    display: none;
   }
 
   .default-effect-shell-equipment-panel {

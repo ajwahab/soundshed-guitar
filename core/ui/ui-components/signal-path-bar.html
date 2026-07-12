@@ -9,34 +9,57 @@
       <div class="signal-path-scroll scrollbar-thin">
         <div class="signal-path-nodes" id="signal-path-nodes">
           <!-- Signal path nodes will be rendered here by JavaScript (or x-for in future) -->
-          <div class="signal-node input-node" data-node-id="__input__">
+          <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
             <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/amp.svg')" aria-hidden="true"></span>
             </div>
             <span class="node-label">Input</span>
           </div>
           <div class="signal-connector"></div>
-          <div class="signal-node" data-node-id="placeholder">
+          <div class="signal-node" data-node-id="placeholder" title="No Preset" aria-label="No Preset">
             <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/bolt.svg')" aria-hidden="true"></span>
             </div>
             <span class="node-label">No Preset</span>
           </div>
           <div class="signal-connector"></div>
-          <div class="signal-node output-node" data-node-id="__output__">
+          <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
             <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/speaker.svg')" aria-hidden="true"></span>
             </div>
             <span class="node-label">Output</span>
           </div>
         </div>
+        <div class="signal-path-add-menu" id="signal-path-add-menu">
+          <button
+            class="signal-path-add-menu-trigger"
+            id="signal-path-add-menu-trigger"
+            type="button"
+            aria-expanded="false"
+            aria-haspopup="menu"
+            aria-label="Add to signal chain"
+            title="Add to signal chain"
+          >
+            <span aria-hidden="true">+</span>
+          </button>
+          <div class="signal-path-add-menu-options" id="signal-path-add-menu-options" role="menu" hidden>
+            <button type="button" role="menuitem" id="signal-path-floating-add-fx">Add FX…</button>
+            <button type="button" role="menuitem" id="signal-path-add-scene">Add Scene…</button>
+          </div>
+        </div>
+      </div>
+      <div
+        class="signal-path-resize-handle"
+        id="signal-path-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize signal path"
+        aria-valuemin="48"
+        aria-valuemax="320"
+        aria-valuenow="96"
+        title="Drag to resize signal path (double-click to reset)"
+        tabindex="0"
+      >
+        <span class="signal-path-resize-handle-grip" aria-hidden="true"></span>
       </div>
       <div class="signal-path-toolbar" id="signal-path-toolbar">
         <div class="signal-path-scene-toolbar" id="signal-path-scene-toolbar"></div>
-        <button class="signal-path-toolbar-scene-btn" id="signal-path-toolbar-scene-btn" type="button" aria-hidden="true" title="Add a new Scene for this preset. This enables you save specific settings or new combinations of effects under one preset for easy access.">
-          <span class="signal-path-toolbar-scene-btn-icon" aria-hidden="true">+</span>
-          <span>Scene</span>
-        </button>
-        <button class="signal-path-floating-add-fx" id="signal-path-floating-add-fx" type="button" aria-hidden="true">
-          <span class="signal-path-floating-add-fx-icon" aria-hidden="true">+</span>
-          <span>Add FX</span>
-        </button>
       </div>
     </section>

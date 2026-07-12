@@ -8,37 +8,37 @@
   --color-accent-hover: #c9601f;
   --color-accent-dark: #964118;
   --color-accent-rgb: 181, 82, 30;
-  
+
   /* Background Colors - Simplified */
   --bg-primary: #f9fafb;
   --bg-secondary: #ffffff;
   --bg-tertiary: #f3f4f6;
   --bg-surface: #ffffff;
   --bg-elevated: #ffffff;
-  
+
   --bg-panel: #f3f4f6;
   --bg-card: #ffffff;
   --bg-input: #ffffff;
-  
+
   --bg-dark-primary: #2e2e38;
   --bg-dark-secondary: #282832;
   --bg-dark-tertiary: #242430;
   --bg-dark-surface: #36363e;
-  
+
   --bg-footer: linear-gradient(180deg, #48484f 0%, #38383f 100%);
   --bg-header-dark: #3a3a40;
-  
+
   /* FX Library - Simplified gradients */
   --bg-fx-primary: #f3f4f6;
   --bg-fx-secondary: #f9fafb;
   --bg-fx-categories: #f0f1f3;
-  
+
   /* Text Colors — ≥4.5:1 contrast on light backgrounds */
   --text-primary: #111318;
   --text-secondary: #4b5563;
   --text-tertiary: #6a6a78;
   --text-muted: #6a7280;
-  
+
   /* Borders - Cleaner hierarchy */
   --border-light: #e5e7eb;
   --border-medium: #d1d5db;
@@ -87,6 +87,10 @@
   --sb-thumb-border: var(--border-light);
   --sb-thumb-hover: var(--border-strong);
   --sb-thumb-hover-border: var(--border-light);
+
+  /* misc */
+  --color-preset-favorite: #c27c7c;
+
 }
 
 .theme-light select {
@@ -293,7 +297,7 @@
 
 .theme-light .preset-selector-status {
   border: none;
-  background: rgba(0,0,0,0.06);
+  background: rgba(0, 0, 0, 0.06);
   color: var(--text-muted);
 }
 
@@ -303,7 +307,7 @@
 
 
 /* ===== From signal-path.css ===== */
-.theme-light .signal-node{
+.theme-light .signal-node {
   border-width: 2px;
 }
 
@@ -351,7 +355,7 @@
 .theme-light .default-effect-shell .node-param-group-title,
 .theme-light .default-effect-shell .eq-visualizer-header,
 .theme-light .default-effect-shell .mixer-inputs-header,
-.theme-light .default-effect-shell .node-resource-selector > label {
+.theme-light .default-effect-shell .node-resource-selector>label {
   color: rgba(69, 83, 110, 0.72);
 }
 
@@ -534,26 +538,17 @@
 }
 
 .theme-light .parallel-branches {
-  background: transparent;
-  border-color: var(--border-light);
+  background: rgba(128, 148, 180, 0.04);
+  border-color: color-mix(in srgb, var(--border-light) 70%, transparent);
 }
 
 .theme-light .parallel-branch {
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(128, 148, 180, 0.32);
-  box-shadow: inset 0 0 0 1px rgba(181, 82, 30, 0.12);
-}
-
-.theme-light .parallel-collapse-btn {
-  border-color: rgba(80, 92, 112, 0.2);
-  background: rgba(80, 92, 112, 0.12);
-  color: var(--text-tertiary);
-}
-
-.theme-light .parallel-collapse-btn:hover {
-  background: rgba(255, 80, 80, 0.16);
-  color: var(--text-primary);
-  border-color: rgba(255, 80, 80, 0.3);
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--parallel-branch-accent, var(--color-primary)) 4%, rgba(255, 255, 255, 0.55)) 0%,
+      rgba(255, 255, 255, 0.42) 100%);
+  border: 1px solid color-mix(in srgb, var(--parallel-branch-accent, var(--color-primary)) 10%, rgba(128, 148, 180, 0.14));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--parallel-branch-accent, var(--color-primary)) 4%, transparent);
 }
 
 .theme-light .default-effect-shell .plugin-host-list {

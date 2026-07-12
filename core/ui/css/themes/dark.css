@@ -92,7 +92,7 @@
   /* Special */
   --color-preset-bg: #2a2520;
   --color-preset-border: #403530;
-  --color-preset-favorite: #b89080;
+  --color-preset-favorite: var(--color-accent);
   --color-preset-text: #d8c8b8;
   
   --amp-glow: radial-gradient(ellipse, rgba(255, 136, 80, 0.4) 0%, transparent 70%);

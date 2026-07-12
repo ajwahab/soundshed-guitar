@@ -21,11 +21,10 @@ import { initDiagnosticsToggle, initThemeSelect, initZoomControls, initUserInput
 import { postMessage } from "./bridge.js";
 import { initializeMetronome } from "./metronome.js";
 import { initializeAutomationPanel } from "./automationPanel.js";
-import { initializeBlendEditorModal } from "./signalPath.js";
+import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar } from "./signalPath.js";
 import { initializeCustomEffectDesignerModal } from "./customEffectDesigner.js";
 import { initializeDialogModals } from "./dialogs.js";
 import { activateTab, initializeIconBarTabs, initializeTabButtons, switchMainPanel } from "./navigation.js";
-import { renderSignalPathBar } from "./signalPath.js";
 import { initializeRiffLibraryPanel } from "./riffLibrary.js";
 import { initMultiRigTab } from "./multiPresetMixer.js";
 import { applyBuildFlags } from "./buildFlags.js";
@@ -129,6 +128,7 @@ async function bootstrap(): Promise<void> {
 
   // Ensure signal visualisation shows its (placeholder) content early
   try { renderSignalPathBar(); } catch {}
+  try { initSignalPathResize(); } catch {}
 
   // Initialize theme switcher
   themeSwitcher; // Ensure singleton is created
@@ -167,6 +167,8 @@ async function bootstrap(): Promise<void> {
   initializeBlendEditorModal();
   initFxSelector();
   startUiSettingsTracking();
+  // Re-apply after settings tracking starts so host-restored height is respected.
+  try { initSignalPathResize(); } catch {}
   initDiagnosticsToggle();
   initUserInputCalibrationControls();
   document.addEventListener(FEATURE_FLAGS_CHANGED_EVENT, () => {

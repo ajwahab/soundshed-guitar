@@ -119,6 +119,13 @@ export interface UiSettings {
     width: number;
     height: number;
   };
+  /** Height in CSS pixels of the signal-path scroll / visualisation area. */
+  signalPathHeight?: number;
+  /**
+   * When true, the signal path always uses icon-only (compact/micro) density
+   * so effect labels never appear. Default false.
+   */
+  preferCompactSignalPath?: boolean;
   presetRecents?: string[];
 }
 

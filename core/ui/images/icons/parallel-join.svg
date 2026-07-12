@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="24"
+   height="24"
+   viewBox="0 0 24 24"
+   fill="none"
+   stroke="#e9edf8"
+   stroke-width="1.8"
+   stroke-linecap="round"
+   stroke-linejoin="round"
+   version="1.1"
+   id="svg4"
+   sodipodi:docname="parallel-join.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs4" />
+  <sodipodi:namedview
+     id="namedview4"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="41.065121"
+     inkscape:cx="3.6283833"
+     inkscape:cy="14.708346"
+     inkscape:window-width="3816"
+     inkscape:window-height="2012"
+     inkscape:window-x="3888"
+     inkscape:window-y="0"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg4"
+     showguides="true">
+    <sodipodi:guide
+       position="4.651149,3.7394974"
+       orientation="1,0"
+       id="guide4"
+       inkscape:locked="false" />
+  </sodipodi:namedview>
+  <!-- Signal path parallel join: two branches into one output -->
+  <path
+     d="M 5.3668593,5.1005779 C 15.477517,4.8342965 10,10 14,12"
+     id="path1"
+     sodipodi:nodetypes="cc"
+     style="stroke-linecap:square" />
+  <path
+     d="M 5.5129687,18.022765 C 14.625212,17.899422 10.365274,15.144524 13.878242,12"
+     id="path2"
+     sodipodi:nodetypes="cc"
+     style="stroke-linecap:square" />
+  <path
+     d="M14 12h6"
+     id="path3" />
+  <path
+     d="M18 10l2 2-2 2"
+     id="path4" />
+</svg>

@@ -648,8 +648,8 @@ function setFavoriteToggleState(presetId: string | null): void {
     return;
   }
   const active = presetId ? isPresetFavorite(presetId) : false;
-  presetFavoriteToggle.textContent = active ? "♥" : "♡";
   presetFavoriteToggle.classList.toggle("active", active);
+  presetFavoriteToggle.setAttribute("aria-pressed", active ? "true" : "false");
 }
 
 function toggleFavoritePreset(presetId: string): void {

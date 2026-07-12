@@ -22,6 +22,7 @@ import { getBadgeIcon, getFxCategoryIcon, getFxEffectIcon, renderIcon } from "./
 import { deduplicateResourcesByHashAndPath, resolveResourceIdAlias } from "./resourceDedup.js";
 import {
   CATEGORY_METADATA,
+  expandFxSelector,
   focusFxSelectorCategory,
   getFxLibraryItems,
   getOrderedFxCategories,
@@ -64,11 +65,15 @@ import {
 import { getCustomEffectEntry, saveCurrentCustomEffect } from "./customEffects.js";
 import { openCustomEffectDesigner } from "./customEffectDesigner.js";
 import { createPresetScene, findPresetScene, normalizePresetScenes, removePresetScene, selectPresetScene } from "./presetScenes.js";
+import { getCurrentUiSettings, updateUiSettings } from "./windowSettings.js";
 export { initializeBlendEditorModal, openBlendEditorWithDefinition } from "./signalPathBlend.js";
 
 const signalPathNodesElement = document.getElementById("signal-path-nodes");
 const nodeParamsPanelElement = document.getElementById("node-params-panel");
-const signalPathToolbarSceneButton = document.getElementById("signal-path-toolbar-scene-btn") as HTMLButtonElement | null;
+const signalPathAddMenu = document.getElementById("signal-path-add-menu");
+const signalPathAddMenuTrigger = document.getElementById("signal-path-add-menu-trigger") as HTMLButtonElement | null;
+const signalPathAddMenuOptions = document.querySelector<HTMLElement>("#signal-path-add-menu-options");
+const signalPathAddSceneButton = document.getElementById("signal-path-add-scene") as HTMLButtonElement | null;
 
 /** Whether the Mix tab is currently active in the multi-preset tab bar. */
 let mixTabActive = false;
@@ -1569,13 +1574,29 @@ function applySignalPathNodeBypassState(node: GraphNode, preset: Preset, bypasse
   (node as unknown as { enabled?: boolean }).enabled = !bypassed;
   renderSignalPathBar();
   if (selectedNodeId === node.id && nodeParamsPanelElement?.classList.contains("visible")) {
-    showNodeParamsPanel(node, preset);
+    updateSelectedNodeBypassControl(bypassed);
   }
   if (selectedNodeId === node.id) {
     queueMicrotask(() => {
       const selectedNode = signalPathNodesElement?.querySelector<HTMLElement>(`.signal-node[data-node-id="${node.id}"]`);
       selectedNode?.focus({ preventScroll: true });
     });
+  }
+
+  function updateSelectedNodeBypassControl(bypassed: boolean): void {
+    const toggle = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".node-bypass-btn");
+    const shell = nodeParamsPanelElement?.querySelector<HTMLElement>(".default-effect-shell");
+    const label = toggle?.querySelector<HTMLElement>(".default-effect-shell-toggle-label");
+    if (!toggle || !shell || !label) {
+      return;
+    }
+
+    toggle.classList.toggle("bypassed", bypassed);
+    toggle.setAttribute("aria-checked", String(!bypassed));
+    toggle.title = bypassed ? "Enable effect" : "Bypass effect";
+    toggle.setAttribute("aria-label", toggle.title);
+    label.textContent = bypassed ? "Off" : "On";
+    shell.classList.toggle("is-bypassed", bypassed);
   }
 }
 
@@ -1749,6 +1770,18 @@ export function renderSignalPathBar(): void {
     return;
   }
 
+  try {
+    renderSignalPathBarContent();
+  } finally {
+    scheduleSignalPathLayoutAdapt();
+  }
+}
+
+function renderSignalPathBarContent(): void {
+  if (!signalPathNodesElement) {
+    return;
+  }
+
   const signalPathBar = document.getElementById("signal-path-bar");
   const sceneToolbarHost = document.getElementById("signal-path-scene-toolbar");
   const toolbarRow = document.getElementById("signal-path-toolbar");
@@ -1767,6 +1800,7 @@ export function renderSignalPathBar(): void {
     if (scroll) scroll.hidden = true;
     if (sceneToolbarHost) sceneToolbarHost.innerHTML = "";
     toolbarRow?.classList.add("scene-toolbar-empty");
+    updateSignalPathAddMenuAvailability(false);
     renderInlineMixer();
     return;
   }
@@ -1775,11 +1809,7 @@ export function renderSignalPathBar(): void {
 
   const activePresetId = uiState.activePresetId;
   const activePreset = getSignalPathPreset() ?? undefined;
-  if (signalPathToolbarSceneButton) {
-    const showToolbarSceneButton = Boolean(activePreset) && !mixTabActive;
-    signalPathToolbarSceneButton.disabled = !activePreset;
-    signalPathToolbarSceneButton.setAttribute("aria-hidden", String(!showToolbarSceneButton));
-  }
+  updateSignalPathAddMenuAvailability(Boolean(activePreset));
   // Track the rendered preset's own ID so that switching mixer tabs (which
   // changes focusedMixerPresetId but NOT activePresetId) is also detected.
   const renderedPresetId = activePreset?.id ?? activePresetId;
@@ -1790,19 +1820,19 @@ export function renderSignalPathBar(): void {
     // Show placeholder signal chain (no preset loaded yet)
     if (signalPathNodesElement) {
       signalPathNodesElement.innerHTML = `
-        <div class="signal-node input-node" data-node-id="__input__">
+        <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
           <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/amp.svg')" aria-hidden="true"></span>
           </div>
           <span class="node-label">Input</span>
         </div>
         <div class="signal-connector"></div>
-        <div class="signal-node" data-node-id="placeholder">
+        <div class="signal-node" data-node-id="placeholder" title="No Preset" aria-label="No Preset">
           <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/bolt.svg')" aria-hidden="true"></span>
           </div>
           <span class="node-label">No Preset</span>
         </div>
         <div class="signal-connector"></div>
-        <div class="signal-node output-node" data-node-id="__output__">
+        <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
           <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/speaker.svg')" aria-hidden="true"></span>
           </div>
           <span class="node-label">Output</span>
@@ -1810,6 +1840,7 @@ export function renderSignalPathBar(): void {
     }
     if (sceneToolbarHost) sceneToolbarHost.innerHTML = "";
     toolbarRow?.classList.add("scene-toolbar-empty");
+    updateSignalPathAddMenuAvailability(false);
     updateEffectVisualization();
     return;
   }
@@ -1825,7 +1856,7 @@ export function renderSignalPathBar(): void {
     signalPathNodesElement.innerHTML = `
       <div class="signal-graph-container">
         <div class="signal-graph-row">
-          <div class="signal-node input-node" data-node-id="__input__">
+          <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
             <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/guitar.svg')" aria-hidden="true"></span></div>
             <div class="node-info">
               <div class="node-name">Input</div>
@@ -1840,7 +1871,7 @@ export function renderSignalPathBar(): void {
               <span class="add-icon">+</span>
             </button>
           </div>
-          <div class="signal-node output-node" data-node-id="__output__">
+          <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
             <div class="node-icon">🔈</div>
             <div class="node-info">
               <div class="node-name">Output</div>
@@ -2392,19 +2423,17 @@ function renderGraphSignalPath(preset: Preset): void {
       })
       .join("");
 
-    const mixerNodeHtml = joinNode ? renderNodeElement(joinNode) : "";
+    // Collapse/remove lives on the mixer node delete control (same as other effects),
+    // not on the decorative join icon.
+    const mixerNodeHtml = joinNode
+      ? renderNodeElement(joinNode, canCollapse ? { collapseSplitterId: splitterId } : undefined)
+      : "";
 
     const html = `
       <div class="parallel-container" data-splitter-id="${splitterId}" data-mixer-id="${joinId}">
         <div class="parallel-split">
           <div class="split-icon" aria-hidden="true">
-            <svg class="parallel-flow-icon" viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M4 12h6" />
-              <path d="M10 12c3 0 4-2 8-5" />
-              <path d="M10 12c3 0 4 2 8 5" />
-              <path d="M16 6l2 1-1 2" />
-              <path d="M16 16l2 1-1 2" />
-            </svg>
+            ${renderIcon("parallel-split", "parallel-flow-icon")}
           </div>
         </div>
         <div class="parallel-branches">
@@ -2412,14 +2441,8 @@ function renderGraphSignalPath(preset: Preset): void {
         </div>
         <div class="parallel-join">
           <div class="join-icon" aria-hidden="true">
-            <svg class="parallel-flow-icon" viewBox="0 0 24 24" role="presentation" focusable="false">
-              <path d="M6 7c3 1 4 3 8 5" />
-              <path d="M6 17c3-1 4-3 8-5" />
-              <path d="M14 12h6" />
-              <path d="M18 10l2 2-2 2" />
-            </svg>
+            ${renderIcon("parallel-join", "parallel-flow-icon")}
           </div>
-          ${canCollapse ? `<button class="parallel-collapse-btn" data-splitter-id="${splitterId}" data-mixer-id="${joinId}" title="Collapse split (only if empty)">×</button>` : ""}
         </div>
       </div>
       ${mixerNodeHtml}
@@ -2476,7 +2499,7 @@ function renderGraphSignalPath(preset: Preset): void {
   signalPathNodesElement.innerHTML = `
     <div class="signal-graph-container">
       <div class="signal-graph-row">
-        <div class="signal-node input-node" data-node-id="__input__">
+        <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
           <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/guitar.svg')" aria-hidden="true"></span></div>
           <div class="node-info">
             <div class="node-name">Input</div>
@@ -2484,7 +2507,7 @@ function renderGraphSignalPath(preset: Preset): void {
           <span class="node-clip-indicator clip-inactive" aria-hidden="true"></span>
         </div>
         ${segmentsHtml}
-        <div class="signal-node output-node" data-node-id="__output__">
+        <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
           <div class="node-icon">🔈</div>
           <div class="node-info">
             <div class="node-name">Output</div>
@@ -2502,7 +2525,6 @@ function renderGraphSignalPath(preset: Preset): void {
   bindConnectorDropHandlers(preset);
 
   // Bind split/collapse buttons
-  bindSplitAndCollapseHandlers();
 }
 
 function sendAddEffectAtEdgeOrFallback(
@@ -2519,17 +2541,27 @@ function sendAddEffectAtEdgeOrFallback(
   }
 }
 
+type RenderNodeElementOptions = {
+  /** When set on a mixer join node, delete collapses the empty parallel split. */
+  collapseSplitterId?: string;
+};
+
 /**
  * Renders a single effect node.
  */
-function renderNodeElement(node: GraphNode): string {
+function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions): string {
   const icon = getNodeIcon(node.type);
   const categoryClass = getCategoryClass(getNodeCategory(node));
   const bypassedClass = isNodeBypassed(node) ? "bypassed" : "";
   const selectedClass = selectedNodeId === node.id ? "selected" : "";
   const missingEntries = getMissingResourceEntries(node);
   const missingClass = missingEntries.length ? "missing-resource" : "";
-  const allowDelete = node.type !== EffectGuids.kSplitter && node.type !== EffectGuids.kMixer;
+  const collapseSplitterId = options?.collapseSplitterId;
+  const canCollapseParallel =
+    node.type === EffectGuids.kMixer && typeof collapseSplitterId === "string" && collapseSplitterId.length > 0;
+  // Splitter tiles stay non-deletable; parallel join mixers expose collapse via the normal delete control.
+  const allowDelete =
+    (node.type !== EffectGuids.kSplitter && node.type !== EffectGuids.kMixer) || canCollapseParallel;
   const nodeTypeInfo = getNodeEffectInfo(node);
   const firstResourceTitle = nodeTypeInfo?.requiresResource ? getNodeResourceDisplayName(node, 0) : "";
   const displayName = firstResourceTitle || getNodeDisplayName(node);
@@ -2542,6 +2574,14 @@ function renderNodeElement(node: GraphNode): string {
   const architectureBadge = getNodeArchitectureBadge(node);
   const missingBadge = missingEntries.length
     ? `<div class="node-missing-badge" title="${escapeHtml(missingTooltip)}" aria-label="Missing resource">⚠</div>`
+    : "";
+  // Tooltip remains available when the compact viewport hides node text.
+  const nodeTitle = [displayName, effectTypeName, architectureBadge]
+    .filter((part) => Boolean(part && String(part).trim()))
+    .join(" · ");
+  const nodeTitleAttr = nodeTitle ? ` title="${escapeHtml(nodeTitle)}"` : "";
+  const nodeAriaLabel = nodeTitle
+    ? ` aria-label="${escapeHtml(nodeTitle)}${isNodeBypassed(node) ? " (bypassed)" : ""}"`
     : "";
 
   // Use the layout thumbnail as a small avatar at the top-left of the node if available.
@@ -2557,14 +2597,19 @@ function renderNodeElement(node: GraphNode): string {
     ? `<img class="node-layout-thumb" src="${thumbUrl.replace(/"/g, "&quot;")}" alt="" aria-hidden="true" />` 
     : "";
   const thumbClass = thumbUrl ? " has-thumb" : "";
+  const deleteButton = allowDelete
+    ? (canCollapseParallel
+      ? `<button class="signal-node-delete" type="button" title="Collapse split (only if empty)" aria-label="Collapse split" data-collapse-splitter-id="${escapeHtml(collapseSplitterId!)}" data-collapse-mixer-id="${escapeHtml(node.id)}">×</button>`
+      : '<button class="signal-node-delete" type="button" title="Remove" aria-label="Remove">×</button>')
+    : "";
 
   return `
     <div class="signal-node ${categoryClass} ${bypassedClass} ${selectedClass} ${missingClass}${thumbClass}" 
          data-node-id="${node.id}" 
          draggable="true" 
-         tabindex="0">
+         tabindex="0"${nodeTitleAttr}${nodeAriaLabel}>
       ${thumbAvatar}
-      ${allowDelete ? '<button class="signal-node-delete" type="button" title="Remove" aria-label="Remove">×</button>' : ""}
+      ${deleteButton}
       ${thumbUrl ? `<div class="node-icon"></div>` : `<div class="node-icon">${icon}</div>`}
       <div class="node-info">
         <div class="node-name">${displayName}</div>
@@ -2648,7 +2693,18 @@ function bindNodeClickHandlers(preset: Preset): void {
       e.preventDefault();
       e.stopPropagation();
 
-      const nodeEl = (button as HTMLElement).closest(".signal-node") as HTMLElement | null;
+      const btn = button as HTMLElement;
+      const collapseSplitterId = btn.dataset.collapseSplitterId;
+      const collapseMixerId = btn.dataset.collapseMixerId;
+      if (collapseSplitterId && collapseMixerId) {
+        sendCollapseParallelSplit(collapseSplitterId, collapseMixerId);
+        selectedNodeId = null;
+        nodeParamsPanelElement?.classList.remove("visible");
+        updateEffectVisualization();
+        return;
+      }
+
+      const nodeEl = btn.closest(".signal-node") as HTMLElement | null;
       const nodeId = nodeEl?.dataset.nodeId;
       if (!nodeId) return;
 
@@ -2962,22 +3018,6 @@ function bindConnectorDropHandlers(preset: Preset): void {
       const connector = el.querySelector(".signal-connector") as HTMLElement | null;
       connector?.classList.remove("drag-over");
       el.classList.remove("drag-over");
-    });
-  });
-}
-
-function bindSplitAndCollapseHandlers(): void {
-  // Collapse (only safe when the split region is empty)
-  const collapseButtons = signalPathNodesElement?.querySelectorAll(".parallel-collapse-btn");
-  collapseButtons?.forEach((btn) => {
-    btn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const splitterId = (btn as HTMLElement).dataset.splitterId;
-      const mixerId = (btn as HTMLElement).dataset.mixerId;
-      if (splitterId && mixerId) {
-        sendCollapseParallelSplit(splitterId, mixerId);
-      }
     });
   });
 }
@@ -3671,7 +3711,8 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       .replace(/\b\w/g, (char) => char.toUpperCase())
   );
   const shellTypeLabel = escapeHtml(typeInfo?.displayName || shellCategoryLabel);
-  const shellStatusLabel = isNodeBypassed(node) ? "BYPASSED" : "ENABLED";
+  const nodeIsBypassed = isNodeBypassed(node);
+  const shellStatusLabel = nodeIsBypassed ? "Off" : "On";
   const shellBypassTitle = isNodeBypassed(node) ? "Enable effect" : "Bypass effect";
   const architectureBadge = getNodeArchitectureBadge(node);
   const calibrationMetadataChip = getNodeNamCalibrationMetadataChip(node);
@@ -3797,12 +3838,14 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             ${architectureBadge ? `<span class="default-effect-shell-chip default-effect-shell-chip-architecture" title="Loaded model architecture">${architectureBadge}</span>` : ""}
             ${calibrationMetadataChip}
             <button
-              class="default-effect-shell-chip default-effect-shell-chip-status node-bypass-btn ${isNodeBypassed(node) ? "bypassed" : ""}"
+              class="default-effect-shell-toggle node-bypass-btn ${nodeIsBypassed ? "bypassed" : ""}"
               data-node-id="${node.id}"
               type="button"
+              role="switch"
+              aria-checked="${nodeIsBypassed ? "false" : "true"}"
               title="${shellBypassTitle}"
               aria-label="${shellBypassTitle}"
-            >${shellStatusLabel}</button>
+            ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${shellLayoutButton}
           </div>
           <button class="close-params-btn" type="button" aria-label="Close effect panel" title="Close effect panel">×</button>
@@ -5307,8 +5350,58 @@ function bindPresetScenePanel(panel: HTMLElement, renderedPreset: Preset): void 
   });
 }
 
-signalPathToolbarSceneButton?.addEventListener("click", () => {
+function setSignalPathAddMenuOpen(open: boolean): void {
+  if (!signalPathAddMenu || !signalPathAddMenuTrigger || !signalPathAddMenuOptions) {
+    return;
+  }
+  signalPathAddMenuOptions.hidden = !open;
+  signalPathAddMenuTrigger.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const triggerRect = signalPathAddMenuTrigger.getBoundingClientRect();
+    signalPathAddMenuOptions.style.right = `${Math.max(8, window.innerWidth - triggerRect.right)}px`;
+    signalPathAddMenuOptions.style.bottom = `${Math.max(8, window.innerHeight - triggerRect.top + 8)}px`;
+  } else {
+    signalPathAddMenuOptions.style.removeProperty("right");
+    signalPathAddMenuOptions.style.removeProperty("bottom");
+  }
+}
+
+function updateSignalPathAddMenuAvailability(available: boolean): void {
+  signalPathAddMenu?.classList.toggle("is-disabled", !available);
+  if (signalPathAddMenuTrigger) {
+    signalPathAddMenuTrigger.disabled = !available;
+  }
+  if (!available) {
+    setSignalPathAddMenuOpen(false);
+  }
+}
+
+signalPathAddMenuTrigger?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setSignalPathAddMenuOpen(signalPathAddMenuOptions?.hidden ?? true);
+});
+
+document.getElementById("signal-path-floating-add-fx")?.addEventListener("click", () => {
+  setSignalPathAddMenuOpen(false);
+  expandFxSelector({ focusSearch: true });
+});
+
+signalPathAddSceneButton?.addEventListener("click", () => {
+  setSignalPathAddMenuOpen(false);
   addSceneFromToolbar();
+});
+
+document.addEventListener("click", (event) => {
+  if (!signalPathAddMenu?.contains(event.target as Node)) {
+    setSignalPathAddMenuOpen(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && signalPathAddMenuOptions && !signalPathAddMenuOptions.hidden) {
+    setSignalPathAddMenuOpen(false);
+    signalPathAddMenuTrigger?.focus();
+  }
 });
 
 const mixerPresetTabCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
@@ -5319,7 +5412,10 @@ function renderMixerPresetTabs(): void {
   const mixer = uiState.mixer;
 
   const renderedPreset = getSignalPathPreset();
-  const shouldShowTabs = !isCompositeEditMode() && !!renderedPreset;
+  const shouldShowTabs = !isCompositeEditMode()
+    && !!renderedPreset
+    && !!mixer
+    && mixer.activePresetIds.length > 1;
 
   if (!shouldShowTabs) {
     if (tabBar) tabBar.remove();
@@ -5485,12 +5581,18 @@ function buildInlineMixerHtml(): string {
 
 function renderInlineMixer(): void {
   const signalPathBar = document.getElementById("signal-path-bar");
+  const resizeHandle = document.getElementById("signal-path-resize-handle");
   let panel = document.getElementById("inline-mixer-panel");
   if (!panel) {
     panel = document.createElement("div");
     panel.id = "inline-mixer-panel";
     panel.className = "inline-mixer-panel";
-    signalPathBar?.appendChild(panel);
+    // Place mixer where the scroll area sits (above the resize handle).
+    if (signalPathBar && resizeHandle) {
+      signalPathBar.insertBefore(panel, resizeHandle);
+    } else {
+      signalPathBar?.appendChild(panel);
+    }
   }
   panel.innerHTML = buildInlineMixerHtml();
   bindInlineMixerControls(panel);
@@ -5769,4 +5871,292 @@ function handleResourceGroupDrop(
     label: blendName,
     category: payload.category,
   });
+}
+
+// ── Signal path area resize + height-based layout adapt ──
+
+const SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT = 96;
+const SIGNAL_PATH_SCROLL_HEIGHT_MIN = 48;
+const SIGNAL_PATH_SCROLL_HEIGHT_STEP = 8;
+/** Prefer icon-only when the path area is this short or shorter. */
+const SIGNAL_PATH_COMPACT_HEIGHT = 92;
+/** Smallest tiles when the path area is this short or shorter. */
+const SIGNAL_PATH_MICRO_HEIGHT = 56;
+const SIGNAL_PATH_FIT_MIN_ZOOM = 0.35;
+
+type SignalPathDensity = "micro" | "compact" | "normal";
+
+let signalPathScrollHeight = SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
+let signalPathResizeInitialized = false;
+let signalPathLayoutAdaptRaf = 0;
+let signalPathScrollResizeObserver: ResizeObserver | null = null;
+
+function isPreferCompactSignalPath(): boolean {
+  return Boolean(
+    getCurrentUiSettings().preferCompactSignalPath
+      ?? uiState.uiSettings?.preferCompactSignalPath
+      ?? false,
+  );
+}
+
+function getSignalPathBarElement(): HTMLElement | null {
+  return document.getElementById("signal-path-bar");
+}
+
+function getSignalPathScrollElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".signal-path-scroll");
+}
+
+function getSignalPathResizeHandle(): HTMLElement | null {
+  return document.getElementById("signal-path-resize-handle");
+}
+
+function getSignalPathScrollMaxHeight(): number {
+  // Keep enough room for the rest of the app chrome + main content.
+  const reservedChrome = 280;
+  const fromViewport = Math.round(window.innerHeight * 0.45);
+  const available = window.innerHeight - reservedChrome;
+  return Math.max(120, Math.min(fromViewport, available, 420));
+}
+
+function clampSignalPathScrollHeight(height: number): number {
+  if (!Number.isFinite(height)) {
+    return SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
+  }
+  const maxHeight = getSignalPathScrollMaxHeight();
+  return Math.round(Math.max(SIGNAL_PATH_SCROLL_HEIGHT_MIN, Math.min(maxHeight, height)));
+}
+
+function syncSignalPathResizeHandleAria(height: number): void {
+  const handle = getSignalPathResizeHandle();
+  if (!handle) {
+    return;
+  }
+  handle.setAttribute("aria-valuemin", String(SIGNAL_PATH_SCROLL_HEIGHT_MIN));
+  handle.setAttribute("aria-valuemax", String(getSignalPathScrollMaxHeight()));
+  handle.setAttribute("aria-valuenow", String(height));
+}
+
+function densityFromAvailableHeight(heightPx: number): SignalPathDensity {
+  if (heightPx <= SIGNAL_PATH_MICRO_HEIGHT) {
+    return "micro";
+  }
+  // Prefer-compact setting: never show labels (normal density).
+  if (isPreferCompactSignalPath() || heightPx <= SIGNAL_PATH_COMPACT_HEIGHT) {
+    return "compact";
+  }
+  return "normal";
+}
+
+function setSignalPathNodesZoom(nodes: HTMLElement, zoom: number): void {
+  // `zoom` affects layout size (unlike transform), so vertical fit removes the need to scroll.
+  if (zoom >= 0.999) {
+    nodes.style.removeProperty("zoom");
+  } else {
+    nodes.style.setProperty("zoom", String(zoom));
+  }
+}
+
+/**
+ * Adapt node density from the signal-path area's available height, then
+ * zoom-to-fit if content (e.g. parallel splits) still exceeds that height.
+ * Density is never based on viewport width.
+ */
+export function updateSignalPathLayoutAdapt(): void {
+  const bar = getSignalPathBarElement();
+  const scroll = getSignalPathScrollElement();
+  const nodes = signalPathNodesElement;
+
+  if (!bar || !scroll || !nodes || scroll.hidden || mixTabActive) {
+    if (nodes) {
+      setSignalPathNodesZoom(nodes, 1);
+    }
+    bar?.removeAttribute("data-density");
+    return;
+  }
+
+  const available = scroll.clientHeight;
+  if (available <= 0) {
+    return;
+  }
+
+  // Start from height-only density, with zoom reset so measurements are real.
+  setSignalPathNodesZoom(nodes, 1);
+  let density = densityFromAvailableHeight(available);
+  bar.dataset.density = density;
+  // Force style recalc after density change.
+  void nodes.offsetHeight;
+  let needed = nodes.scrollHeight;
+
+  // Escalate density when content still overflows (common with parallel splits).
+  if (needed > available + 1 && density !== "compact" && density !== "micro") {
+    density = "compact";
+    bar.dataset.density = density;
+    void nodes.offsetHeight;
+    needed = nodes.scrollHeight;
+  }
+  if (needed > available + 1 && density !== "micro") {
+    density = "micro";
+    bar.dataset.density = density;
+    void nodes.offsetHeight;
+    needed = nodes.scrollHeight;
+  }
+
+  // Final fit so multi-branch graphs never clip / require vertical scrolling.
+  if (needed > available + 1) {
+    const scale = Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, available / needed);
+    setSignalPathNodesZoom(nodes, scale);
+  }
+}
+
+export function scheduleSignalPathLayoutAdapt(): void {
+  if (signalPathLayoutAdaptRaf) {
+    cancelAnimationFrame(signalPathLayoutAdaptRaf);
+  }
+  signalPathLayoutAdaptRaf = requestAnimationFrame(() => {
+    signalPathLayoutAdaptRaf = 0;
+    updateSignalPathLayoutAdapt();
+  });
+}
+
+/**
+ * Apply a pixel height to the signal-path visualisation scroll area.
+ * When `persist` is true the value is written to UI settings.
+ */
+export function setSignalPathScrollHeight(height: number, options?: { persist?: boolean }): number {
+  const nextHeight = clampSignalPathScrollHeight(height);
+  signalPathScrollHeight = nextHeight;
+
+  const bar = getSignalPathBarElement();
+  if (bar) {
+    bar.style.setProperty("--signal-path-scroll-height", `${nextHeight}px`);
+  }
+  syncSignalPathResizeHandleAria(nextHeight);
+  scheduleSignalPathLayoutAdapt();
+
+  if (options?.persist) {
+    updateUiSettings({ signalPathHeight: nextHeight });
+  }
+
+  return nextHeight;
+}
+
+export function getSignalPathScrollHeight(): number {
+  return signalPathScrollHeight;
+}
+
+function onSignalPathResizePointerDown(event: PointerEvent): void {
+  if (event.button !== 0) {
+    return;
+  }
+
+  const handle = getSignalPathResizeHandle();
+  if (!handle) {
+    return;
+  }
+
+  event.preventDefault();
+  const startY = event.clientY;
+  const startHeight = signalPathScrollHeight;
+  let latestHeight = startHeight;
+
+  handle.setPointerCapture(event.pointerId);
+  document.body.classList.add("signal-path-resizing");
+
+  const onMove = (moveEvent: PointerEvent): void => {
+    const delta = moveEvent.clientY - startY;
+    latestHeight = setSignalPathScrollHeight(startHeight + delta, { persist: false });
+  };
+
+  const finish = (endEvent: PointerEvent): void => {
+    handle.releasePointerCapture(endEvent.pointerId);
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", finish);
+    handle.removeEventListener("pointercancel", finish);
+    document.body.classList.remove("signal-path-resizing");
+    setSignalPathScrollHeight(latestHeight, { persist: true });
+  };
+
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+}
+
+function onSignalPathResizeKeyDown(event: KeyboardEvent): void {
+  let next: number | null = null;
+  if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+    next = signalPathScrollHeight - SIGNAL_PATH_SCROLL_HEIGHT_STEP;
+  } else if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+    next = signalPathScrollHeight + SIGNAL_PATH_SCROLL_HEIGHT_STEP;
+  } else if (event.key === "Home") {
+    next = SIGNAL_PATH_SCROLL_HEIGHT_MIN;
+  } else if (event.key === "End") {
+    next = getSignalPathScrollMaxHeight();
+  } else if (event.key === "Enter" || event.key === " ") {
+    next = SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
+  }
+
+  if (next === null) {
+    return;
+  }
+
+  event.preventDefault();
+  setSignalPathScrollHeight(next, { persist: true });
+}
+
+function onSignalPathResizeDoubleClick(event: MouseEvent): void {
+  event.preventDefault();
+  setSignalPathScrollHeight(SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT, { persist: true });
+}
+
+function applySignalPathHeightFromSettings(): void {
+  const settings = getCurrentUiSettings();
+  const stored = settings.signalPathHeight;
+  if (typeof stored === "number" && Number.isFinite(stored)) {
+    setSignalPathScrollHeight(stored, { persist: false });
+  } else {
+    setSignalPathScrollHeight(signalPathScrollHeight, { persist: false });
+  }
+}
+
+/**
+ * Wire up the movable horizontal splitter under the signal path visualisation.
+ * Safe to call once during bootstrap; subsequent calls are no-ops.
+ */
+export function initSignalPathResize(): void {
+  if (signalPathResizeInitialized) {
+    applySignalPathHeightFromSettings();
+    return;
+  }
+
+  const handle = getSignalPathResizeHandle();
+  if (!handle) {
+    return;
+  }
+
+  signalPathResizeInitialized = true;
+  handle.addEventListener("pointerdown", onSignalPathResizePointerDown);
+  handle.addEventListener("keydown", onSignalPathResizeKeyDown);
+  handle.addEventListener("dblclick", onSignalPathResizeDoubleClick);
+
+  window.addEventListener("uiSettingsApplied", () => {
+    applySignalPathHeightFromSettings();
+  });
+
+  window.addEventListener("resize", () => {
+    // Re-clamp if the window shrinks below the current height.
+    setSignalPathScrollHeight(signalPathScrollHeight, { persist: false });
+  });
+
+  const scroll = getSignalPathScrollElement();
+  if (scroll && typeof ResizeObserver !== "undefined") {
+    signalPathScrollResizeObserver?.disconnect();
+    signalPathScrollResizeObserver = new ResizeObserver(() => {
+      scheduleSignalPathLayoutAdapt();
+    });
+    signalPathScrollResizeObserver.observe(scroll);
+  }
+
+  applySignalPathHeightFromSettings();
+  scheduleSignalPathLayoutAdapt();
 }

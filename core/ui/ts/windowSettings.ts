@@ -71,8 +71,14 @@ export function updateUiSettings(patch: Partial<UiSettings>): void {
   currentSettings = { ...currentSettings, ...patch };
   if (typeof patch.zoom === "number") {
     currentSettings.zoom = applyZoomToDocument(patch.zoom);
-    notifyUiSettingsApplied();
   }
+  if (typeof patch.signalPathHeight === "number" && Number.isFinite(patch.signalPathHeight)) {
+    currentSettings.signalPathHeight = patch.signalPathHeight;
+  }
+  if (typeof patch.preferCompactSignalPath === "boolean") {
+    currentSettings.preferCompactSignalPath = patch.preferCompactSignalPath;
+  }
+  notifyUiSettingsApplied();
   scheduleSend();
 }
 
@@ -82,6 +88,14 @@ export function applyUiSettings(settings?: UiSettings): void {
 
   const zoom = settings.zoom ?? currentSettings.zoom ?? DEFAULT_ZOOM;
   currentSettings.zoom = applyZoomToDocument(zoom);
+
+  if (typeof settings.signalPathHeight === "number" && Number.isFinite(settings.signalPathHeight)) {
+    currentSettings.signalPathHeight = settings.signalPathHeight;
+  }
+  if (typeof settings.preferCompactSignalPath === "boolean") {
+    currentSettings.preferCompactSignalPath = settings.preferCompactSignalPath;
+  }
+
   notifyUiSettingsApplied();
 
   const bounds = settings.bounds;
