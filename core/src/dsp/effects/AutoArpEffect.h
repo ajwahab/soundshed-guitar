@@ -3,6 +3,7 @@
 #include "dsp/EffectProcessor.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "dsp/effects/SignalsmithLatency.h"
 #include "signalsmith-stretch.h"
 #include <algorithm>
 #include <cmath>
@@ -329,7 +330,11 @@ namespace guitarfx
 
     [[nodiscard]] int GetLatencySamples() const override
     {
-      return mConfigured ? static_cast<int>(mStretch.inputLatency()) : 0;
+      // Signalsmith reports latency in two halves; host PDC needs the sum.
+      // Note: steps at 0 st bypass Stretch (variable latency by design).
+      if (!mConfigured)
+        return 0;
+      return SignalsmithTotalLatencySamples(mStretch);
     }
 
   private:

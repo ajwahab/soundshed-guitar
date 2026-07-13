@@ -1325,6 +1325,10 @@ bool TestTransposeLatencySpecific()
 
   effect->Prepare(kTestSampleRate, kTestBlockSize);
   effect->SetParam("mix", 1.0);
+
+  effect->SetParam("semitones", 0.0);
+  const int zeroShiftLatency = effect->GetLatencySamples();
+
   effect->SetParam("semitones", -1.0);
   const int lowShiftLatency = effect->GetLatencySamples();
 
@@ -1334,18 +1338,26 @@ bool TestTransposeLatencySpecific()
   effect->SetParam("semitones", -12.0);
   const int deepShiftLatency = effect->GetLatencySamples();
 
-  const bool lowShiftReportsLatency = lowShiftLatency > 0;
+  // Signalsmith PDC must include both inputLatency and outputLatency halves.
+  // presetCheaper @ 48k with splitComputation=false is ~4800 samples total.
+  const int expectedMinTotalLatency = static_cast<int>(kTestSampleRate * 0.08); // ~80 ms floor
+
+  const bool zeroShiftTransparent = zeroShiftLatency == 0;
+  const bool lowShiftReportsLatency = lowShiftLatency >= expectedMinTotalLatency;
   const bool slightDownTuneKeepsLatencyProfile = slightDownTuneLatency == lowShiftLatency;
   const bool deepShiftKeepsLatencyProfile = deepShiftLatency == lowShiftLatency;
 
-  std::cout << "  " << std::left << std::setw(44) << "-1 semitone reports positive latency:" << (lowShiftReportsLatency ? "PASS" : "FAIL")
-            << " (latency=" << lowShiftLatency << ")\n";
+  std::cout << "  " << std::left << std::setw(44) << "0 semitones reports transparent latency:" << (zeroShiftTransparent ? "PASS" : "FAIL")
+            << " (latency=" << zeroShiftLatency << ")\n";
+  std::cout << "  " << std::left << std::setw(44) << "-1 semitone reports full (in+out) latency:" << (lowShiftReportsLatency ? "PASS" : "FAIL")
+            << " (latency=" << lowShiftLatency << ", min=" << expectedMinTotalLatency << ")\n";
   std::cout << "  " << std::left << std::setw(44) << "-2 semitones keeps current latency profile:" << (slightDownTuneKeepsLatencyProfile ? "PASS" : "FAIL")
             << " (latency=" << slightDownTuneLatency << ")\n";
   std::cout << "  " << std::left << std::setw(44) << "-12 semitones keeps current latency profile:" << (deepShiftKeepsLatencyProfile ? "PASS" : "FAIL")
             << " (latency=" << deepShiftLatency << ")\n";
 
-  return lowShiftReportsLatency && slightDownTuneKeepsLatencyProfile && deepShiftKeepsLatencyProfile;
+  return zeroShiftTransparent && lowShiftReportsLatency && slightDownTuneKeepsLatencyProfile
+         && deepShiftKeepsLatencyProfile;
 }
 
 bool TestHybridTransposeSpecific()
@@ -1793,21 +1805,109 @@ bool TestPitchShiftLatencySpecific()
   effect->SetParam("stepMode", 1.0);
   effect->SetParam("minSemitones", -2.0);
   effect->SetParam("maxSemitones", 2.0);
+
+  effect->SetParam("semitones", 0.0);
+  const int zeroShiftLatency = effect->GetLatencySamples();
+
   effect->SetParam("semitones", 0.5);
   const int initialLatency = effect->GetLatencySamples();
 
   effect->SetParam("semitones", -0.5);
   const int updatedLatency = effect->GetLatencySamples();
 
-  const bool reportsPositiveLatency = initialLatency > 0;
+  // Signalsmith PDC must include both inputLatency and outputLatency halves.
+  const int expectedMinTotalLatency = static_cast<int>(kTestSampleRate * 0.08); // ~80 ms floor
+
+  const bool zeroShiftTransparent = zeroShiftLatency == 0;
+  const bool reportsPositiveLatency = initialLatency >= expectedMinTotalLatency;
   const bool latencyRemainsStableAcrossPitchChanges = updatedLatency == initialLatency;
 
-  std::cout << "  " << std::left << std::setw(44) << "Pitch shift reports positive latency:" << (reportsPositiveLatency ? "PASS" : "FAIL")
-            << " (latency=" << initialLatency << ")\n";
+  std::cout << "  " << std::left << std::setw(44) << "0 st reports transparent latency:" << (zeroShiftTransparent ? "PASS" : "FAIL")
+            << " (latency=" << zeroShiftLatency << ")\n";
+  std::cout << "  " << std::left << std::setw(44) << "Pitch shift reports full (in+out) latency:" << (reportsPositiveLatency ? "PASS" : "FAIL")
+            << " (latency=" << initialLatency << ", min=" << expectedMinTotalLatency << ")\n";
   std::cout << "  " << std::left << std::setw(44) << "Latency stays stable across pitch changes:" << (latencyRemainsStableAcrossPitchChanges ? "PASS" : "FAIL")
             << " (latency=" << updatedLatency << ")\n";
 
-  return reportsPositiveLatency && latencyRemainsStableAcrossPitchChanges;
+  // Regression: SetParam("semitones") before Prepare must still configure the
+  // stretch engine (PitchShiftEffect used to call ApplyTranspose before marking
+  // configured, so transpose stayed at 0 and the benchmark rendered dry).
+  auto preload = registry.Create(guitarfx::EffectGuids::kPitchShift);
+  if (!preload)
+  {
+    std::cout << "  FAIL: Could not create pitch shift effect for preload test\n";
+    return false;
+  }
+
+  constexpr double kHz = 440.0;
+  constexpr int kFrames = 8192;
+  preload->SetParam("semitones", 12.0);
+  preload->SetParam("mix", 1.0);
+  preload->Prepare(kTestSampleRate, kTestBlockSize);
+  preload->Reset();
+
+  const int latency = std::max(0, preload->GetLatencySamples());
+  const int totalFrames = kFrames + latency + 512;
+  std::vector<float> blockInL(static_cast<size_t>(kTestBlockSize), 0.0f);
+  std::vector<float> blockInR(static_cast<size_t>(kTestBlockSize), 0.0f);
+  std::vector<float> blockOutL(static_cast<size_t>(kTestBlockSize), 0.0f);
+  std::vector<float> blockOutR(static_cast<size_t>(kTestBlockSize), 0.0f);
+  std::vector<float> renderedL(static_cast<size_t>(totalFrames), 0.0f);
+
+  for (int pos = 0; pos < totalFrames; pos += kTestBlockSize)
+  {
+    const int block = std::min(kTestBlockSize, totalFrames - pos);
+    for (int i = 0; i < block; ++i)
+    {
+      const int src = pos + i;
+      const float s = (src < kFrames)
+        ? static_cast<float>(0.5 * std::sin(2.0 * kPi * kHz * static_cast<double>(src) / kTestSampleRate))
+        : 0.0f;
+      blockInL[static_cast<size_t>(i)] = s;
+      blockInR[static_cast<size_t>(i)] = s;
+      blockOutL[static_cast<size_t>(i)] = 0.0f;
+      blockOutR[static_cast<size_t>(i)] = 0.0f;
+    }
+    float* inputs[2] = { blockInL.data(), blockInR.data() };
+    float* outputs[2] = { blockOutL.data(), blockOutR.data() };
+    preload->Process(inputs, outputs, block);
+    for (int i = 0; i < block; ++i)
+      renderedL[static_cast<size_t>(pos + i)] = blockOutL[static_cast<size_t>(i)];
+  }
+
+  // Zero-crossing density of a +12 st shifted 440 Hz tone is roughly double 440 Hz.
+  auto countZeroCrossings = [](const std::vector<float>& buf, int start, int count) {
+    int crossings = 0;
+    for (int i = start + 1; i < start + count && i < static_cast<int>(buf.size()); ++i)
+    {
+      if ((buf[static_cast<size_t>(i - 1)] < 0.0f && buf[static_cast<size_t>(i)] >= 0.0f)
+          || (buf[static_cast<size_t>(i - 1)] > 0.0f && buf[static_cast<size_t>(i)] <= 0.0f))
+        ++crossings;
+    }
+    return crossings;
+  };
+
+  const int analysisStart = latency + 1024;
+  const int analysisCount = 4096;
+  const int wetCrossings = countZeroCrossings(renderedL, analysisStart, analysisCount);
+  const double expectedDry = 2.0 * kHz * static_cast<double>(analysisCount) / kTestSampleRate;
+  const double expectedWet = 2.0 * (kHz * 2.0) * static_cast<double>(analysisCount) / kTestSampleRate;
+  const bool transposeApplied = wetCrossings > expectedDry * 1.4
+                                && wetCrossings > expectedWet * 0.6
+                                && wetCrossings < expectedWet * 1.4;
+  const bool paramRetained = std::abs(preload->GetParam("semitones") - 12.0) < 1.0e-9;
+
+  std::cout << "  " << std::left << std::setw(44) << "Preload +12 st retained after Prepare:"
+            << (paramRetained ? "PASS" : "FAIL")
+            << " (semitones=" << preload->GetParam("semitones") << ")\n";
+  std::cout << "  " << std::left << std::setw(44) << "Preload +12 st shifts pitch (ZCR):"
+            << (transposeApplied ? "PASS" : "FAIL")
+            << " (crossings=" << wetCrossings
+            << ", expected~" << static_cast<int>(expectedWet)
+            << ", dry~" << static_cast<int>(expectedDry) << ")\n";
+
+  return zeroShiftTransparent && reportsPositiveLatency && latencyRemainsStableAcrossPitchChanges
+         && paramRetained && transposeApplied;
 }
 
 } // anonymous namespace

@@ -3,6 +3,7 @@
 #include "dsp/EffectProcessor.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "dsp/effects/SignalsmithLatency.h"
 #include "signalsmith-stretch.h"
 #include <algorithm>
 #include <cmath>
@@ -28,11 +29,13 @@ namespace guitarfx
       mWetDownR.assign(bufferSize, 0.0f);
       mZero.assign(bufferSize, 0.0f);
 
+      // splitComputation=false: avoid the extra interval of output latency.
       mUpStretch.presetCheaper(2, static_cast<float>(sampleRate), false);
       mDownStretch.presetCheaper(2, static_cast<float>(sampleRate), false);
       mConfigured = true;
       ApplyStretchSettings();
       UpdateToneCoefficient();
+      EnsureDryDelayCapacity();
       Reset();
     }
 
@@ -46,6 +49,9 @@ namespace guitarfx
 
       mToneStateL = 0.0f;
       mToneStateR = 0.0f;
+      std::fill(mDryDelayL.begin(), mDryDelayL.end(), 0.0f);
+      std::fill(mDryDelayR.begin(), mDryDelayR.end(), 0.0f);
+      mDryWritePos = 0;
     }
 
     void Process(float **inputs, float **outputs, int numSamples) override
@@ -63,7 +69,7 @@ namespace guitarfx
         return;
       }
 
-      if (mMix <= 0.0f || (mOctaveUp <= 0.0f && mOctaveDown <= 0.0f))
+      if (IsTransparent())
       {
         CopyDry(inputs, outputs, numSamples);
         return;
@@ -89,11 +95,19 @@ namespace guitarfx
 
       const float dryMix = 1.0f - mMix;
       const float wetMix = mMix;
+      const bool needDry = dryMix > 0.0f;
+      if (needDry)
+        EnsureDryDelayCapacity();
+
+      const int latency = SignalsmithTotalLatencySamples(mUpStretch, mDownStretch);
 
       for (int i = 0; i < numSamples; ++i)
       {
-        const float dryL = leftInput[i];
-        const float dryR = rightInput[i];
+        float dryL = leftInput[i];
+        float dryR = rightInput[i];
+        if (needDry)
+          PushAndReadDry(leftInput[i], rightInput[i], latency, dryL, dryR);
+
         float wetL = mWetUpL[static_cast<size_t>(i)] * mOctaveUp
           + mWetDownL[static_cast<size_t>(i)] * mOctaveDown;
         float wetR = mWetUpR[static_cast<size_t>(i)] * mOctaveUp
@@ -149,15 +163,56 @@ namespace guitarfx
 
     [[nodiscard]] int GetLatencySamples() const override
     {
-      if (!mConfigured)
+      // Transparent dry path reports 0; wet path reports full Signalsmith latency
+      // (input + output halves) for host delay compensation.
+      if (!mConfigured || IsTransparent())
         return 0;
-      return std::max(static_cast<int>(mUpStretch.inputLatency()),
-                      static_cast<int>(mDownStretch.inputLatency()));
+      return SignalsmithTotalLatencySamples(mUpStretch, mDownStretch);
     }
 
   private:
     static constexpr double kPi = 3.14159265358979323846;
     static constexpr double kTonalityLimitHz = 16000.0;
+
+    [[nodiscard]] bool IsTransparent() const
+    {
+      return mMix <= 0.0f || (mOctaveUp <= 0.0f && mOctaveDown <= 0.0f);
+    }
+
+    void EnsureDryDelayCapacity()
+    {
+      if (!mConfigured)
+        return;
+      const int latency = SignalsmithTotalLatencySamples(mUpStretch, mDownStretch);
+      const size_t needed = static_cast<size_t>(std::max(latency, 0) + std::max(mMaxBlockSize, 1) + 8);
+      if (mDryDelayL.size() < needed)
+      {
+        mDryDelayL.assign(needed, 0.0f);
+        mDryDelayR.assign(needed, 0.0f);
+        mDryWritePos = 0;
+      }
+    }
+
+    void PushAndReadDry(float inL, float inR, int latency, float& outL, float& outR)
+    {
+      if (mDryDelayL.empty() || latency <= 0)
+      {
+        outL = inL;
+        outR = inR;
+        return;
+      }
+
+      const size_t size = mDryDelayL.size();
+      mDryDelayL[mDryWritePos] = inL;
+      mDryDelayR[mDryWritePos] = inR;
+
+      const size_t delay = static_cast<size_t>(std::min(latency, static_cast<int>(size) - 1));
+      const size_t readPos = (mDryWritePos + size - delay) % size;
+      outL = mDryDelayL[readPos];
+      outR = mDryDelayR[readPos];
+
+      mDryWritePos = (mDryWritePos + 1) % size;
+    }
 
     void CopyDry(float **inputs, float **outputs, int numSamples)
     {
@@ -226,6 +281,9 @@ namespace guitarfx
     std::vector<float> mWetDownL;
     std::vector<float> mWetDownR;
     std::vector<float> mZero;
+    std::vector<float> mDryDelayL;
+    std::vector<float> mDryDelayR;
+    size_t mDryWritePos = 0;
   };
 
   inline void RegisterOctaveEffect()

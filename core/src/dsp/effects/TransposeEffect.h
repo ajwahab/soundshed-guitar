@@ -3,6 +3,7 @@
 #include "dsp/EffectProcessor.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "dsp/effects/SignalsmithLatency.h"
 #include "signalsmith-stretch.h"
 #include <algorithm>
 #include <cmath>
@@ -10,9 +11,15 @@
 
 namespace guitarfx
 {
-    /**
-     * Transpose effect using Signalsmith Stretch for integer semitone steps.
-     */
+  /**
+   * Transpose effect using Signalsmith Stretch for integer semitone steps.
+   *
+   * Latency contract (Signalsmith docs):
+   *   - When shifting: report inputLatency() + outputLatency(); delay dry by that
+   *     amount before wet/dry mix so partial mix does not comb.
+   *   - When transparent (0 st): bypass Stretch and report 0 latency.
+   *   - presetCheaper(..., splitComputation=false) keeps total latency lower.
+   */
   class TransposeEffect : public EffectProcessor
   {
   public:
@@ -25,11 +32,12 @@ namespace guitarfx
       mWetR.assign(static_cast<size_t>(maxBlockSize), 0.0f);
       mZero.assign(static_cast<size_t>(maxBlockSize), 0.0f);
 
-      // Latency/quality toggle currently hard-coded to best latency.
+      // Latency/quality: cheaper preset with splitComputation off (no extra hop).
       mStretch.presetCheaper(2, static_cast<float>(sampleRate), false);
       //      mStretch.presetDefault(2, static_cast<float>(sampleRate), true);
       mConfigured = true;
       ApplyTranspose();
+      EnsureDryDelayCapacity();
       Reset();
     }
 
@@ -39,6 +47,9 @@ namespace guitarfx
       {
         mStretch.reset();
       }
+      std::fill(mDryDelayL.begin(), mDryDelayL.end(), 0.0f);
+      std::fill(mDryDelayR.begin(), mDryDelayR.end(), 0.0f);
+      mDryWritePos = 0;
     }
 
     void Process(float **inputs, float **outputs, int numSamples) override
@@ -46,7 +57,12 @@ namespace guitarfx
       if (!inputs || !outputs)
         return;
 
-      if (mSemitones == 0 && mMix >= 1.0)
+      numSamples = std::min(numSamples, mMaxBlockSize);
+      if (numSamples <= 0)
+        return;
+
+      // Transparent at 0 st: no Stretch latency, report 0 via GetLatencySamples().
+      if (IsTransparent())
       {
         CopyStereoInputToOutput(inputs, outputs, numSamples);
         return;
@@ -68,25 +84,32 @@ namespace guitarfx
       };
       float *wetPtrs[2] = { mWetL.data(), mWetR.data() };
 
-      // Render transposed audio into wet buffers, then crossfade against dry
-      // input so zero-shift/high-mix cases can remain transparent.
+      // Equal in/out lengths = pitch-only (no time stretch).
       mStretch.process(inputPtrs, numSamples, wetPtrs, numSamples);
 
       const float dryMix = static_cast<float>(1.0 - mMix);
       const float wetMix = static_cast<float>(mMix);
+      const bool needDry = dryMix > 0.0f;
+      if (needDry)
+        EnsureDryDelayCapacity();
+
+      const int latency = SignalsmithTotalLatencySamples(mStretch);
 
       for (int i = 0; i < numSamples; ++i)
       {
+        float dryL = 0.0f;
+        float dryR = 0.0f;
+        if (needDry)
+        {
+          PushAndReadDry(inputs[0] ? inputs[0][i] : 0.0f,
+                         inputs[1] ? inputs[1][i] : 0.0f,
+                         latency, dryL, dryR);
+        }
+
         if (outputs[0])
-        {
-          const float dry = inputs[0] ? inputs[0][i] : 0.0f;
-          outputs[0][i] = dry * dryMix + mWetL[static_cast<size_t>(i)] * wetMix;
-        }
+          outputs[0][i] = dryL * dryMix + mWetL[static_cast<size_t>(i)] * wetMix;
         if (outputs[1])
-        {
-          const float dry = inputs[1] ? inputs[1][i] : 0.0f;
-          outputs[1][i] = dry * dryMix + mWetR[static_cast<size_t>(i)] * wetMix;
-        }
+          outputs[1][i] = dryR * dryMix + mWetR[static_cast<size_t>(i)] * wetMix;
       }
     }
 
@@ -123,16 +146,59 @@ namespace guitarfx
 
     [[nodiscard]] int GetLatencySamples() const override
     {
-      return mConfigured ? static_cast<int>(mStretch.inputLatency()) : 0;
+      if (!mConfigured || IsTransparent())
+        return 0;
+      return SignalsmithTotalLatencySamples(mStretch);
     }
 
   private:
+    [[nodiscard]] bool IsTransparent() const
+    {
+      return mSemitones == 0;
+    }
+
     void ApplyTranspose()
     {
       if (!mConfigured || mSampleRate <= 0.0)
         return;
+      // Tonality limit is normalised to sample rate (Signalsmith API contract).
       const float tonalityLimit = static_cast<float>(kTonalityLimitHz / mSampleRate);
       mStretch.setTransposeSemitones(static_cast<float>(mSemitones), tonalityLimit);
+    }
+
+    void EnsureDryDelayCapacity()
+    {
+      if (!mConfigured)
+        return;
+      const int latency = SignalsmithTotalLatencySamples(mStretch);
+      const size_t needed = static_cast<size_t>(std::max(latency, 0) + std::max(mMaxBlockSize, 1) + 8);
+      if (mDryDelayL.size() < needed)
+      {
+        mDryDelayL.assign(needed, 0.0f);
+        mDryDelayR.assign(needed, 0.0f);
+        mDryWritePos = 0;
+      }
+    }
+
+    void PushAndReadDry(float inL, float inR, int latency, float& outL, float& outR)
+    {
+      if (mDryDelayL.empty() || latency <= 0)
+      {
+        outL = inL;
+        outR = inR;
+        return;
+      }
+
+      const size_t size = mDryDelayL.size();
+      mDryDelayL[mDryWritePos] = inL;
+      mDryDelayR[mDryWritePos] = inR;
+
+      const size_t delay = static_cast<size_t>(std::min(latency, static_cast<int>(size) - 1));
+      const size_t readPos = (mDryWritePos + size - delay) % size;
+      outL = mDryDelayL[readPos];
+      outR = mDryDelayR[readPos];
+
+      mDryWritePos = (mDryWritePos + 1) % size;
     }
 
     static constexpr double kTonalityLimitHz = 16000.0; //8000
@@ -145,6 +211,9 @@ namespace guitarfx
     std::vector<float> mWetL;
     std::vector<float> mWetR;
     std::vector<float> mZero;
+    std::vector<float> mDryDelayL;
+    std::vector<float> mDryDelayR;
+    size_t mDryWritePos = 0;
   };
 
   inline void RegisterTransposeEffect()
