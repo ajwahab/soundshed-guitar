@@ -52,7 +52,7 @@ LicenseFile="resources\EULA"
 UninstallFilesDir="{commonappdata}\{#ProductName}\uninstall"
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{code:GetStandaloneDir}"
+; Inno Setup already removes every file it installed via the [Files] section.
 Type: filesandordirs; Name: "{code:GetVst3Dir}"
 Type: filesandordirs; Name: "{code:GetClapBinaryPath}"
 
