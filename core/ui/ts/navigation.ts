@@ -215,3 +215,27 @@ export function applyUiViewState(state?: UiViewState): void {
 
 // Expose for Alpine direct calls from x-on:click handlers in header etc.
 (window as any).__switchMainPanel = switchMainPanel;
+
+const CONTROL_BAR_COLLAPSED_KEY = "guitarfx.controlBarCollapsed";
+
+export function initControlBarCollapse(): void {
+  const bar = document.querySelector<HTMLElement>(".control-bar");
+  const btn = document.getElementById("control-bar-collapse-btn");
+  if (!bar || !btn) return;
+
+  const apply = (collapsed: boolean) => {
+    bar.classList.toggle("is-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.setAttribute("aria-label", collapsed ? "Expand controls" : "Collapse controls");
+    btn.title = collapsed ? "Expand controls" : "Collapse controls";
+  };
+
+  // Restore saved state
+  apply(localStorage.getItem(CONTROL_BAR_COLLAPSED_KEY) === "true");
+
+  btn.addEventListener("click", () => {
+    const collapsed = !bar.classList.contains("is-collapsed");
+    apply(collapsed);
+    localStorage.setItem(CONTROL_BAR_COLLAPSED_KEY, String(collapsed));
+  });
+}

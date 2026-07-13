@@ -24,7 +24,7 @@ import { initializeAutomationPanel } from "./automationPanel.js";
 import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar } from "./signalPath.js";
 import { initializeCustomEffectDesignerModal } from "./customEffectDesigner.js";
 import { initializeDialogModals } from "./dialogs.js";
-import { activateTab, initializeIconBarTabs, initializeTabButtons, switchMainPanel } from "./navigation.js";
+import { activateTab, initializeIconBarTabs, initializeTabButtons, switchMainPanel, initControlBarCollapse } from "./navigation.js";
 import { initializeRiffLibraryPanel } from "./riffLibrary.js";
 import { initMultiRigTab } from "./multiPresetMixer.js";
 import { applyBuildFlags } from "./buildFlags.js";
@@ -112,6 +112,7 @@ async function bootstrap(): Promise<void> {
   startAlpine();
 
   initializeTabButtons();
+  initControlBarCollapse();
 
   // Ensure listeners for icon bar tabs (Play/Tones/Jam/Settings) are attached early
   initializeIconBarTabs({ onEq: openEqModal });

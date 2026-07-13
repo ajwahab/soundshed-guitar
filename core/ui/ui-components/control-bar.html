@@ -1,5 +1,15 @@
 <section class="control-bar">
-  <!--#include:ui-components/input-control-group.html-->
-  <!--#include:ui-components/preset-group.html-->
-  <!--#include:ui-components/output-control-group.html-->
+  <button class="control-bar-collapse-btn" id="control-bar-collapse-btn" type="button"
+    aria-expanded="true" aria-label="Collapse controls" title="Collapse controls">
+    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+      <path d="M3.5 5.75 8 10.25l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <div class="control-bar-body">
+    <div class="control-bar-body-inner">
+      <!--#include:ui-components/input-control-group.html-->
+      <!--#include:ui-components/preset-group.html-->
+      <!--#include:ui-components/output-control-group.html-->
+    </div>
+  </div>
 </section>

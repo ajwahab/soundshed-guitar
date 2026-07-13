@@ -3848,10 +3848,10 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${shellLayoutButton}
           </div>
+          <div class="default-effect-shell-rail" aria-hidden="true">
+            <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
+          </div>
           <button class="close-params-btn" type="button" aria-label="Close effect panel" title="Close effect panel">×</button>
-        </div>
-        <div class="default-effect-shell-rail" aria-hidden="true">
-          <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
         </div>
         <div class="default-effect-shell-content${equipmentImage ? " has-equipment-image" : ""}">
           ${shellEquipmentPanel}
@@ -5878,11 +5878,12 @@ function handleResourceGroupDrop(
 const SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT = 96;
 const SIGNAL_PATH_SCROLL_HEIGHT_MIN = 48;
 const SIGNAL_PATH_SCROLL_HEIGHT_STEP = 8;
-/** Prefer icon-only when the path area is this short or shorter. */
-const SIGNAL_PATH_COMPACT_HEIGHT = 92;
+/** Switch to icon-only compact layout at or below this height. */
+const SIGNAL_PATH_COMPACT_HEIGHT = 80;
 /** Smallest tiles when the path area is this short or shorter. */
 const SIGNAL_PATH_MICRO_HEIGHT = 56;
 const SIGNAL_PATH_FIT_MIN_ZOOM = 0.35;
+const SIGNAL_PATH_DENSITY_HYSTERESIS_PX = 4;
 
 type SignalPathDensity = "micro" | "compact" | "normal";
 
@@ -5890,6 +5891,8 @@ let signalPathScrollHeight = SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
 let signalPathResizeInitialized = false;
 let signalPathLayoutAdaptRaf = 0;
 let signalPathScrollResizeObserver: ResizeObserver | null = null;
+let signalPathLastDensity: SignalPathDensity = "normal";
+let signalPathLastZoom = 1;
 
 function isPreferCompactSignalPath(): boolean {
   return Boolean(
@@ -5909,6 +5912,16 @@ function getSignalPathScrollElement(): HTMLElement | null {
 
 function getSignalPathResizeHandle(): HTMLElement | null {
   return document.getElementById("signal-path-resize-handle");
+}
+
+function getStableSignalPathAvailableHeight(scroll: HTMLElement): number {
+  // clientHeight shrinks when scrollbars appear, which can cause density
+  // breakpoints to oscillate near thresholds. Use the rendered box height.
+  const rectHeight = Math.round(scroll.getBoundingClientRect().height);
+  if (rectHeight > 0) {
+    return rectHeight;
+  }
+  return scroll.clientHeight;
 }
 
 function getSignalPathScrollMaxHeight(): number {
@@ -5938,11 +5951,40 @@ function syncSignalPathResizeHandleAria(height: number): void {
 }
 
 function densityFromAvailableHeight(heightPx: number): SignalPathDensity {
-  if (heightPx <= SIGNAL_PATH_MICRO_HEIGHT) {
+  const microEnter = SIGNAL_PATH_MICRO_HEIGHT - SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
+  const microExit = SIGNAL_PATH_MICRO_HEIGHT + SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
+  const compactEnter = SIGNAL_PATH_COMPACT_HEIGHT - SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
+  const compactExit = SIGNAL_PATH_COMPACT_HEIGHT + SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
+  const previous = signalPathLastDensity;
+
+  if (isPreferCompactSignalPath()) {
+    if (previous === "micro") {
+      return heightPx >= microExit ? "compact" : "micro";
+    }
+    return heightPx <= microEnter ? "micro" : "compact";
+  }
+
+  if (previous === "micro") {
+    if (heightPx >= microExit) {
+      return heightPx >= compactExit ? "normal" : "compact";
+    }
     return "micro";
   }
-  // Prefer-compact setting: never show labels (normal density).
-  if (isPreferCompactSignalPath() || heightPx <= SIGNAL_PATH_COMPACT_HEIGHT) {
+
+  if (previous === "compact") {
+    if (heightPx <= microEnter) {
+      return "micro";
+    }
+    if (heightPx >= compactExit) {
+      return "normal";
+    }
+    return "compact";
+  }
+
+  if (heightPx <= microEnter) {
+    return "micro";
+  }
+  if (heightPx <= compactEnter) {
     return "compact";
   }
   return "normal";
@@ -5950,10 +5992,17 @@ function densityFromAvailableHeight(heightPx: number): SignalPathDensity {
 
 function setSignalPathNodesZoom(nodes: HTMLElement, zoom: number): void {
   // `zoom` affects layout size (unlike transform), so vertical fit removes the need to scroll.
-  if (zoom >= 0.999) {
+  const clamped = Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, Math.min(1, Number.isFinite(zoom) ? zoom : 1));
+  const snapped = Math.round(clamped * 1000) / 1000;
+  if (Math.abs(snapped - signalPathLastZoom) < 0.002) {
+    return;
+  }
+
+  signalPathLastZoom = snapped;
+  if (snapped >= 0.999) {
     nodes.style.removeProperty("zoom");
   } else {
-    nodes.style.setProperty("zoom", String(zoom));
+    nodes.style.setProperty("zoom", String(snapped));
   }
 }
 
@@ -5971,41 +6020,29 @@ export function updateSignalPathLayoutAdapt(): void {
     if (nodes) {
       setSignalPathNodesZoom(nodes, 1);
     }
+    signalPathLastDensity = "normal";
     bar?.removeAttribute("data-density");
     return;
   }
 
-  const available = scroll.clientHeight;
+  const available = getStableSignalPathAvailableHeight(scroll);
   if (available <= 0) {
     return;
   }
 
-  // Start from height-only density, with zoom reset so measurements are real.
+  const density = densityFromAvailableHeight(available);
+  signalPathLastDensity = density;
+  if (bar.dataset.density !== density) {
+    bar.dataset.density = density;
+  }
+
+  // Reset zoom for a clean measurement, then apply overflow zoom-to-fit so
+  // parallel splits never require vertical scrolling.
   setSignalPathNodesZoom(nodes, 1);
-  let density = densityFromAvailableHeight(available);
-  bar.dataset.density = density;
-  // Force style recalc after density change.
   void nodes.offsetHeight;
-  let needed = nodes.scrollHeight;
-
-  // Escalate density when content still overflows (common with parallel splits).
-  if (needed > available + 1 && density !== "compact" && density !== "micro") {
-    density = "compact";
-    bar.dataset.density = density;
-    void nodes.offsetHeight;
-    needed = nodes.scrollHeight;
-  }
-  if (needed > available + 1 && density !== "micro") {
-    density = "micro";
-    bar.dataset.density = density;
-    void nodes.offsetHeight;
-    needed = nodes.scrollHeight;
-  }
-
-  // Final fit so multi-branch graphs never clip / require vertical scrolling.
+  const needed = nodes.scrollHeight;
   if (needed > available + 1) {
-    const scale = Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, available / needed);
-    setSignalPathNodesZoom(nodes, scale);
+    setSignalPathNodesZoom(nodes, Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, available / needed));
   }
 }
 
