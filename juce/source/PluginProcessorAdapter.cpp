@@ -58,7 +58,7 @@ namespace
             : juce::AudioProcessorEditor (&processor)
         {
             setResizable (true, true);
-            setResizeLimits (800, 600, 8192, 8192);
+            setResizeLimits (640, 400, 8192, 8192);
             setSize (1200, 900);
         }
 

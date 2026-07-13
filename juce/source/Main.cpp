@@ -67,7 +67,7 @@ public:
     {
         setUsingNativeTitleBar (true);
         setResizable (true, true);
-        setResizeLimits (1024, 768, 8192, 8192);
+        setResizeLimits (640, 400, 8192, 8192);
 
         if (auto* processor = mPluginHolder != nullptr ? mPluginHolder->processor.get() : nullptr)
         {

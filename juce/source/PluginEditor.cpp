@@ -458,7 +458,7 @@ PluginEditor::PluginEditor (PluginProcessorAdapter& p)
     }
 
     setResizable (true, true);
-    setResizeLimits (800, 600, 8192, 8192);
+    setResizeLimits (640, 400, 8192, 8192);
     setSize (1200, 900);
 
     // Start periodic idle timer (~60 fps) for controller maintenance tasks.
