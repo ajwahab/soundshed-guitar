@@ -5,6 +5,7 @@ export type IconKey =
   | "amp"
   | "bolt"
   | "speaker"
+  | "output"
   | "sliders"
   | "wave"
   | "clock"

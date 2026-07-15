@@ -807,7 +807,7 @@ body.signal-path-resizing * {
 
 .signal-path-bar[data-density="compact"] .node-bypass-badge,
 .signal-path-bar[data-density="micro"] .node-bypass-badge {
-  top: 1px;
+  top: 16px;
   right: 1px;
   font-size: 6px;
   padding: 1px 3px;
@@ -832,6 +832,8 @@ body.signal-path-resizing * {
 }
 
 .signal-path-bar[data-density="compact"] .signal-node-delete,
+.signal-path-bar[data-density="compact"] .signal-node-bypass,
+.signal-path-bar[data-density="micro"] .signal-node-bypass,
 .signal-path-bar[data-density="micro"] .signal-node-delete {
   width: 14px;
   height: 14px;
@@ -850,10 +852,6 @@ body.signal-path-resizing * {
   gap: 4px;
   padding: 4px 2px;
   margin: 0 2px;
-}
-
-.signal-path-bar[data-density="compact"] .parallel-branch {
-  padding: 2px 4px;
 }
 
 .signal-path-bar[data-density="compact"] .parallel-split,
@@ -893,11 +891,6 @@ body.signal-path-resizing * {
   margin: 0 1px;
 }
 
-.signal-path-bar[data-density="micro"] .parallel-branch {
-  padding: 1px 2px;
-  border-radius: 4px;
-}
-
 .signal-path-bar[data-density="micro"] .parallel-split,
 .signal-path-bar[data-density="micro"] .parallel-join {
   min-width: 22px;
@@ -932,7 +925,7 @@ body.signal-path-resizing * {
 
 .node-bypass-badge {
   position: absolute;
-  top: 2px;
+  top: 20px;
   right: 2px;
   font-size: 7px;
   color: #ff6666;
@@ -1021,6 +1014,55 @@ body.signal-path-resizing * {
   opacity: 0;
   transform: scale(0.95);
   transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.signal-node-bypass {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(160, 236, 186, 0.95);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.95);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.signal-node-bypass-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.signal-node:hover .signal-node-bypass,
+.signal-node:focus-within .signal-node-bypass,
+.signal-node.bypassed .signal-node-bypass {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.signal-node-bypass:hover {
+  background: rgba(116, 228, 158, 0.2);
+  color: rgba(196, 255, 216, 0.98);
+  border-color: rgba(116, 228, 158, 0.4);
+}
+
+.signal-node-bypass.bypassed {
+  background: rgba(255, 80, 80, 0.2);
+  color: rgba(255, 170, 170, 0.98);
+  border-color: rgba(255, 80, 80, 0.35);
+}
+
+.signal-node-bypass:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
 }
 
 .signal-node:hover .signal-node-delete,
@@ -2164,7 +2206,7 @@ body.signal-path-resizing * {
 
 .default-effect-section {
   position: relative;
-  padding: 16px;
+  padding: 8px;
   border-radius: 18px;
   border: 1px solid rgba(169, 184, 218, 0.1);
   background:
@@ -2512,6 +2554,10 @@ body.signal-path-resizing * {
 
   .default-effect-shell .node-param-group-block {
     min-width: 100%;
+  }
+
+  .default-effect-shell-equipment-panel {
+    display: none;
   }
 }
 

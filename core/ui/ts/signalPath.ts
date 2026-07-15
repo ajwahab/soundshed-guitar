@@ -2552,7 +2552,8 @@ type RenderNodeElementOptions = {
 function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions): string {
   const icon = getNodeIcon(node.type);
   const categoryClass = getCategoryClass(getNodeCategory(node));
-  const bypassedClass = isNodeBypassed(node) ? "bypassed" : "";
+  const nodeBypassed = isNodeBypassed(node);
+  const bypassedClass = nodeBypassed ? "bypassed" : "";
   const selectedClass = selectedNodeId === node.id ? "selected" : "";
   const missingEntries = getMissingResourceEntries(node);
   const missingClass = missingEntries.length ? "missing-resource" : "";
@@ -2581,7 +2582,7 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
     .join(" · ");
   const nodeTitleAttr = nodeTitle ? ` title="${escapeHtml(nodeTitle)}"` : "";
   const nodeAriaLabel = nodeTitle
-    ? ` aria-label="${escapeHtml(nodeTitle)}${isNodeBypassed(node) ? " (bypassed)" : ""}"`
+    ? ` aria-label="${escapeHtml(nodeTitle)}${nodeBypassed ? " (bypassed)" : ""}"`
     : "";
 
   // Use the layout thumbnail as a small avatar at the top-left of the node if available.
@@ -2602,6 +2603,9 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
       ? `<button class="signal-node-delete" type="button" title="Collapse split (only if empty)" aria-label="Collapse split" data-collapse-splitter-id="${escapeHtml(collapseSplitterId!)}" data-collapse-mixer-id="${escapeHtml(node.id)}">×</button>`
       : '<button class="signal-node-delete" type="button" title="Remove" aria-label="Remove">×</button>')
     : "";
+  const bypassButton = isToggleableSignalPathNode(node)
+    ? `<button class="signal-node-bypass${nodeBypassed ? " bypassed" : ""}" type="button" title="${nodeBypassed ? "Enable effect" : "Bypass effect"}" aria-label="${nodeBypassed ? "Enable effect" : "Bypass effect"}" aria-pressed="${String(nodeBypassed)}">${renderIcon("output", "fx-effect-icon signal-node-bypass-icon")}</button>`
+    : "";
 
   return `
     <div class="signal-node ${categoryClass} ${bypassedClass} ${selectedClass} ${missingClass}${thumbClass}" 
@@ -2610,6 +2614,7 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
          tabindex="0"${nodeTitleAttr}${nodeAriaLabel}>
       ${thumbAvatar}
       ${deleteButton}
+      ${bypassButton}
       ${thumbUrl ? `<div class="node-icon"></div>` : `<div class="node-icon">${icon}</div>`}
       <div class="node-info">
         <div class="node-name">${displayName}</div>
@@ -2617,7 +2622,7 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
         ${architectureBadge ? `<div class="node-architecture-badge" aria-label="Model architecture">${architectureBadge}</div>` : ""}
       </div>
       <span class="node-clip-indicator clip-inactive" aria-hidden="true"></span>
-      ${isNodeBypassed(node) ? '<div class="node-bypass-badge">OFF</div>' : ""}
+      ${nodeBypassed ? '<div class="node-bypass-badge">OFF</div>' : ""}
       ${missingBadge}
     </div>
   `;
@@ -2712,6 +2717,27 @@ function bindNodeClickHandlers(preset: Preset): void {
       selectedNodeId = null;
       nodeParamsPanelElement?.classList.remove("visible");
       updateEffectVisualization();
+    });
+  });
+  const bypassButtons = signalPathNodesElement?.querySelectorAll(".signal-node-bypass");
+  bypassButtons?.forEach((button) => {
+    button.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const btn = button as HTMLElement;
+      const nodeEl = btn.closest(".signal-node") as HTMLElement | null;
+      const nodeId = nodeEl?.dataset.nodeId;
+      if (!nodeId || !preset.graph) {
+        return;
+      }
+
+      const node = preset.graph.nodes.find((n) => n.id === nodeId);
+      if (!isToggleableSignalPathNode(node)) {
+        return;
+      }
+
+      toggleSignalPathNodeBypass(node, preset);
     });
   });
 
@@ -3834,6 +3860,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               <div class="default-effect-shell-subtitle">${shellCategoryLabel} · ${shellTypeLabel}</div>
             </div>
           </div>
+          <div class="default-effect-shell-rail" aria-hidden="true">
+            <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
+          </div>
           <div class="default-effect-shell-meta" aria-label="Module status">
             ${architectureBadge ? `<span class="default-effect-shell-chip default-effect-shell-chip-architecture" title="Loaded model architecture">${architectureBadge}</span>` : ""}
             ${calibrationMetadataChip}
@@ -3847,9 +3876,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               aria-label="${shellBypassTitle}"
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${shellLayoutButton}
-          </div>
-          <div class="default-effect-shell-rail" aria-hidden="true">
-            <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
           </div>
           <button class="close-params-btn" type="button" aria-label="Close effect panel" title="Close effect panel">×</button>
         </div>

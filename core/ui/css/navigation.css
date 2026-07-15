@@ -115,7 +115,6 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px 3px 6px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -205,7 +204,7 @@
   .control-bar-body-inner>.control-bar-group:first-of-type,
   .control-bar-body-inner>.control-bar-group:last-of-type,
   .preset-group {
-    grid-column: 1;
+  /*  grid-column: 1;*/
     justify-self: stretch;
   }
 
