@@ -33,6 +33,7 @@ export const EffectGuids = {
 
   // EQ
   kEqParametric:         "4b4025ca-64cd-4180-be79-81873b618dba",
+  kEqGraphic:            "ef8240ba-c973-4e09-ab65-4faf56a8ecbf",
 
   // Delay
   kDelayDigital:         "673d3e7a-e9ef-4c5d-a4c4-619dff3355ed",
@@ -95,6 +96,7 @@ export const EFFECT_ALIAS_MAP: Record<string, string> = {
   distortion:            EffectGuids.kDistortion,
   fuzz:                  EffectGuids.kFuzz,
   eq_parametric:         EffectGuids.kEqParametric,
+  eq_graphic:            EffectGuids.kEqGraphic,
   delay_digital:         EffectGuids.kDelayDigital,
   delay_doubler:         EffectGuids.kDelayDoubler,
   reverb_room:           EffectGuids.kReverbRoom,

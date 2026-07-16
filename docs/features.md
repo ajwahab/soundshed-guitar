@@ -72,6 +72,7 @@ All effects register via `EffectRegistry` (singleton factory). Effect type IDs, 
 | Type ID | Name | Key Parameters |
 |---------|------|----------------|
 | `eq_parametric` | 4-Band Parametric EQ | `lowGain/Freq/Q`, `lowMidGain/Freq/Q`, `highMidGain/Freq/Q`, `highGain/Freq/Q` (gains ±12 dB; shelf Q defaults 0.707) |
+| `eq_graphic` | Graphic Equalizer | Five to ten independently bypassable bell bands. Each band has `bandNEnabled`, `bandNGain`, and `bandNFreq`; profiles are Flat, Bass, and Guitar. |
 
 ### 2.5 Modulation
 

@@ -319,6 +319,7 @@ const EFFECT_STUBS: EffectStub[] = [
   { type: EffectGuids.kCabSimple,        aliases: ["cab_simple"] },
   // EQ
   { type: EffectGuids.kEqParametric,     aliases: ["eq_parametric"] },
+  { type: EffectGuids.kEqGraphic,        aliases: ["eq_graphic"] },
   // Utility
   { type: EffectGuids.kGain,             aliases: ["gain"] },
   { type: EffectGuids.kWasmHost,         aliases: ["wasm_host"] },
@@ -401,7 +402,7 @@ export function generateUserPresetId(): string {
 }
 
 /**
- * Create a new empty preset V2 structure
+ * Create a new preset V2 structure with the default starter chain.
  */
 export function createEmptyPresetV2(): Preset {
   return {
@@ -433,6 +434,59 @@ export function createEmptyPresetV2(): Preset {
           config: {}
         },
         {
+          id: "gate_0",
+          type: EffectGuids.kDynamicsGate,
+          displayName: "Noise Gate",
+          category: "dynamics",
+          bypassed: true,
+          params: {
+            threshold: -40.0,
+            attack: 0.5,
+            hold: 50.0,
+            release: 100.0,
+          },
+          config: {}
+        },
+        {
+          id: "fx_0",
+          type: EffectGuids.kFxNam,
+          displayName: "Neural FX",
+          category: "amp",
+          bypassed: true,
+          params: {
+            inputGain: 0.0,
+            outputGain: 0.0,
+            useCalibration: 1.0,
+          },
+          config: {}
+        },
+        {
+          id: "amp_0",
+          type: EffectGuids.kAmpNam,
+          displayName: "Neural Amp",
+          category: "amp",
+          bypassed: false,
+          params: {
+            inputGain: 0.0,
+            outputGain: 0.0,
+            useCalibration: 1.0,
+          },
+          config: {}
+        },
+        {
+          id: "cab_0",
+          type: EffectGuids.kCabIr,
+          displayName: "IR Cab",
+          category: "cab",
+          bypassed: true,
+          params: {
+            mix: 1.0,
+            outputGain: 0.0,
+            quality: 1.0,
+          },
+          config: {}
+        },
+        {
           id: "__output__",
           type: "output",
           displayName: "Output",
@@ -445,6 +499,34 @@ export function createEmptyPresetV2(): Preset {
       edges: [
         {
           from: "__input__",
+          to: "gate_0",
+          fromPort: 0,
+          toPort: 0,
+          gain: 1
+        },
+        {
+          from: "gate_0",
+          to: "fx_0",
+          fromPort: 0,
+          toPort: 0,
+          gain: 1
+        },
+        {
+          from: "fx_0",
+          to: "amp_0",
+          fromPort: 0,
+          toPort: 0,
+          gain: 1
+        },
+        {
+          from: "amp_0",
+          to: "cab_0",
+          fromPort: 0,
+          toPort: 0,
+          gain: 1
+        },
+        {
+          from: "cab_0",
           to: "__output__",
           fromPort: 0,
           toPort: 0,

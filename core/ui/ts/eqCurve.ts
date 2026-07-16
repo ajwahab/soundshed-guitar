@@ -184,6 +184,96 @@ export const EQ_BAND_RANGES: ReadonlyArray<{
 
 export const EQ_FREQ_DEFAULTS: ReadonlyArray<number> = [100, 400, 2000, 8000];
 
+export const GRAPHIC_EQ_FREQUENCIES = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
+export const GRAPHIC_EQ_PRESETS = ["Flat", "Bass", "Guitar"] as const;
+
+function graphicEqFrequencyValue(params: Record<string, number | undefined>, index: number): number {
+  const value = params[`band${index + 1}Freq`];
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(20, Math.min(20000, value))
+    : GRAPHIC_EQ_FREQUENCIES[index];
+}
+
+export function graphicEqFrequencyBounds(
+  params: Record<string, number | undefined>,
+  bandNumber: number,
+): { min: number; max: number } {
+  const index = bandNumber - 1;
+  const min = index > 0 ? graphicEqFrequencyValue(params, index - 1) + 1 : 20;
+  const max = index < GRAPHIC_EQ_FREQUENCIES.length - 1
+    ? graphicEqFrequencyValue(params, index + 1) - 1
+    : 20000;
+  return min <= max ? { min, max } : { min: 20, max: 20000 };
+}
+
+export function clampGraphicEqFrequency(
+  params: Record<string, number | undefined>,
+  bandNumber: number,
+  frequency: number,
+): number {
+  const { min, max } = graphicEqFrequencyBounds(params, bandNumber);
+  return Math.max(min, Math.min(max, frequency));
+}
+
+export function buildGraphicEqBandConfigs(params: Record<string, number | undefined>): EqBandConfig[] {
+  const bandCount = Math.max(5, Math.min(10, Math.round(params.bandCount ?? 10)));
+  return GRAPHIC_EQ_FREQUENCIES.slice(0, bandCount).flatMap((defaultFreq, index) => {
+    const number = index + 1;
+    if ((params[`band${number}Enabled`] ?? 1) < 0.5) return [];
+    return [{
+      freq: Math.max(20, Math.min(20000, params[`band${number}Freq`] ?? defaultFreq)),
+      gainDb: Math.max(-18, Math.min(18, params[`band${number}Gain`] ?? 0)),
+      q: Math.SQRT2,
+      defaultFreq,
+      defaultGainDb: 0,
+      defaultQ: Math.SQRT2,
+      freqMin: 20,
+      freqMax: 20000,
+      gainMin: -18,
+      gainMax: 18,
+      hasQ: false,
+      qMin: Math.SQRT2,
+      qMax: Math.SQRT2,
+      shelfType: undefined,
+      label: `${Math.round(defaultFreq)} Hz`,
+    }];
+  });
+}
+
+export function graphicEqBandChangeToParams(
+  params: Record<string, number | undefined>,
+  activeBandIndex: number,
+  freq: number,
+  gainDb: number,
+): Record<string, number> {
+  const activeBandNumbers = GRAPHIC_EQ_FREQUENCIES
+    .slice(0, Math.max(5, Math.min(10, Math.round(params.bandCount ?? 10))))
+    .map((_, index) => index + 1)
+    .filter((number) => (params[`band${number}Enabled`] ?? 1) >= 0.5);
+  const bandNumber = activeBandNumbers[activeBandIndex];
+  return bandNumber
+    ? { [`band${bandNumber}Freq`]: clampGraphicEqFrequency(params, bandNumber, freq), [`band${bandNumber}Gain`]: gainDb }
+    : {};
+}
+
+export function graphicEqPresetParams(preset: number): Record<string, number> {
+  const profile = Math.max(0, Math.min(2, Math.round(preset)));
+  const bandCount = profile === 1 ? 5 : 10;
+  const gains = profile === 1
+    ? [4, 3, 1, -1, -2, 0, 0, 0, 0, 0]
+    : profile === 2
+      ? [0, -1, 0, 1, -2, -1, 2, 1, 0, -2]
+      : Array(10).fill(0);
+  const result: Record<string, number> = { preset: profile, bandCount };
+  GRAPHIC_EQ_FREQUENCIES.forEach((freq, index) => {
+    const number = index + 1;
+    result[`band${number}Enabled`] = index < bandCount ? 1 : 0;
+    result[`band${number}Freq`] = freq;
+    result[`band${number}Gain`] = gains[index];
+  });
+  return result;
+}
+
 /**
  * Build EqBandConfig[] from a flat params dict using the canonical param keys.
  * Works for both global EQ node.params and signal-path node.params.

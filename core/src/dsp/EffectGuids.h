@@ -42,6 +42,7 @@ namespace guitarfx
 
     // ── EQ ────────────────────────────────────────────────────────────────
     constexpr const char* kEqParametric    = "4b4025ca-64cd-4180-be79-81873b618dba";
+    constexpr const char* kEqGraphic       = "ef8240ba-c973-4e09-ab65-4faf56a8ecbf";
 
     // ── Delay ─────────────────────────────────────────────────────────────
     constexpr const char* kDelayDigital    = "673d3e7a-e9ef-4c5d-a4c4-619dff3355ed";

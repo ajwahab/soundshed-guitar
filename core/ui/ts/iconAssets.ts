@@ -88,6 +88,7 @@ const effectIcons: Record<string, IconKey> = {
 
   // EQ
   [EffectGuids.kEqParametric]:     "sliders",
+  [EffectGuids.kEqGraphic]:        "sliders",
 
   // Modulation
   [EffectGuids.kChorus]:           "wave",

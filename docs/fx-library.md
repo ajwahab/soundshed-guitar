@@ -66,6 +66,7 @@ All UUID constants are defined in `core/src/dsp/EffectGuids.h`. The table below 
 | `kDistortion` | `686773c9-30ac-4f33-b0f8-9222146d45b1` | `distortion` |
 | `kFuzz` | `3a38b19c-1d97-4989-b5bb-12bcc59d1e6b` | `fuzz` |
 | `kEqParametric` | `4b4025ca-64cd-4180-be79-81873b618dba` | `eq_parametric` |
+| `kEqGraphic` | `ef8240ba-c973-4e09-ab65-4faf56a8ecbf` | `eq_graphic` |
 | `kDelayDigital` | `673d3e7a-e9ef-4c5d-a4c4-619dff3355ed` | `delay_digital` |
 | `kDelayDoubler` | `778aaef4-40e3-4efa-8782-6a8bfa1d1661` | `delay_doubler` |
 | `kReverbRoom` | `7467cbf1-6c7f-4f07-b5dd-a303d25b475c` | `reverb_room` |
@@ -100,6 +101,10 @@ EffectRegistry::Instance().Register(info.type, info, factory);
 ```
 
 `EffectRegistry::Resolve(typeId)` is called during preset deserialization so alias resolution is transparent to all callers.
+
+### Graphic Equalizer (`eq_graphic`)
+
+The Graphic Equalizer has five to ten active one-octave bell bands. `bandCount` determines the active range and every band persists an `Enabled`, `Gain`, and target `Freq` parameter (`band1Enabled`, `band1Gain`, `band1Freq`, and so on through band 10). The effect panel includes Flat, Bass, and Guitar profiles; choosing a profile writes the corresponding full band configuration into the node so it remains portable with the preset.
 
 
 

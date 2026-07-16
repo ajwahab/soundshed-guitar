@@ -964,6 +964,61 @@ bool TestParametricEQClippingStability()
   return finite && audible && bounded;
 }
 
+bool TestGraphicEQProfilesAndStability()
+{
+  std::cout << "\n--- Graphic EQ Profile and Stability Test ---\n";
+
+  auto effect = guitarfx::EffectRegistry::Instance().Create(guitarfx::EffectGuids::kEqGraphic);
+  if (!effect)
+  {
+    std::cout << "  FAIL: Could not create graphic EQ\n";
+    return false;
+  }
+
+  effect->Prepare(kTestSampleRate, kTestBlockSize);
+  effect->SetParam("bandCount", 5.0);
+  effect->SetParam("band1Enabled", 1.0);
+  effect->SetParam("band1Freq", 50.0);
+  effect->SetParam("band1Gain", 18.0);
+  effect->SetParam("band5Freq", 1000.0);
+  effect->SetParam("band5Gain", -18.0);
+  effect->SetParam("band10Freq", 30000.0);
+  effect->SetParam("band1Freq", 500.0);
+  effect->SetParam("band2Freq", 20.0);
+
+  std::vector<float> inputL(kTestBlockSize);
+  std::vector<float> inputR(kTestBlockSize);
+  std::vector<float> outputL(kTestBlockSize);
+  std::vector<float> outputR(kTestBlockSize);
+  GenerateSineWave(inputL, 110.0, 1.5);
+  inputR = inputL;
+  float* inputs[2] = {inputL.data(), inputR.data()};
+  float* outputs[2] = {outputL.data(), outputR.data()};
+  effect->Process(inputs, outputs, kTestBlockSize);
+
+  const auto analysis = AnalyzeSignal(outputL);
+  const bool finite = !analysis.hasNaN && !analysis.hasInf;
+  const bool clampedBandCount = effect->GetParam("bandCount") == 5.0;
+  const bool clampedFrequency = effect->GetParam("band10Freq") <= kTestSampleRate * 0.49;
+  const bool orderedFrequencies = effect->GetParam("band1Freq") < effect->GetParam("band2Freq");
+  const auto typeInfo = guitarfx::EffectRegistry::Instance().GetTypeInfo(guitarfx::EffectGuids::kEqGraphic);
+  bool profilesAvailable = false;
+  if (typeInfo)
+  {
+    const auto presetParam = std::find_if(typeInfo->parameters.begin(), typeInfo->parameters.end(),
+                                          [](const guitarfx::ParameterDef& param) { return param.id == "preset"; });
+    profilesAvailable = presetParam != typeInfo->parameters.end()
+      && presetParam->labels.size() == 3 && presetParam->labels[1] == "Bass" && presetParam->labels[2] == "Guitar";
+  }
+
+  std::cout << "  Five-band mode is retained:                 " << (clampedBandCount ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Frequencies stay below Nyquist:              " << (clampedFrequency ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Adjacent bands remain ordered:                " << (orderedFrequencies ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Bass and Guitar profiles are registered:     " << (profilesAvailable ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Output remains finite under extremes:        " << (finite ? "PASS" : "FAIL") << "\n";
+  return clampedBandCount && clampedFrequency && orderedFrequencies && profilesAvailable && finite;
+}
+
 bool TestDynamicsSoftClipOptions()
 {
   std::cout << "\n--- Dynamics Soft Clip Option Tests ---\n";
@@ -2011,6 +2066,8 @@ int main()
     return 1;
 
   if (!TestParametricEQClippingStability())
+    return 1;
+  if (!TestGraphicEQProfilesAndStability())
     return 1;
 
   if (!TestDynamicsSoftClipOptions())

@@ -6,6 +6,7 @@
 #include "dsp/effects/GainEffect.h"
 #include "dsp/effects/NoiseGateEffect.h"
 #include "dsp/effects/ParametricEQEffect.h"
+#include "dsp/effects/GraphicEQEffect.h"
 #include "dsp/effects/DelayEffect.h"
 #include "dsp/effects/DoublerEffect.h"
 #include "dsp/effects/HybridTransposeEffect.h"
@@ -102,6 +103,7 @@ namespace guitarfx
 
     // EQ
     RegisterParametricEQEffect();
+    RegisterGraphicEQEffect();
 
     // Amp models
     RegisterBuiltinAmpEffect();

@@ -38,6 +38,13 @@ import {
   EqCurveInteraction,
   buildEqBandConfigsFromParams,
   eqBandChangeToParams,
+  GRAPHIC_EQ_FREQUENCIES,
+  GRAPHIC_EQ_PRESETS,
+  buildGraphicEqBandConfigs,
+  graphicEqBandChangeToParams,
+  clampGraphicEqFrequency,
+  graphicEqFrequencyBounds,
+  graphicEqPresetParams,
 } from "./eqCurve.js";
 import { resourceBrowserModal } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
@@ -3072,6 +3079,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // Get parameter definitions from registry
   const typeInfo = getNodeEffectInfo(node);
   let paramDefs = typeInfo?.parameters || [];
+  if (EffectTypeRegistry.resolve(node.type) === EffectGuids.kEqGraphic) {
+    paramDefs = [];
+  }
 
   const blendState = getBlendState(node);
   const blendParamRanges = new Map<string, BlendParamRange>();
@@ -3224,8 +3234,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   const hasAdvancedTab = advancedParamDefs.length > 0;
 
   const isEqNode = typeInfo?.category === "eq" || node.type.startsWith("eq_");
+  const isGraphicEqNode = EffectTypeRegistry.resolve(node.type) === EffectGuids.kEqGraphic;
   const customEffectActions = buildCustomEffectActions(node);
-  const eqVisualizer = isEqNode ? `
+  const eqVisualizer = isEqNode && !isGraphicEqNode ? `
     <div class="eq-visualizer" data-node-id="${node.id}">
       <div class="eq-visualizer-header">
         <span>EQ Curve</span>
@@ -3233,6 +3244,50 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       </div>
       <canvas class="eq-curve-canvas" data-node-id="${node.id}"></canvas>
     </div>
+  ` : "";
+  const graphicEqControls = isGraphicEqNode ? `
+    <section class="graphic-eq-controls" data-node-id="${node.id}">
+      <div class="graphic-eq-tabs" role="tablist" aria-label="Graphic equalizer">
+        <button class="graphic-eq-tab is-active" type="button" role="tab" aria-selected="true" data-graphic-eq-tab="bands">Bands</button>
+        <button class="graphic-eq-tab" type="button" role="tab" aria-selected="false" data-graphic-eq-tab="curve">EQ Curve</button>
+      </div>
+      <div class="graphic-eq-tab-panel is-active" data-graphic-eq-panel="bands" role="tabpanel">
+        <div class="graphic-eq-toolbar">
+          <label>Profile
+            <select class="graphic-eq-profile" data-node-id="${node.id}">
+              ${GRAPHIC_EQ_PRESETS.map((label, index) => `<option value="${index}" ${(node.params.preset ?? 0) === index ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <label>Bands
+            <input class="graphic-eq-band-count" data-node-id="${node.id}" type="number" min="5" max="10" step="1" value="${Math.max(5, Math.min(10, Math.round(node.params.bandCount ?? 10)))}">
+          </label>
+        </div>
+        <div class="graphic-eq-bands">
+          ${GRAPHIC_EQ_FREQUENCIES.map((defaultFreq, index) => {
+            const number = index + 1;
+            const active = number <= (node.params.bandCount ?? 10);
+            const enabled = (node.params[`band${number}Enabled`] ?? 1) >= 0.5;
+            const gain = node.params[`band${number}Gain`] ?? 0;
+            const frequencyBounds = graphicEqFrequencyBounds(node.params, number);
+            return `<div class="graphic-eq-band ${active ? "" : "is-inactive"}" data-band-number="${number}">
+              <label class="graphic-eq-enable"><input type="checkbox" data-param-key="band${number}Enabled" ${enabled ? "checked" : ""} ${active ? "" : "disabled"}><span>Band ${number}</span></label>
+              <output class="graphic-eq-gain-value">${gain.toFixed(1)} dB</output>
+              <input class="graphic-eq-gain" data-param-key="band${number}Gain" type="range" min="-18" max="18" step="0.1" value="${gain}" style="--graphic-eq-gain: ${((gain + 18) / 36) * 100}%" ${active && enabled ? "" : "disabled"}>
+              <label class="graphic-eq-frequency-label"><input class="graphic-eq-frequency" data-param-key="band${number}Freq" type="number" inputmode="numeric" min="${Math.ceil(frequencyBounds.min)}" max="${Math.floor(frequencyBounds.max)}" step="1" value="${Math.round(node.params[`band${number}Freq`] ?? defaultFreq)}" ${active && enabled ? "" : "disabled"}><span>Hz</span></label>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+      <div class="graphic-eq-tab-panel" data-graphic-eq-panel="curve" role="tabpanel" hidden>
+        <div class="eq-visualizer" data-node-id="${node.id}">
+          <div class="eq-visualizer-header">
+            <span>EQ Curve</span>
+            <span class="eq-visualizer-range">±18 dB</span>
+          </div>
+          <canvas class="eq-curve-canvas" data-node-id="${node.id}"></canvas>
+        </div>
+      </div>
+    </section>
   ` : "";
 
   // Build mixer input controls for mixer nodes
@@ -3803,6 +3858,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     ${customEffectActions}
     ${analyzerSection}
     ${eqVisualizer}
+    ${graphicEqControls}
     ${mixerInputControls}
     <div class="default-effect-section default-effect-section-controls default-effect-section-custom-layout">
       ${customLayoutHtml}
@@ -3841,6 +3897,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       ${customEffectActions}
       ${analyzerSection}
       ${eqVisualizer}
+      ${graphicEqControls}
       ${mixerInputControls}
       <div class="default-effect-section default-effect-section-controls">
         ${renderedControls}
@@ -3889,12 +3946,13 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     </div>
   `;
 
-  if (isEqNode) {
+  if (isEqNode && !isGraphicEqNode) {
     updateEqVisualization(node);
   }
 
   // Bind controls
   bindNodeParamControls(node, preset);
+  bindGraphicEqControls(node, preset);
   bindLayoutOverlayBypassToggles(node, preset);
   bindResourceControls(node, preset);
   bindHostedPluginActionControls(node);
@@ -4433,7 +4491,10 @@ function updateEqVisualization(node: GraphNode): void {
     canvas.height = height;
   }
 
-  const bandConfigs = buildEqBandConfigsFromParams(node.params ?? {});
+  const isGraphicEqNode = EffectTypeRegistry.resolve(node.type) === EffectGuids.kEqGraphic;
+  const bandConfigs = isGraphicEqNode
+    ? buildGraphicEqBandConfigs(node.params ?? {})
+    : buildEqBandConfigsFromParams(node.params ?? {});
 
   if (signalPathEqInteraction) {
     // Update existing interaction in place
@@ -4446,7 +4507,9 @@ function updateEqVisualization(node: GraphNode): void {
       bandConfigs,
       (bandIndex, freq, gainDb, q) => {
         // Lightweight onChange: update params, send to plugin, and sync knobs live
-        const changed = eqBandChangeToParams(bandIndex, freq, gainDb, q);
+        const changed = isGraphicEqNode
+          ? graphicEqBandChangeToParams(node.params, bandIndex, freq, gainDb)
+          : eqBandChangeToParams(bandIndex, freq, gainDb, q);
         for (const [key, value] of Object.entries(changed)) {
           node.params[key] = value;
           sendSignalPathNodeParamUpdate(node.id, key, value);
@@ -4457,17 +4520,98 @@ function updateEqVisualization(node: GraphNode): void {
       },
       (bandIndex, freq, gainDb, q) => {
         // onCommit: full update including panel rebuild for knob display sync
-        const changed = eqBandChangeToParams(bandIndex, freq, gainDb, q);
+        const changed = isGraphicEqNode
+          ? graphicEqBandChangeToParams(node.params, bandIndex, freq, gainDb)
+          : eqBandChangeToParams(bandIndex, freq, gainDb, q);
         for (const [key, value] of Object.entries(changed)) {
           node.params[key] = value;
           sendSignalPathNodeParamUpdate(node.id, key, value);
         }
+
         if (preset) {
           showNodeParamsPanel(node, preset);
         }
       }
     );
   }
+}
+
+function bindGraphicEqControls(node: GraphNode, preset: Preset): void {
+  if (EffectTypeRegistry.resolve(node.type) !== EffectGuids.kEqGraphic) {
+    return;
+  }
+
+  const applyParams = (updates: Record<string, number>, rerender = false): void => {
+    Object.entries(updates).forEach(([key, value]) => {
+      node.params[key] = value;
+      sendSignalPathNodeParamUpdate(node.id, key, value);
+    });
+    if (rerender) {
+      showNodeParamsPanel(node, preset);
+    } else {
+      updateEqVisualization(node);
+    }
+  };
+
+  const profile = nodeParamsPanelElement?.querySelector<HTMLSelectElement>(".graphic-eq-profile");
+  profile?.addEventListener("change", () => applyParams(graphicEqPresetParams(Number(profile.value)), true));
+
+  const tabs = nodeParamsPanelElement?.querySelectorAll<HTMLButtonElement>(".graphic-eq-tab") ?? [];
+  const tabPanels = nodeParamsPanelElement?.querySelectorAll<HTMLElement>(".graphic-eq-tab-panel") ?? [];
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const selectedTab = tab.dataset.graphicEqTab;
+      tabs.forEach((candidate) => {
+        const selected = candidate.dataset.graphicEqTab === selectedTab;
+        candidate.classList.toggle("is-active", selected);
+        candidate.setAttribute("aria-selected", selected ? "true" : "false");
+      });
+      tabPanels.forEach((panel) => {
+        const selected = panel.dataset.graphicEqPanel === selectedTab;
+        panel.classList.toggle("is-active", selected);
+        panel.hidden = !selected;
+      });
+      if (selectedTab === "curve") {
+        updateEqVisualization(node);
+      }
+    });
+  });
+
+  const bandCount = nodeParamsPanelElement?.querySelector<HTMLInputElement>(".graphic-eq-band-count");
+  bandCount?.addEventListener("change", () => {
+    const count = Math.max(5, Math.min(10, Math.round(Number(bandCount.value))));
+    applyParams({ bandCount: count }, true);
+  });
+
+  nodeParamsPanelElement?.querySelectorAll<HTMLLabelElement>(".graphic-eq-enable").forEach((control) => {
+    control.addEventListener("change", () => {
+      const input = control.querySelector<HTMLInputElement>("input");
+      const key = input?.dataset.paramKey;
+      if (key && input) applyParams({ [key]: input.checked ? 1 : 0 }, true);
+    });
+  });
+
+  nodeParamsPanelElement?.querySelectorAll<HTMLInputElement>(".graphic-eq-gain, .graphic-eq-frequency").forEach((input) => {
+    input.addEventListener("input", () => {
+      const key = input.dataset.paramKey;
+      const rawValue = Number(input.value);
+      if (!key || !Number.isFinite(rawValue)) return;
+      const bandMatch = /^band(\d+)Freq$/.exec(key);
+      const value = bandMatch
+        ? clampGraphicEqFrequency(node.params, Number(bandMatch[1]), rawValue)
+        : rawValue;
+      if (value !== rawValue) input.value = `${Math.round(value)}`;
+      applyParams({ [key]: value });
+      const valueDisplay = input.closest(".graphic-eq-band")?.querySelector<HTMLOutputElement>(".graphic-eq-gain-value");
+      if (input.classList.contains("graphic-eq-gain")) {
+        input.style.setProperty("--graphic-eq-gain", `${((value + 18) / 36) * 100}%`);
+        if (valueDisplay) valueDisplay.textContent = `${value.toFixed(1)} dB`;
+      }
+    });
+    input.addEventListener("change", () => {
+      if (input.classList.contains("graphic-eq-frequency")) showNodeParamsPanel(node, preset);
+    });
+  });
 }
 
 function bindResourceControls(node: GraphNode, preset: Preset): void {
