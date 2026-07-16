@@ -697,6 +697,15 @@ function persistToneSharingSession(value: string): void {
   setAppSetting(storageKeys.sessionId, null);
 }
 
+function updateToneSharingSession(sessionId: unknown): void {
+  const normalized = normalizeSettingString(sessionId);
+  if (normalized === state.sessionId) {
+    return;
+  }
+  state.sessionId = normalized;
+  persistToneSharingSession(normalized);
+}
+
 function normalizeInstalledPackMetadata(raw: unknown): InstalledPackMetadata | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -1399,19 +1408,46 @@ async function resolvePackThumbnailUrl(pack: ToneSharingPack): Promise<string> {
 }
 
 async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers ?? {});
-  if (state.sessionId) {
-    headers.set("x-session-id", state.sessionId);
-  }
-  const response = await fetch(`${state.apiBase}${path}`, {
-    ...init,
-    headers,
-    credentials: "include"
-  });
+  const request = async (includeSessionId: boolean): Promise<{ response: Response; payload: Record<string, unknown> | null }> => {
+    const headers = new Headers(init.headers ?? {});
+    if (includeSessionId && state.sessionId) {
+      headers.set("x-session-id", state.sessionId);
+    }
+    const response = await fetch(`${state.apiBase}${path}`, {
+      ...init,
+      headers,
+      credentials: "include"
+    });
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { response, payload };
+  };
 
-  const payload = await response.json().catch(() => null);
+  const startedWithSessionId = Boolean(state.sessionId);
+  let usedFallbackWithoutSessionId = false;
+  let { response, payload } = await request(startedWithSessionId);
+  if (startedWithSessionId && response.status === 401) {
+    usedFallbackWithoutSessionId = true;
+    ({ response, payload } = await request(false));
+  }
+
+  const payloadData = payload?.data && typeof payload.data === "object" ? payload.data as Record<string, unknown> : null;
+  const responseSessionId = normalizeSettingString(response.headers.get("x-session-id"));
+  const payloadSessionId = normalizeSettingString(payload?.sessionId) || normalizeSettingString(payloadData?.sessionId);
+  if (responseSessionId || payloadSessionId) {
+    updateToneSharingSession(responseSessionId || payloadSessionId);
+  } else if (usedFallbackWithoutSessionId && response.ok) {
+    // Keep cookie-based auth working when an old stored header token has expired.
+    updateToneSharingSession("");
+  } else if (response.status === 401 && startedWithSessionId) {
+    updateToneSharingSession("");
+  }
+
   if (!response.ok || !payload || payload.ok === false) {
-    const message = payload?.error?.message || `Request failed (${response.status})`;
+    const errorPayload = payload?.error;
+    const errorMessage = errorPayload && typeof errorPayload === "object" ? (errorPayload as { message?: unknown }).message : undefined;
+    const message = typeof errorMessage === "string" && errorMessage.trim()
+      ? errorMessage
+      : `Request failed (${response.status})`;
     throw new Error(message);
   }
 
@@ -1593,10 +1629,9 @@ async function verifyCode(): Promise<void> {
 
     state.user = data.user;
     setProfileFieldsFromUser(data.user);
-    state.sessionId = data.sessionId ?? "";
+    updateToneSharingSession(data.sessionId);
     authCodeRequested = false;
     updateAuthButtonVisibility();
-    persistToneSharingSession(state.sessionId);
     setText("tone-sharing-auth-status", `Signed in as ${data.user.email}`);
     closeSignInModal();
     await Promise.all([loadBrowse(), loadMine()]);
@@ -1611,12 +1646,11 @@ async function signOut(): Promise<void> {
   } catch {
   }
 
-  state.sessionId = "";
+  updateToneSharingSession("");
   state.user = null;
   setProfileFieldsFromUser(null);
   authCodeRequested = false;
   updateAuthButtonVisibility();
-  persistToneSharingSession("");
   setText("tone-sharing-auth-status", "Signed out");
   closeSignInModal();
   await loadBrowse();
