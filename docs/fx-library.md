@@ -104,7 +104,7 @@ EffectRegistry::Instance().Register(info.type, info, factory);
 
 ### Graphic Equalizer (`eq_graphic`)
 
-The Graphic Equalizer has five to ten active one-octave bell bands. `bandCount` determines the active range and every band persists an `Enabled`, `Gain`, and target `Freq` parameter (`band1Enabled`, `band1Gain`, `band1Freq`, and so on through band 10). The effect panel includes Flat, Bass, and Guitar profiles; choosing a profile writes the corresponding full band configuration into the node so it remains portable with the preset.
+The Graphic Equalizer has factory five- and ten-band bell templates for Bass, Guitar, and General Purpose use. Every band persists `Enabled`, `Gain`, target `Freq`, and `Q` parameters (`band1Enabled`, `band1Gain`, `band1Freq`, `band1Q`, and so on through band 10). The panel displays only active, enabled bands and prevents manually edited band frequencies from crossing adjacent bands. Effect templates are generic catalog metadata: choosing one copies its complete parameter map into the node, and later user edits remain in that node's serialized signal-chain configuration. Shared presets therefore do not depend on a user's local template library. The same catalog format supports future custom templates for any effect type. The Bass layouts use focused 45–150 Hz controls alongside clarity, presence, and attack bands based on [eight key bass EQ ranges](https://www.behindthemixer.com/art-bass-eq-using-eight-key-frequency-ranges/). The Guitar layouts use the [Neural DSP electric guitar EQ guide](https://neuraldsp.com/articles/electric-guitar-eq-guide/): 80 Hz warmth, 250–500 Hz mud reduction, 800 Hz clarity, 3–5 kHz articulation, and a 10 kHz harshness cut.
 
 
 

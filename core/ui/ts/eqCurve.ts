@@ -185,7 +185,6 @@ export const EQ_BAND_RANGES: ReadonlyArray<{
 export const EQ_FREQ_DEFAULTS: ReadonlyArray<number> = [100, 400, 2000, 8000];
 
 export const GRAPHIC_EQ_FREQUENCIES = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
-export const GRAPHIC_EQ_PRESETS = ["Flat", "Bass", "Guitar"] as const;
 
 function graphicEqFrequencyValue(params: Record<string, number | undefined>, index: number): number {
   const value = params[`band${index + 1}Freq`];
@@ -223,17 +222,17 @@ export function buildGraphicEqBandConfigs(params: Record<string, number | undefi
     return [{
       freq: Math.max(20, Math.min(20000, params[`band${number}Freq`] ?? defaultFreq)),
       gainDb: Math.max(-18, Math.min(18, params[`band${number}Gain`] ?? 0)),
-      q: Math.SQRT2,
+      q: Math.max(0.2, Math.min(8, params[`band${number}Q`] ?? 1.0)),
       defaultFreq,
       defaultGainDb: 0,
-      defaultQ: Math.SQRT2,
+      defaultQ: 1.0,
       freqMin: 20,
       freqMax: 20000,
       gainMin: -18,
       gainMax: 18,
       hasQ: false,
-      qMin: Math.SQRT2,
-      qMax: Math.SQRT2,
+      qMin: 0.2,
+      qMax: 8,
       shelfType: undefined,
       label: `${Math.round(defaultFreq)} Hz`,
     }];
@@ -254,24 +253,6 @@ export function graphicEqBandChangeToParams(
   return bandNumber
     ? { [`band${bandNumber}Freq`]: clampGraphicEqFrequency(params, bandNumber, freq), [`band${bandNumber}Gain`]: gainDb }
     : {};
-}
-
-export function graphicEqPresetParams(preset: number): Record<string, number> {
-  const profile = Math.max(0, Math.min(2, Math.round(preset)));
-  const bandCount = profile === 1 ? 5 : 10;
-  const gains = profile === 1
-    ? [4, 3, 1, -1, -2, 0, 0, 0, 0, 0]
-    : profile === 2
-      ? [0, -1, 0, 1, -2, -1, 2, 1, 0, -2]
-      : Array(10).fill(0);
-  const result: Record<string, number> = { preset: profile, bandCount };
-  GRAPHIC_EQ_FREQUENCIES.forEach((freq, index) => {
-    const number = index + 1;
-    result[`band${number}Enabled`] = index < bandCount ? 1 : 0;
-    result[`band${number}Freq`] = freq;
-    result[`band${number}Gain`] = gains[index];
-  });
-  return result;
 }
 
 /**

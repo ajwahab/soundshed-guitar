@@ -21,6 +21,14 @@ export interface ParameterDef {
   advanced?: boolean;
 }
 
+export interface EffectPresetDefinition {
+  id: string;
+  name: string;
+  source: "factory" | "custom";
+  parameters: Record<string, number>;
+  parameterOrder?: string[];
+}
+
 export interface EffectTypeInfo {
   type: string;
   displayName: string;
@@ -34,6 +42,7 @@ export interface EffectTypeInfo {
   /** Legacy string IDs that map to this effect type. */
   aliases?: string[];
   parameters: ParameterDef[];
+  presets?: EffectPresetDefinition[];
   exposedResources?: Array<{
     resourceId: string;
     displayName: string;

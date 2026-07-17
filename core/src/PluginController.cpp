@@ -5387,6 +5387,15 @@ void PluginController::HandleAddSignalPathNodeRequest(const nlohmann::json& payl
         newNode.label = effectInfoOpt->displayName;
         for (const auto& p : effectInfoOpt->parameters)
             newNode.params[p.id] = p.defaultValue;
+        const auto factoryPreset = std::find_if(
+            effectInfoOpt->presets.begin(),
+            effectInfoOpt->presets.end(),
+            [](const EffectPresetDefinition& preset) { return preset.isFactory; });
+        if (factoryPreset != effectInfoOpt->presets.end())
+        {
+            for (const auto& [key, value] : factoryPreset->parameters)
+                newNode.params[key] = value;
+        }
     }
     else { newNode.category = "utility"; newNode.label = effectType; }
 
@@ -13143,6 +13152,22 @@ void PluginController::SendEffectCatalogToUI()
             params.push_back(param);
         }
         entry["parameters"] = params;
+
+        if (!info.presets.empty())
+        {
+            nlohmann::json presets = nlohmann::json::array();
+            for (const auto& preset : info.presets)
+            {
+                presets.push_back({
+                    {"id", preset.id},
+                    {"name", preset.displayName},
+                    {"source", preset.isFactory ? "factory" : "custom"},
+                    {"parameters", preset.parameters},
+                    {"parameterOrder", preset.parameterOrder},
+                });
+            }
+            entry["presets"] = std::move(presets);
+        }
 
         if (!info.exposedResources.empty())
         {

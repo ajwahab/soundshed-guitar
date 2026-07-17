@@ -1601,6 +1601,7 @@ export function handleIncomingMessage(message: string): void {
             name?: unknown;
             category?: unknown;
             parameters?: unknown;
+            presets?: unknown;
             requiresResource?: unknown;
             resourceType?: unknown;
             exposedResources?: unknown;
@@ -1682,6 +1683,37 @@ export function handleIncomingMessage(message: string): void {
                 })
                 .filter((resource) => resource.resourceId && resource.resourceType)
             : existing?.exposedResources;
+          const presets = Array.isArray(effect.presets)
+            ? effect.presets
+                .filter((preset) => preset && typeof preset === "object")
+                .flatMap((preset) => {
+                  const p = preset as {
+                    id?: unknown;
+                    name?: unknown;
+                    source?: unknown;
+                    parameters?: unknown;
+                    parameterOrder?: unknown;
+                  };
+                  if (typeof p.id !== "string" || !p.id || typeof p.name !== "string") {
+                    return [];
+                  }
+                  const parameters = p.parameters && typeof p.parameters === "object" && !Array.isArray(p.parameters)
+                    ? Object.fromEntries(
+                        Object.entries(p.parameters)
+                          .filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
+                      )
+                    : {};
+                  return [{
+                    id: p.id,
+                    name: p.name,
+                    source: p.source === "custom" ? "custom" as const : "factory" as const,
+                    parameters,
+                    parameterOrder: Array.isArray(p.parameterOrder)
+                      ? p.parameterOrder.filter((key): key is string => typeof key === "string" && key in parameters)
+                      : undefined,
+                  }];
+                })
+            : existing?.presets;
 
           EffectTypeRegistry.register(type, {
             type,
@@ -1691,6 +1723,7 @@ export function handleIncomingMessage(message: string): void {
             requiresResource,
             resourceType,
             parameters,
+            presets,
             exposedResources,
           });
         }

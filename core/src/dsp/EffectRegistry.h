@@ -32,6 +32,22 @@ namespace guitarfx
   };
 
   /**
+   * A reusable parameter template supplied by an effect type.
+   *
+   * Applying a template copies these values into a graph node. The node remains
+   * self-contained after that point, so shared signal-chain presets never rely
+   * on a user's local template library.
+   */
+  struct EffectPresetDefinition
+  {
+    std::string id;
+    std::string displayName;
+    bool isFactory = true;
+    std::map<std::string, double> parameters;
+    std::vector<std::string> parameterOrder;
+  };
+
+  /**
    * Describes an available effect type.
    *
    * Type ID convention: UUID v4 string (e.g. "2eb53b40-6139-4696-8820-387ac56ffa91").
@@ -51,6 +67,7 @@ namespace guitarfx
     std::string resourceType; // "nam", "ir", etc. (if requiresResource is true)
     std::vector<std::string> resourceFilterHint; // Equipment type filter ("amp", "full-rig", "pedal", etc.)
     std::vector<ParameterDef> parameters;
+    std::vector<EffectPresetDefinition> presets;
     std::vector<ExposedResource> exposedResources; // Generic resource slots surfaced to the UI
     // Legacy IDs that resolve to this effect (for preset backward-compatibility).
     // Populated by RegisterAlias() or set directly before calling Register().

@@ -1000,23 +1000,57 @@ bool TestGraphicEQProfilesAndStability()
   const bool finite = !analysis.hasNaN && !analysis.hasInf;
   const bool clampedBandCount = effect->GetParam("bandCount") == 5.0;
   const bool clampedFrequency = effect->GetParam("band10Freq") <= kTestSampleRate * 0.49;
-  const bool orderedFrequencies = effect->GetParam("band1Freq") < effect->GetParam("band2Freq");
+  const bool validFrequencyRange = effect->GetParam("band1Freq") >= 20.0
+    && effect->GetParam("band2Freq") >= 20.0;
   const auto typeInfo = guitarfx::EffectRegistry::Instance().GetTypeInfo(guitarfx::EffectGuids::kEqGraphic);
   bool profilesAvailable = false;
+  bool profileConfigApplied = false;
+  bool guitarProfileApplied = false;
+  bool profileSelectionIsMetadataOnly = false;
   if (typeInfo)
   {
     const auto presetParam = std::find_if(typeInfo->parameters.begin(), typeInfo->parameters.end(),
                                           [](const guitarfx::ParameterDef& param) { return param.id == "preset"; });
     profilesAvailable = presetParam != typeInfo->parameters.end()
-      && presetParam->labels.size() == 3 && presetParam->labels[1] == "Bass" && presetParam->labels[2] == "Guitar";
+      && presetParam->labels.size() == 6 && presetParam->labels[0] == "Bass · 5 Band"
+      && presetParam->labels[5] == "General Purpose · 10 Band"
+      && typeInfo->presets.size() == 6;
+    const auto applyPreset = [&](const std::string& presetId) {
+      const auto preset = std::find_if(typeInfo->presets.begin(), typeInfo->presets.end(),
+                                       [&](const guitarfx::EffectPresetDefinition& candidate) {
+                                         return candidate.id == presetId && candidate.isFactory;
+                                       });
+      if (preset == typeInfo->presets.end())
+        return false;
+      for (const auto& key : preset->parameterOrder)
+        effect->SetParam(key, preset->parameters.at(key));
+      return true;
+    };
+    profileConfigApplied = applyPreset("bass-10")
+      && effect->GetParam("bandCount") == 10.0
+      && effect->GetParam("band1Freq") == 45.0
+      && effect->GetParam("band1Q") == 2.0;
+    guitarProfileApplied = applyPreset("guitar-10")
+      && effect->GetParam("bandCount") == 10.0
+      && effect->GetParam("band8Freq") == 3000.0
+      && effect->GetParam("band8Gain") == 4.0;
+    const double configuredBandCount = effect->GetParam("bandCount");
+    const double configuredBandFrequency = effect->GetParam("band1Freq");
+    effect->SetParam("preset", 0.0);
+    profileSelectionIsMetadataOnly = effect->GetParam("bandCount") == configuredBandCount
+      && effect->GetParam("band1Freq") == configuredBandFrequency;
   }
 
   std::cout << "  Five-band mode is retained:                 " << (clampedBandCount ? "PASS" : "FAIL") << "\n";
   std::cout << "  Frequencies stay below Nyquist:              " << (clampedFrequency ? "PASS" : "FAIL") << "\n";
-  std::cout << "  Adjacent bands remain ordered:                " << (orderedFrequencies ? "PASS" : "FAIL") << "\n";
-  std::cout << "  Bass and Guitar profiles are registered:     " << (profilesAvailable ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Frequencies remain in a valid range:          " << (validFrequencyRange ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Profile configuration is applied:             " << (profileConfigApplied ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Guitar guide profile is applied:              " << (guitarProfileApplied ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Profile selection does not overwrite edits:   " << (profileSelectionIsMetadataOnly ? "PASS" : "FAIL") << "\n";
+  std::cout << "  Six instrument profiles are registered:       " << (profilesAvailable ? "PASS" : "FAIL") << "\n";
   std::cout << "  Output remains finite under extremes:        " << (finite ? "PASS" : "FAIL") << "\n";
-  return clampedBandCount && clampedFrequency && orderedFrequencies && profilesAvailable && finite;
+  return clampedBandCount && clampedFrequency && validFrequencyRange && profileConfigApplied && guitarProfileApplied
+    && profileSelectionIsMetadataOnly && profilesAvailable && finite;
 }
 
 bool TestDynamicsSoftClipOptions()

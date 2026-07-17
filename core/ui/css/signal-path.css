@@ -2710,6 +2710,7 @@ body.signal-path-resizing * {
 }
 
 .graphic-eq-controls {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2717,44 +2718,17 @@ body.signal-path-resizing * {
   border: 1px solid rgba(170, 183, 214, 0.1);
   border-radius: 16px;
   background: linear-gradient(180deg, rgba(13, 16, 24, 0.6), rgba(17, 20, 29, 0.32));
+  overflow: hidden;
 }
 
-.graphic-eq-tabs {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid rgba(170, 183, 214, 0.14);
-  border-radius: 8px;
-  background: rgba(5, 7, 12, 0.42);
-}
-
-.graphic-eq-tab {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: background-color 160ms ease, color 160ms ease;
-}
-
-.graphic-eq-tab:hover {
-  color: var(--text-primary);
-}
-
-.graphic-eq-tab.is-active {
-  background: color-mix(in srgb, var(--color-accent) 22%, rgba(255, 255, 255, 0.08));
-  color: var(--text-primary);
-}
-
-.graphic-eq-tab-panel {
-  min-width: 0;
+.graphic-eq-curve-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.2;
+  pointer-events: none;
+  filter: saturate(0.7);
 }
 
 .graphic-eq-toolbar,
@@ -2765,18 +2739,29 @@ body.signal-path-resizing * {
 }
 
 .graphic-eq-toolbar {
+  position: relative;
+  z-index: 1;
   justify-content: space-between;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
 }
 
-.graphic-eq-toolbar select,
-.graphic-eq-toolbar input {
-  width: 84px;
+.graphic-eq-toolbar select {
+  width: min(224px, 100%);
+  padding: 6px 10px;
+  border: 1px solid var(--border-medium);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
 }
 
 .graphic-eq-bands {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 10px;
@@ -2790,61 +2775,6 @@ body.signal-path-resizing * {
   min-width: 0;
 }
 
-.graphic-eq-band.is-inactive {
-  opacity: 0.4;
-}
-
-.graphic-eq-enable {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 16px;
-  color: color-mix(in srgb, var(--text-primary) 78%, var(--text-secondary));
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.graphic-eq-enable input {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  opacity: 0;
-}
-
-.graphic-eq-enable span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.graphic-eq-enable span::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--color-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 16%, transparent);
-}
-
-.graphic-eq-enable input:not(:checked) + span {
-  color: var(--text-secondary);
-}
-
-.graphic-eq-enable input:not(:checked) + span::before {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px currentColor;
-}
-
-.graphic-eq-enable:focus-within span {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
-  border-radius: 2px;
-}
-
 .graphic-eq-gain-value,
 .graphic-eq-frequency-label {
   color: color-mix(in srgb, var(--text-primary) 72%, var(--text-secondary));
@@ -2853,9 +2783,40 @@ body.signal-path-resizing * {
 }
 
 .graphic-eq-gain-value {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   min-height: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+.graphic-eq-gain-value-input {
+  width: 40px;
+  min-width: 0;
+  padding: 0 1px 1px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-medium) 65%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.graphic-eq-gain-value-input:hover {
+  border-bottom-color: color-mix(in srgb, var(--text-secondary) 60%, transparent);
+}
+
+.graphic-eq-gain-value-input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.graphic-eq-gain-value-input::-webkit-inner-spin-button,
+.graphic-eq-gain-value-input::-webkit-outer-spin-button {
+  margin: 0;
 }
 
 .graphic-eq-gain {
