@@ -6,25 +6,27 @@
         <span class="composite-edit-banner-name" id="composite-edit-banner-name"></span>
         <span class="composite-edit-banner-hint">Use the signal chain below to add/remove/configure effects</span>
       </div>
-      <div class="signal-path-scroll scrollbar-thin">
-        <div class="signal-path-nodes" id="signal-path-nodes">
-          <!-- Signal path nodes will be rendered here by JavaScript (or x-for in future) -->
-          <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
-            <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/amp.svg')" aria-hidden="true"></span>
+      <div class="signal-path-visualizer">
+        <div class="signal-path-scroll scrollbar-thin">
+          <div class="signal-path-nodes" id="signal-path-nodes">
+            <!-- Signal path nodes will be rendered here by JavaScript (or x-for in future) -->
+            <div class="signal-node input-node" data-node-id="__input__" title="Input" aria-label="Input">
+              <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/amp.svg')" aria-hidden="true"></span>
+              </div>
+              <span class="node-label">Input</span>
             </div>
-            <span class="node-label">Input</span>
-          </div>
-          <div class="signal-connector"></div>
-          <div class="signal-node" data-node-id="placeholder" title="No Preset" aria-label="No Preset">
-            <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/bolt.svg')" aria-hidden="true"></span>
+            <div class="signal-connector"></div>
+            <div class="signal-node" data-node-id="placeholder" title="No Preset" aria-label="No Preset">
+              <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/bolt.svg')" aria-hidden="true"></span>
+              </div>
+              <span class="node-label">No Preset</span>
             </div>
-            <span class="node-label">No Preset</span>
-          </div>
-          <div class="signal-connector"></div>
-          <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
-            <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/speaker.svg')" aria-hidden="true"></span>
+            <div class="signal-connector"></div>
+            <div class="signal-node output-node" data-node-id="__output__" title="Output" aria-label="Output">
+              <div class="node-icon"><span class="fx-effect-icon" style="--icon-url: url('/images/icons/speaker.svg')" aria-hidden="true"></span>
+              </div>
+              <span class="node-label">Output</span>
             </div>
-            <span class="node-label">Output</span>
           </div>
         </div>
         <div class="signal-path-add-menu" id="signal-path-add-menu">

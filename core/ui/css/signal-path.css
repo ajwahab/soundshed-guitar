@@ -325,21 +325,27 @@
 
 /* ── end inline mixer ───────────────────────────────────────────────── */
 
-.signal-path-scroll {
+.signal-path-visualizer {
   position: relative;
   flex: 0 0 auto;
   height: var(--signal-path-scroll-height, 96px);
   min-height: 48px;
+}
+
+.signal-path-scroll {
+  position: relative;
+  height: 100%;
   overflow-x: auto;
   /* Prefer density + zoom-to-fit so splits don't need vertical scroll; auto is a last-resort fallback. */
   overflow-y: auto;
   scrollbar-gutter: stable both-edges;
-  padding: 8px 12px;
+  /* Reserve the thin horizontal scrollbar's track below the signal nodes. */
+  padding: 8px 12px 16px;
 }
 
 .signal-path-bar.fx-library-collapsed:not(.mix-tab-active) .signal-path-scroll {
   padding-right: 12px;
-  padding-bottom: 12px;
+  padding-bottom: 16px;
 }
 
 /* Drag handle under the visualisation — resizes the signal path area */
@@ -507,7 +513,7 @@ body.signal-path-resizing * {
 @media (max-width: 900px) {
   .signal-path-bar.fx-library-collapsed:not(.mix-tab-active) .signal-path-scroll {
     padding-right: 12px;
-    padding-bottom: 12px;
+    padding-bottom: 16px;
   }
 
   .signal-path-toolbar {
@@ -737,7 +743,7 @@ body.signal-path-resizing * {
 
 .signal-path-bar[data-density="compact"] .signal-path-scroll,
 .signal-path-bar[data-density="micro"] .signal-path-scroll {
-  padding: 4px 8px;
+  padding: 4px 8px 12px;
 }
 
 /* Icon-only compact */
