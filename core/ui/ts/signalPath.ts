@@ -93,6 +93,12 @@ let dragOverNodeId: string | null = null;
 let selectedNodeId: string | null = null;
 let lastSelectedNodeType: string | null = null;
 let lastSelectedNodeCategory: string | null = null;
+let selectedNodeDspStatusVisible = false;
+let selectedNodeDspStatusNodeId: string | null = null;
+const selectedNodeDspStatusAverages = new Map<string, number>();
+let lastDspStatusAverageRenderAt = 0;
+const DSP_STATUS_AVERAGE_SMOOTHING = 0.01;
+const DSP_STATUS_AVERAGE_RENDER_INTERVAL_MS = 500;
 const inferredNamArchitectureByResourceId = new Map<string, string>();
 const pendingNamArchitectureResourceIds = new Set<string>();
 const unavailableNamArchitectureResourceIds = new Set<string>();
@@ -2003,6 +2009,180 @@ export function updateSelectedNodePeakMeter(): void {
   rail.title = `Node peak: ${metrics.peakDbfs.toFixed(1)} dBFS · Headroom: ${metrics.headroomDb.toFixed(1)} dB`;
 }
 
+function formatDspStatusDb(value: number | null | undefined): string {
+  return Number.isFinite(value) ? `${value!.toFixed(1)} dBFS` : "—";
+}
+
+function formatDspStatusHeadroom(value: number | null | undefined): string {
+  return Number.isFinite(value) ? `${value!.toFixed(1)} dB` : "—";
+}
+
+function getSelectedNodeDspStatusPerformanceKey(
+  node: import("./types.js").SignalLevelNodeMetrics,
+): string {
+  return node.scope === "preset"
+    ? `${node.presetId ?? uiState.activePresetId ?? ""}::${node.nodeId}`
+    : `${node.scope}::${node.nodeId}`;
+}
+
+function getSelectedNodeDspStatusTimeUs(
+  node: import("./types.js").SignalLevelNodeMetrics | null,
+): number | null {
+  if (!node) {
+    return null;
+  }
+
+  const performance = uiState.dspPerformance;
+  const scopedTime = performance?.scopedNodeProcessingTimesUs?.[
+    getSelectedNodeDspStatusPerformanceKey(node)
+  ];
+  if (typeof scopedTime === "number" && Number.isFinite(scopedTime)) {
+    return scopedTime;
+  }
+
+  const legacyTime = performance?.nodeProcessingTimesUs?.[node.nodeId];
+  return typeof legacyTime === "number" && Number.isFinite(legacyTime) ? legacyTime : null;
+}
+
+function getSelectedNodeDspStatusLatencySamples(
+  node: import("./types.js").SignalLevelNodeMetrics | null,
+): number | null {
+  if (!node) {
+    return null;
+  }
+
+  const performance = uiState.dspPerformance;
+  const scopedLatency = performance?.scopedNodeLatencySamples?.[
+    getSelectedNodeDspStatusPerformanceKey(node)
+  ];
+  if (typeof scopedLatency === "number" && Number.isFinite(scopedLatency)) {
+    return scopedLatency;
+  }
+
+  const legacyLatency = performance?.nodeLatencySamples?.[node.nodeId];
+  return typeof legacyLatency === "number" && Number.isFinite(legacyLatency) ? legacyLatency : null;
+}
+
+function formatDspStatusTime(timeUs: number | null): string {
+  if (timeUs === null) {
+    return "—";
+  }
+
+  const totalTimeUs = uiState.dspPerformance?.totalProcessingTimeUs;
+  const share = typeof totalTimeUs === "number" && totalTimeUs > 0
+    ? ` (${((timeUs / totalTimeUs) * 100).toFixed(1)}%)`
+    : "";
+  return `${timeUs.toFixed(1)} μs${share}`;
+}
+
+function formatDspStatusLatency(latencySamples: number | null): string {
+  if (latencySamples === null || latencySamples <= 0) {
+    return "—";
+  }
+
+  const sampleRate = uiState.dspPerformance?.sampleRate;
+  const milliseconds = typeof sampleRate === "number" && sampleRate > 0
+    ? ` (${((latencySamples / sampleRate) * 1000).toFixed(2)} ms)`
+    : "";
+  return `${latencySamples} smp${milliseconds}`;
+}
+
+function addDspStatusSample(name: string, value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const previous = selectedNodeDspStatusAverages.get(name);
+  const average = previous === undefined
+    ? value
+    : previous + DSP_STATUS_AVERAGE_SMOOTHING * (value - previous);
+  selectedNodeDspStatusAverages.set(name, average);
+  return average;
+}
+
+export function updateSelectedNodeDspStatus(): void {
+  const status = nodeParamsPanelElement?.querySelector<HTMLElement>(".effect-dsp-status");
+  if (!status || !selectedNodeDspStatusVisible) {
+    return;
+  }
+
+  const diagnostics = getSelectedNodeDiagnosticsEntry();
+  const metrics = diagnostics?.levels;
+  const timeUs = getSelectedNodeDspStatusTimeUs(diagnostics);
+  const latencySamples = getSelectedNodeDspStatusLatencySamples(diagnostics);
+  const clippingPercent = metrics ? (metrics.clipped ? 100 : 0) : null;
+
+  const values: Record<string, { average: string; current: string }> = {
+    peak: {
+      average: formatDspStatusDb(addDspStatusSample("peak", metrics?.peakDbfs ?? null)),
+      current: formatDspStatusDb(metrics?.peakDbfs),
+    },
+    rms: {
+      average: formatDspStatusDb(addDspStatusSample("rms", metrics?.rmsDbfs ?? null)),
+      current: formatDspStatusDb(metrics?.rmsDbfs),
+    },
+    headroom: {
+      average: formatDspStatusHeadroom(addDspStatusSample("headroom", metrics?.headroomDb ?? null)),
+      current: formatDspStatusHeadroom(metrics?.headroomDb),
+    },
+    processing: {
+      average: formatDspStatusTime(addDspStatusSample("processing", timeUs)),
+      current: formatDspStatusTime(timeUs),
+    },
+    latency: {
+      average: formatDspStatusLatency(addDspStatusSample("latency", latencySamples)),
+      current: formatDspStatusLatency(latencySamples),
+    },
+    clipping: {
+      average: (() => {
+        const average = addDspStatusSample("clipping", clippingPercent);
+        return average === null ? "—" : `${average.toFixed(1)}%`;
+      })(),
+      current: metrics ? (metrics.clipped ? "Clipped" : "Clear") : "—",
+    },
+  };
+
+  const now = performance.now();
+  const shouldRenderAverage = lastDspStatusAverageRenderAt === 0
+    || now - lastDspStatusAverageRenderAt >= DSP_STATUS_AVERAGE_RENDER_INTERVAL_MS;
+  Object.entries(values).forEach(([name, value]) => {
+    const average = status.querySelector<HTMLElement>(`[data-dsp-status-average="${name}"]`);
+    const current = status.querySelector<HTMLElement>(`[data-dsp-status-current="${name}"]`);
+    if (average && shouldRenderAverage && average.textContent !== value.average) {
+      average.textContent = value.average;
+    }
+    if (current && current.textContent !== value.current) {
+      current.textContent = value.current;
+    }
+  });
+  if (shouldRenderAverage) {
+    lastDspStatusAverageRenderAt = now;
+  }
+}
+
+function bindSelectedNodeDspStatusToggle(): void {
+  const toggle = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".default-effect-shell-meter-toggle");
+  const status = nodeParamsPanelElement?.querySelector<HTMLElement>(".effect-dsp-status");
+  if (!toggle || !status) {
+    return;
+  }
+
+  toggle.addEventListener("click", () => {
+    selectedNodeDspStatusVisible = !selectedNodeDspStatusVisible;
+    toggle.setAttribute("aria-expanded", String(selectedNodeDspStatusVisible));
+    toggle.title = selectedNodeDspStatusVisible ? "Hide DSP status" : "Show DSP status";
+    status.hidden = !selectedNodeDspStatusVisible;
+    updateSelectedNodeDspStatus();
+  });
+
+  status.querySelector<HTMLButtonElement>(".effect-dsp-status-close")?.addEventListener("click", () => {
+    selectedNodeDspStatusVisible = false;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.title = "Show DSP status";
+    status.hidden = true;
+  });
+}
+
 function formatAnalyzerNumeric(value: number, unit: string, fractionDigits = 1): string {
   if (!Number.isFinite(value)) {
     return "—";
@@ -3069,6 +3249,11 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   if (!node.params) {
     node.params = {};
   }
+  if (selectedNodeDspStatusNodeId !== node.id) {
+    selectedNodeDspStatusNodeId = node.id;
+    selectedNodeDspStatusAverages.clear();
+    lastDspStatusAverageRenderAt = 0;
+  }
 
   nodeParamsPanelElement.classList.add("visible");
   updateLastSelectedNode(node);
@@ -3900,8 +4085,19 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               <div class="default-effect-shell-subtitle">${shellCategoryLabel} · ${shellTypeLabel}</div>
             </div>
           </div>
-          <div class="default-effect-shell-rail" aria-hidden="true">
-            <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
+          <div class="default-effect-shell-rail">
+            <button class="default-effect-shell-meter-toggle" type="button" aria-expanded="${selectedNodeDspStatusVisible}" title="${selectedNodeDspStatusVisible ? "Hide DSP status" : "Show DSP status"}" aria-label="Toggle DSP status">
+              <span class="default-effect-shell-meter" style="--meter-fill-scale: 0"></span>
+            </button>
+            <div class="effect-dsp-status" aria-label="Live DSP status" ${selectedNodeDspStatusVisible ? "" : "hidden"}>
+              <button class="effect-dsp-status-close" type="button" aria-label="Close DSP status" title="Close DSP status">×</button>
+              <div><span>Peak</span><strong data-dsp-status-average="peak">—</strong><em data-dsp-status-current="peak">—</em></div>
+              <div><span>RMS</span><strong data-dsp-status-average="rms">—</strong><em data-dsp-status-current="rms">—</em></div>
+              <div><span>Headroom</span><strong data-dsp-status-average="headroom">—</strong><em data-dsp-status-current="headroom">—</em></div>
+              <div><span>Processing</span><strong data-dsp-status-average="processing">—</strong><em data-dsp-status-current="processing">—</em></div>
+              <div><span>Latency</span><strong data-dsp-status-average="latency">—</strong><em data-dsp-status-current="latency">—</em></div>
+              <div><span>Clip rate</span><strong data-dsp-status-average="clipping">—</strong><em data-dsp-status-current="clipping">—</em></div>
+            </div>
           </div>
           <div class="default-effect-shell-meta" aria-label="Module status">
             ${architectureBadge ? `<span class="default-effect-shell-chip default-effect-shell-chip-architecture" title="Loaded model architecture">${architectureBadge}</span>` : ""}
@@ -3945,10 +4141,12 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindBlendModeOverride(node);
   bindCloseButton();
   bindBypassButton(node, preset);
+  bindSelectedNodeDspStatusToggle();
   bindCustomizeLayoutButton(node);
   bindParamTabs();
   applyCustomLayoutScaling(nodeParamsPanelElement);
   updateSelectedNodePeakMeter();
+  updateSelectedNodeDspStatus();
   updateSelectedNodeAnalyzerPanel();
 }
 
@@ -5210,6 +5408,8 @@ function bindCloseButton(): void {
     closeBtn.addEventListener("click", () => {
       nodeParamsPanelElement?.classList.remove("visible");
       selectedNodeId = null;
+      selectedNodeDspStatusNodeId = null;
+      selectedNodeDspStatusVisible = false;
       updateEffectVisualization();
       
       // Deselect all nodes

@@ -2129,10 +2129,25 @@ body.signal-path-resizing * {
 }
 
 .default-effect-shell-rail {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
   padding: 0;
+}
+
+.default-effect-shell-meter-toggle {
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.default-effect-shell-meter-toggle:focus-visible {
+  outline: 2px solid rgba(255, 190, 120, 0.8);
+  outline-offset: 3px;
+  border-radius: 999px;
 }
 
 .default-effect-shell-meter {
@@ -2164,6 +2179,93 @@ body.signal-path-resizing * {
   box-shadow: inset 0 0 0 1px rgba(255, 110, 110, 0.12), 0 0 18px rgba(255, 94, 94, 0.08);
 }
 
+.effect-dsp-status {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  width: max-content;
+  max-width: min(100%, calc(100vw - 16px));
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid rgba(182, 198, 233, 0.2);
+  border-radius: 8px;
+  background: rgba(8, 11, 18, 0.78);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.effect-dsp-status[hidden] {
+  display: none;
+}
+
+.effect-dsp-status > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 0 1 92px;
+  padding: 7px 8px 6px;
+  background: linear-gradient(160deg, rgba(46, 54, 74, 0.56), rgba(20, 24, 35, 0.68));
+}
+
+.effect-dsp-status span {
+  color: rgba(198, 206, 225, 0.68);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.effect-dsp-status strong {
+  overflow: hidden;
+  color: #edf4ff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-dsp-status em {
+  overflow: hidden;
+  color: rgba(221, 230, 247, 0.58);
+  font-size: 8px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-dsp-status-close {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(12, 16, 26, 0.72);
+  color: rgba(235, 241, 255, 0.78);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 13px;
+}
+
+.effect-dsp-status-close:hover,
+.effect-dsp-status-close:focus-visible {
+  background: rgba(196, 59, 59, 0.9);
+  color: #fff;
+}
+
+.effect-dsp-status-close:focus-visible {
+  outline: 2px solid rgba(255, 190, 120, 0.8);
+  outline-offset: 1px;
+}
 .default-effect-shell-content {
   display: flex;
   flex-direction: column;
@@ -2536,6 +2638,10 @@ body.signal-path-resizing * {
   }
 
   .default-effect-shell-rail {
+    display: none;
+  }
+
+  .effect-dsp-status {
     display: none;
   }
 
