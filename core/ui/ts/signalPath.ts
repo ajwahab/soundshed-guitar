@@ -3564,6 +3564,8 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // Build resource selector if this node type requires a resource,
   // or if a composite node surfaces inner resources.
   let resourceSelector = "";
+  const hideRedundantLibraryBrowseButton = isNeuralModelNode(node)
+    || EffectTypeRegistry.resolve(node.type) === EffectGuids.kCabIr;
   const customLayoutResourceControls: LayoutResourceControlDef[] = [];
   const exposedResources = typeInfo?.exposedResources ?? [];
   if (exposedResources.length > 0) {
@@ -3637,13 +3639,15 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             <label>${escapeHtml(exposedResource.displayName || exposedResource.resourceId)}</label>
             <div class="resource-controls">
               ${isLibraryPicker ? `
-                <button
-                  class="resource-picker-btn"
-                  data-node-id="${node.id}"
-                  data-resource-type="${resourceType}"
-                  data-resource-index="${resourceIndex}"
-                  data-exposed-resource-id="${escapeHtml(exposedResource.resourceId)}"
-                >Browse</button>
+                ${hideRedundantLibraryBrowseButton ? "" : `
+                  <button
+                    class="resource-picker-btn"
+                    data-node-id="${node.id}"
+                    data-resource-type="${resourceType}"
+                    data-resource-index="${resourceIndex}"
+                    data-exposed-resource-id="${escapeHtml(exposedResource.resourceId)}"
+                  >Browse</button>
+                `}
                 <div
                   class="${missingClass}"
                   data-node-id="${node.id}"
@@ -3814,12 +3818,14 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           <label>${label}</label>
           <div class="resource-controls">
             ${isLibraryPicker ? `
-              <button
-                class="resource-picker-btn"
-                data-node-id="${node.id}"
-                data-resource-type="${resourceType}"
-                ${indexAttr}
-              >Browse</button>
+              ${hideRedundantLibraryBrowseButton ? "" : `
+                <button
+                  class="resource-picker-btn"
+                  data-node-id="${node.id}"
+                  data-resource-type="${resourceType}"
+                  ${indexAttr}
+                >Browse</button>
+              `}
               ${navPrevButton}
               <div
                 class="${missingClass}"
@@ -3922,10 +3928,16 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   const customLayoutHtml = customLayout && !useDefaultControls
     ? renderCustomLayout(node, customLayout, paramDefs, customLayoutResourceControls)
     : null;
+  const placeNeuralResourceInControls = isNeuralModelNode(node) && !customLayoutHtml;
   const layoutIncludesResourceControls = Boolean(
     customLayout && !useDefaultControls && customLayout.controls.some((control) => control.bindingType === "resource" || control.paramKey.startsWith("__resource__:")),
   );
+  const placeCabIrResourcesInControls = node.type === EffectGuids.kCabIr && !layoutIncludesResourceControls && Boolean(resourceSelector);
+  const cabIrResourceSelectors = placeCabIrResourcesInControls
+    ? `<div class="effect-inline-resource-selectors cab-ir-resource-selectors">${resourceSelector}</div>`
+    : "";
   const shellTitle = escapeHtml(getNodeDisplayName(node));
+  const isNeuralModel = isNeuralModelNode(node);
   const shellCategoryLabel = escapeHtml(
     getNodeCategory(node)
       .replace(/[-_]/g, " ")
@@ -3994,18 +4006,24 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   ` : "";
   const shellMainContent = customLayoutHtml ? `
     ${fullRigCabModelNote}
-    ${layoutIncludesResourceControls ? "" : resourceSelector}
+    ${layoutIncludesResourceControls || placeCabIrResourcesInControls ? "" : resourceSelector}
     ${customEffectActions}
     ${analyzerSection}
     ${eqVisualizer}
     ${graphicEqControls}
     ${mixerInputControls}
     <div class="default-effect-section default-effect-section-controls default-effect-section-custom-layout">
+      ${cabIrResourceSelectors}
       ${customLayoutHtml}
     </div>
   ` : (() => {
     // Build the standard default controls HTML
-    const defaultControlsHtml = hasAdvancedTab ? `
+    const neuralResourceSelector = placeNeuralResourceInControls && resourceSelector
+      ? `<div class="neural-model-resource-selector">${resourceSelector}</div>`
+      : "";
+    const defaultControlsHtml = `
+      ${neuralResourceSelector}
+      ${hasAdvancedTab ? `
       <div class="node-param-tabs" role="tablist" aria-label="Parameter Groups">
         <button class="node-param-tab is-active" data-tab="main" type="button" role="tab" aria-selected="true">Main</button>
         <button class="node-param-tab" data-tab="advanced" type="button" role="tab" aria-selected="false">Advanced</button>
@@ -4022,10 +4040,11 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           </div>
         </div>
       </div>
-    ` : `
+      ` : `
       <div class="params-controls">
         ${buildParamControls(paramDefs)}
       </div>
+      `}
     `;
     // If a backdrop layout exists, wrap the default controls inside it
     const renderedControls = useDefaultControls && customLayout
@@ -4033,13 +4052,14 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       : defaultControlsHtml;
     return `
       ${fullRigCabModelNote}
-      ${layoutIncludesResourceControls ? "" : resourceSelector}
+      ${layoutIncludesResourceControls || placeNeuralResourceInControls || placeCabIrResourcesInControls ? "" : resourceSelector}
       ${customEffectActions}
       ${analyzerSection}
       ${eqVisualizer}
       ${graphicEqControls}
       ${mixerInputControls}
       <div class="default-effect-section default-effect-section-controls">
+        ${cabIrResourceSelectors}
         ${renderedControls}
       </div>
     `;
@@ -4048,7 +4068,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   nodeParamsPanelElement.innerHTML = `
     
     <div class="node-params-body">
-      <section class="default-effect-shell${isNodeBypassed(node) ? " is-bypassed" : ""}">
+      <section class="default-effect-shell${isNeuralModel ? " neural-model-effect" : ""}${isNodeBypassed(node) ? " is-bypassed" : ""}">
         <div class="default-effect-shell-header">
           <div class="default-effect-shell-identity">
             <span class="default-effect-shell-led" aria-hidden="true"></span>
@@ -6216,34 +6236,18 @@ function handleResourceGroupDrop(
   });
 }
 
-// ── Signal path area resize + height-based layout adapt ──
+// ── Signal path mode gesture ──
 
-const SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT = 96;
-const SIGNAL_PATH_SCROLL_HEIGHT_MIN = 48;
-const SIGNAL_PATH_SCROLL_HEIGHT_STEP = 8;
-/** Switch to icon-only compact layout at or below this height. */
-const SIGNAL_PATH_COMPACT_HEIGHT = 80;
-/** Smallest tiles when the path area is this short or shorter. */
-const SIGNAL_PATH_MICRO_HEIGHT = 56;
-const SIGNAL_PATH_FIT_MIN_ZOOM = 0.35;
-const SIGNAL_PATH_DENSITY_HYSTERESIS_PX = 4;
+const SIGNAL_PATH_FULL_HEIGHT = 96;
+const SIGNAL_PATH_COMPACT_HEIGHT = 48;
+const SIGNAL_PATH_LEGACY_COMPACT_HEIGHT_THRESHOLD = 80;
+const SIGNAL_PATH_MODE_GESTURE_THRESHOLD = 12;
 
-type SignalPathDensity = "micro" | "compact" | "normal";
+type SignalPathDensity = "compact" | "full";
 
-let signalPathScrollHeight = SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
+let signalPathScrollHeight = SIGNAL_PATH_FULL_HEIGHT;
 let signalPathResizeInitialized = false;
 let signalPathLayoutAdaptRaf = 0;
-let signalPathScrollResizeObserver: ResizeObserver | null = null;
-let signalPathLastDensity: SignalPathDensity = "normal";
-let signalPathLastZoom = 1;
-
-function isPreferCompactSignalPath(): boolean {
-  return Boolean(
-    getCurrentUiSettings().preferCompactSignalPath
-      ?? uiState.uiSettings?.preferCompactSignalPath
-      ?? false,
-  );
-}
 
 function getSignalPathBarElement(): HTMLElement | null {
   return document.getElementById("signal-path-bar");
@@ -6257,30 +6261,12 @@ function getSignalPathResizeHandle(): HTMLElement | null {
   return document.getElementById("signal-path-resize-handle");
 }
 
-function getStableSignalPathAvailableHeight(scroll: HTMLElement): number {
-  // clientHeight shrinks when scrollbars appear, which can cause density
-  // breakpoints to oscillate near thresholds. Use the rendered box height.
-  const rectHeight = Math.round(scroll.getBoundingClientRect().height);
-  if (rectHeight > 0) {
-    return rectHeight;
-  }
-  return scroll.clientHeight;
+function heightForSignalPathDensity(density: SignalPathDensity): number {
+  return density === "compact" ? SIGNAL_PATH_COMPACT_HEIGHT : SIGNAL_PATH_FULL_HEIGHT;
 }
 
-function getSignalPathScrollMaxHeight(): number {
-  // Keep enough room for the rest of the app chrome + main content.
-  const reservedChrome = 280;
-  const fromViewport = Math.round(window.innerHeight * 0.45);
-  const available = window.innerHeight - reservedChrome;
-  return Math.max(120, Math.min(fromViewport, available, 420));
-}
-
-function clampSignalPathScrollHeight(height: number): number {
-  if (!Number.isFinite(height)) {
-    return SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
-  }
-  const maxHeight = getSignalPathScrollMaxHeight();
-  return Math.round(Math.max(SIGNAL_PATH_SCROLL_HEIGHT_MIN, Math.min(maxHeight, height)));
+function densityFromSignalPathHeight(height: number): SignalPathDensity {
+  return height <= SIGNAL_PATH_LEGACY_COMPACT_HEIGHT_THRESHOLD ? "compact" : "full";
 }
 
 function syncSignalPathResizeHandleAria(height: number): void {
@@ -6288,71 +6274,16 @@ function syncSignalPathResizeHandleAria(height: number): void {
   if (!handle) {
     return;
   }
-  handle.setAttribute("aria-valuemin", String(SIGNAL_PATH_SCROLL_HEIGHT_MIN));
-  handle.setAttribute("aria-valuemax", String(getSignalPathScrollMaxHeight()));
+  const density = densityFromSignalPathHeight(height);
+  handle.setAttribute("aria-valuemin", String(SIGNAL_PATH_COMPACT_HEIGHT));
+  handle.setAttribute("aria-valuemax", String(SIGNAL_PATH_FULL_HEIGHT));
   handle.setAttribute("aria-valuenow", String(height));
-}
-
-function densityFromAvailableHeight(heightPx: number): SignalPathDensity {
-  const microEnter = SIGNAL_PATH_MICRO_HEIGHT - SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
-  const microExit = SIGNAL_PATH_MICRO_HEIGHT + SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
-  const compactEnter = SIGNAL_PATH_COMPACT_HEIGHT - SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
-  const compactExit = SIGNAL_PATH_COMPACT_HEIGHT + SIGNAL_PATH_DENSITY_HYSTERESIS_PX;
-  const previous = signalPathLastDensity;
-
-  if (isPreferCompactSignalPath()) {
-    if (previous === "micro") {
-      return heightPx >= microExit ? "compact" : "micro";
-    }
-    return heightPx <= microEnter ? "micro" : "compact";
-  }
-
-  if (previous === "micro") {
-    if (heightPx >= microExit) {
-      return heightPx >= compactExit ? "normal" : "compact";
-    }
-    return "micro";
-  }
-
-  if (previous === "compact") {
-    if (heightPx <= microEnter) {
-      return "micro";
-    }
-    if (heightPx >= compactExit) {
-      return "normal";
-    }
-    return "compact";
-  }
-
-  if (heightPx <= microEnter) {
-    return "micro";
-  }
-  if (heightPx <= compactEnter) {
-    return "compact";
-  }
-  return "normal";
-}
-
-function setSignalPathNodesZoom(nodes: HTMLElement, zoom: number): void {
-  // `zoom` affects layout size (unlike transform), so vertical fit removes the need to scroll.
-  const clamped = Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, Math.min(1, Number.isFinite(zoom) ? zoom : 1));
-  const snapped = Math.round(clamped * 1000) / 1000;
-  if (Math.abs(snapped - signalPathLastZoom) < 0.002) {
-    return;
-  }
-
-  signalPathLastZoom = snapped;
-  if (snapped >= 0.999) {
-    nodes.style.removeProperty("zoom");
-  } else {
-    nodes.style.setProperty("zoom", String(snapped));
-  }
+  handle.setAttribute("aria-valuetext", density === "compact" ? "Compact signal chain" : "Full signal chain");
 }
 
 /**
- * Adapt node density from the signal-path area's available height, then
- * zoom-to-fit if content (e.g. parallel splits) still exceeds that height.
- * Density is never based on viewport width.
+ * Apply the signal-chain mode selected by the splitter gesture. Node
+ * dimensions remain fixed and never react to the available panel space.
  */
 export function updateSignalPathLayoutAdapt(): void {
   const bar = getSignalPathBarElement();
@@ -6360,33 +6291,19 @@ export function updateSignalPathLayoutAdapt(): void {
   const nodes = signalPathNodesElement;
 
   if (!bar || !scroll || !nodes || scroll.hidden || mixTabActive) {
-    if (nodes) {
-      setSignalPathNodesZoom(nodes, 1);
-    }
-    signalPathLastDensity = "normal";
     bar?.removeAttribute("data-density");
     return;
   }
 
-  const available = getStableSignalPathAvailableHeight(scroll);
-  if (available <= 0) {
-    return;
-  }
-
-  const density = densityFromAvailableHeight(available);
-  signalPathLastDensity = density;
+  const density = densityFromSignalPathHeight(signalPathScrollHeight);
   if (bar.dataset.density !== density) {
     bar.dataset.density = density;
   }
 
-  // Reset zoom for a clean measurement, then apply overflow zoom-to-fit so
-  // parallel splits never require vertical scrolling.
-  setSignalPathNodesZoom(nodes, 1);
-  void nodes.offsetHeight;
-  const needed = nodes.scrollHeight;
-  if (needed > available + 1) {
-    setSignalPathNodesZoom(nodes, Math.max(SIGNAL_PATH_FIT_MIN_ZOOM, available / needed));
-  }
+  const minimumHeight = heightForSignalPathDensity(density);
+  bar.style.setProperty("--signal-path-scroll-height", `${minimumHeight}px`);
+  const viewportHeight = Math.max(minimumHeight, Math.ceil(scroll.scrollHeight));
+  bar.style.setProperty("--signal-path-scroll-height", `${viewportHeight}px`);
 }
 
 export function scheduleSignalPathLayoutAdapt(): void {
@@ -6400,11 +6317,11 @@ export function scheduleSignalPathLayoutAdapt(): void {
 }
 
 /**
- * Apply a pixel height to the signal-path visualisation scroll area.
- * When `persist` is true the value is written to UI settings.
+ * Apply one of the signal-chain's fixed visual modes. Legacy arbitrary saved
+ * heights are normalized to the closest mode.
  */
 export function setSignalPathScrollHeight(height: number, options?: { persist?: boolean }): number {
-  const nextHeight = clampSignalPathScrollHeight(height);
+  const nextHeight = heightForSignalPathDensity(densityFromSignalPathHeight(height));
   signalPathScrollHeight = nextHeight;
 
   const bar = getSignalPathBarElement();
@@ -6415,7 +6332,9 @@ export function setSignalPathScrollHeight(height: number, options?: { persist?: 
   scheduleSignalPathLayoutAdapt();
 
   if (options?.persist) {
-    updateUiSettings({ signalPathHeight: nextHeight });
+    updateUiSettings({
+      signalPathHeight: nextHeight,
+    });
   }
 
   return nextHeight;
@@ -6437,15 +6356,24 @@ function onSignalPathResizePointerDown(event: PointerEvent): void {
 
   event.preventDefault();
   const startY = event.clientY;
-  const startHeight = signalPathScrollHeight;
-  let latestHeight = startHeight;
+  const startDensity = densityFromSignalPathHeight(signalPathScrollHeight);
+  let targetDensity = startDensity;
 
   handle.setPointerCapture(event.pointerId);
   document.body.classList.add("signal-path-resizing");
 
   const onMove = (moveEvent: PointerEvent): void => {
     const delta = moveEvent.clientY - startY;
-    latestHeight = setSignalPathScrollHeight(startHeight + delta, { persist: false });
+    const nextDensity = delta <= -SIGNAL_PATH_MODE_GESTURE_THRESHOLD
+      ? "compact"
+      : delta >= SIGNAL_PATH_MODE_GESTURE_THRESHOLD
+        ? "full"
+        : startDensity;
+    if (nextDensity === targetDensity) {
+      return;
+    }
+    targetDensity = nextDensity;
+    setSignalPathScrollHeight(heightForSignalPathDensity(targetDensity), { persist: false });
   };
 
   const finish = (endEvent: PointerEvent): void => {
@@ -6454,7 +6382,11 @@ function onSignalPathResizePointerDown(event: PointerEvent): void {
     handle.removeEventListener("pointerup", finish);
     handle.removeEventListener("pointercancel", finish);
     document.body.classList.remove("signal-path-resizing");
-    setSignalPathScrollHeight(latestHeight, { persist: true });
+    if (endEvent.type === "pointercancel") {
+      setSignalPathScrollHeight(heightForSignalPathDensity(startDensity), { persist: false });
+      return;
+    }
+    setSignalPathScrollHeight(heightForSignalPathDensity(targetDensity), { persist: true });
   };
 
   handle.addEventListener("pointermove", onMove);
@@ -6463,44 +6395,43 @@ function onSignalPathResizePointerDown(event: PointerEvent): void {
 }
 
 function onSignalPathResizeKeyDown(event: KeyboardEvent): void {
-  let next: number | null = null;
+  let nextDensity: SignalPathDensity | null = null;
   if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-    next = signalPathScrollHeight - SIGNAL_PATH_SCROLL_HEIGHT_STEP;
+    nextDensity = "compact";
   } else if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-    next = signalPathScrollHeight + SIGNAL_PATH_SCROLL_HEIGHT_STEP;
+    nextDensity = "full";
   } else if (event.key === "Home") {
-    next = SIGNAL_PATH_SCROLL_HEIGHT_MIN;
+    nextDensity = "compact";
   } else if (event.key === "End") {
-    next = getSignalPathScrollMaxHeight();
+    nextDensity = "full";
   } else if (event.key === "Enter" || event.key === " ") {
-    next = SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT;
+    nextDensity = "full";
   }
 
-  if (next === null) {
+  if (nextDensity === null) {
     return;
   }
 
   event.preventDefault();
-  setSignalPathScrollHeight(next, { persist: true });
+  setSignalPathScrollHeight(heightForSignalPathDensity(nextDensity), { persist: true });
 }
 
 function onSignalPathResizeDoubleClick(event: MouseEvent): void {
   event.preventDefault();
-  setSignalPathScrollHeight(SIGNAL_PATH_SCROLL_HEIGHT_DEFAULT, { persist: true });
+  setSignalPathScrollHeight(SIGNAL_PATH_FULL_HEIGHT, { persist: true });
 }
 
 function applySignalPathHeightFromSettings(): void {
   const settings = getCurrentUiSettings();
-  const stored = settings.signalPathHeight;
-  if (typeof stored === "number" && Number.isFinite(stored)) {
-    setSignalPathScrollHeight(stored, { persist: false });
-  } else {
-    setSignalPathScrollHeight(signalPathScrollHeight, { persist: false });
-  }
+  const stored = typeof settings.signalPathHeight === "number" && Number.isFinite(settings.signalPathHeight)
+    ? settings.signalPathHeight
+    : signalPathScrollHeight;
+  const density = densityFromSignalPathHeight(stored);
+  setSignalPathScrollHeight(heightForSignalPathDensity(density), { persist: false });
 }
 
 /**
- * Wire up the movable horizontal splitter under the signal path visualisation.
+ * Wire up the horizontal splitter gesture for signal-path mode selection.
  * Safe to call once during bootstrap; subsequent calls are no-ops.
  */
 export function initSignalPathResize(): void {
@@ -6524,18 +6455,8 @@ export function initSignalPathResize(): void {
   });
 
   window.addEventListener("resize", () => {
-    // Re-clamp if the window shrinks below the current height.
-    setSignalPathScrollHeight(signalPathScrollHeight, { persist: false });
+    scheduleSignalPathLayoutAdapt();
   });
-
-  const scroll = getSignalPathScrollElement();
-  if (scroll && typeof ResizeObserver !== "undefined") {
-    signalPathScrollResizeObserver?.disconnect();
-    signalPathScrollResizeObserver = new ResizeObserver(() => {
-      scheduleSignalPathLayoutAdapt();
-    });
-    signalPathScrollResizeObserver.observe(scroll);
-  }
 
   applySignalPathHeightFromSettings();
   scheduleSignalPathLayoutAdapt();

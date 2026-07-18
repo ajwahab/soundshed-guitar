@@ -336,8 +336,8 @@
   position: relative;
   height: 100%;
   overflow-x: auto;
-  /* Prefer density + zoom-to-fit so splits don't need vertical scroll; auto is a last-resort fallback. */
-  overflow-y: auto;
+  /* The viewport grows to the rendered graph height in either density mode. */
+  overflow-y: hidden;
   scrollbar-gutter: stable both-edges;
   /* Reserve the thin horizontal scrollbar's track below the signal nodes. */
   padding: 8px 12px 16px;
@@ -348,7 +348,7 @@
   padding-bottom: 16px;
 }
 
-/* Drag handle under the visualisation — resizes the signal path area */
+/* Drag handle under the visualisation — selects the signal-chain display mode */
 .signal-path-resize-handle {
   flex: 0 0 auto;
   height: 8px;
@@ -552,7 +552,7 @@ body.signal-path-resizing * {
     linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 88%, var(--node-accent-strong) 12%) 0%, var(--bg-card) 44%),
     var(--bg-card);
   border-radius: 10px;
-  border: 1px solid var(--border-light);
+  border: 1px solid var(--node-accent-border);
   min-width: 72px;
   min-height:72px;
   cursor: pointer;
@@ -579,6 +579,7 @@ body.signal-path-resizing * {
 }
 
 .signal-node.selected, .signal-node:focus {
+  border-width: 2px;
   border-color: var(--node-accent-strong);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 7%, var(--node-accent-soft)),
@@ -661,7 +662,7 @@ body.signal-path-resizing * {
 .signal-node.bypassed {
   opacity: 0.45;
   border-style: dashed;
-  border-color: var(--border-medium);
+  border-color: var(--node-accent-border);
 }
 
 .signal-node.bypassed .node-label::after {
@@ -678,11 +679,11 @@ body.signal-path-resizing * {
 }
 
 .signal-node.output-node {
+  --node-accent-strong: var(--node-output);
   border-color: color-mix(in srgb, var(--node-output) 60%, var(--border-light));
 }
 
 .signal-node.output-node:hover {
-  --node-accent-strong: var(--node-output);
   border-color: var(--node-output-hover);
 }
 
@@ -735,59 +736,47 @@ body.signal-path-resizing * {
 }
 
 /*
- * Density modes driven only by available signal-path area height
- * (set via data-density on .signal-path-bar from layout adapt JS).
- * Escalates compact/micro and then zoom-to-fit so parallel splits
- * do not require vertical scrolling.
+ * The splitter selects one of two fixed density modes. Full mode uses the
+ * base styles above; compact mode uses icon-only nodes with no labels.
  */
 
-.signal-path-bar[data-density="compact"] .signal-path-scroll,
-.signal-path-bar[data-density="micro"] .signal-path-scroll {
+.signal-path-bar[data-density="compact"] .signal-path-scroll {
   padding: 4px 8px 12px;
 }
 
 /* Icon-only compact */
-.signal-path-bar[data-density="compact"] .signal-path-nodes,
-.signal-path-bar[data-density="micro"] .signal-path-nodes {
+.signal-path-bar[data-density="compact"] .signal-path-nodes {
   padding: 0;
 }
 
-.signal-path-bar[data-density="compact"] .signal-node,
-.signal-path-bar[data-density="micro"] .signal-node {
+.signal-path-bar[data-density="compact"] .signal-node {
   min-width: 40px;
   width: 40px;
   min-height: 40px;
-  padding: 6px;
   gap: 0;
   border-radius: 8px;
 }
 
 .signal-path-bar[data-density="compact"] .signal-node .node-info,
-.signal-path-bar[data-density="compact"] .signal-node .node-label,
-.signal-path-bar[data-density="micro"] .signal-node .node-info,
-.signal-path-bar[data-density="micro"] .signal-node .node-label {
+.signal-path-bar[data-density="compact"] .signal-node .node-label {
   display: none;
 }
 
-.signal-path-bar[data-density="compact"] .signal-node .node-icon,
-.signal-path-bar[data-density="micro"] .signal-node .node-icon {
+.signal-path-bar[data-density="compact"] .signal-node .node-icon {
   width: 20px;
   height: 20px;
 }
 
-.signal-path-bar[data-density="compact"] .signal-node .node-icon .fx-effect-icon,
-.signal-path-bar[data-density="micro"] .signal-node .node-icon .fx-effect-icon {
+.signal-path-bar[data-density="compact"] .signal-node .node-icon .fx-effect-icon {
   width: 16px;
   height: 16px;
 }
 
-.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-icon,
-.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-icon {
+.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-icon {
   display: none;
 }
 
-.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-layout-thumb,
-.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-layout-thumb {
+.signal-path-bar[data-density="compact"] .signal-node.has-thumb .node-layout-thumb {
   position: static;
   top: auto;
   width: 26px;
@@ -796,31 +785,24 @@ body.signal-path-resizing * {
   opacity: 1;
 }
 
-/* Compact connectors: 100% more spacing than the previous tight defaults (16→32, 12→24). */
+/* Compact connectors retain a fixed, readable spacing. */
 .signal-path-bar[data-density="compact"] .signal-connector {
   width: 32px;
 }
 
-.signal-path-bar[data-density="micro"] .signal-connector {
-  width: 24px;
-}
-
-.signal-path-bar[data-density="compact"] .signal-arrow,
-.signal-path-bar[data-density="micro"] .signal-arrow {
+.signal-path-bar[data-density="compact"] .signal-arrow {
   font-size: 12px;
   margin: 0 4px;
 }
 
-.signal-path-bar[data-density="compact"] .node-bypass-badge,
-.signal-path-bar[data-density="micro"] .node-bypass-badge {
+.signal-path-bar[data-density="compact"] .node-bypass-badge {
   top: 16px;
   right: 1px;
   font-size: 6px;
   padding: 1px 3px;
 }
 
-.signal-path-bar[data-density="compact"] .node-missing-badge,
-.signal-path-bar[data-density="micro"] .node-missing-badge {
+.signal-path-bar[data-density="compact"] .node-missing-badge {
   top: auto;
   bottom: 2px;
   left: 2px;
@@ -829,8 +811,7 @@ body.signal-path-resizing * {
   padding: 0 3px;
 }
 
-.signal-path-bar[data-density="compact"] .node-clip-indicator,
-.signal-path-bar[data-density="micro"] .node-clip-indicator {
+.signal-path-bar[data-density="compact"] .node-clip-indicator {
   right: 3px;
   bottom: 3px;
   width: 5px;
@@ -838,9 +819,7 @@ body.signal-path-resizing * {
 }
 
 .signal-path-bar[data-density="compact"] .signal-node-delete,
-.signal-path-bar[data-density="compact"] .signal-node-bypass,
-.signal-path-bar[data-density="micro"] .signal-node-bypass,
-.signal-path-bar[data-density="micro"] .signal-node-delete {
+.signal-path-bar[data-density="compact"] .signal-node-bypass {
   width: 14px;
   height: 14px;
   font-size: 11px;
@@ -848,8 +827,7 @@ body.signal-path-resizing * {
 }
 
 /* Tighter parallel layout when space is limited */
-.signal-path-bar[data-density="compact"] .signal-graph-container,
-.signal-path-bar[data-density="micro"] .signal-graph-container {
+.signal-path-bar[data-density="compact"] .signal-graph-container {
   gap: 4px;
   padding: 0;
 }
@@ -865,45 +843,6 @@ body.signal-path-resizing * {
   min-width: 26px;
   min-height: 26px;
   padding: 2px;
-}
-
-/* Micro: smallest tiles for very short areas / multi-branch fit */
-.signal-path-bar[data-density="micro"] .signal-node {
-  min-width: 32px;
-  width: 32px;
-  min-height: 32px;
-  padding: 4px;
-  border-radius: 6px;
-}
-
-.signal-path-bar[data-density="micro"] .signal-node .node-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.signal-path-bar[data-density="micro"] .signal-node .node-icon .fx-effect-icon {
-  width: 14px;
-  height: 14px;
-}
-
-.signal-path-bar[data-density="micro"] .signal-node.has-thumb .node-layout-thumb {
-  width: 22px;
-  height: 22px;
-}
-
-.signal-path-bar[data-density="micro"] .parallel-branches {
-  gap: 2px;
-  padding: 2px 1px;
-  margin: 0 1px;
-}
-
-.signal-path-bar[data-density="micro"] .parallel-split,
-.signal-path-bar[data-density="micro"] .parallel-join {
-  min-width: 22px;
-  min-height: 22px;
-  padding: 1px;
-  border-width: 1px;
-  border-radius: 4px;
 }
 
 .node-type {
@@ -1179,11 +1118,6 @@ body.signal-path-resizing * {
 .signal-path-bar[data-density="compact"] .parallel-flow-icon {
   width: 22px;
   height: 22px;
-}
-
-.signal-path-bar[data-density="micro"] .parallel-flow-icon {
-  width: 16px;
-  height: 16px;
 }
 
 .parallel-branches {
@@ -2316,23 +2250,43 @@ body.signal-path-resizing * {
   padding: 18px;
 }
 
-.default-effect-shell .node-param-tabs {
-  padding: 5px;
-  background: linear-gradient(180deg, rgba(10, 12, 19, 0.82) 0%, rgba(25, 28, 39, 0.72) 100%);
-  border-color: rgba(177, 193, 228, 0.1);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+.default-effect-shell.neural-model-effect .default-effect-section-controls {
+  padding: 16px;
 }
 
-.default-effect-shell .node-param-tab {
-  min-height: 34px;
-  color: rgba(203, 211, 229, 0.7);
-  letter-spacing: 0.08em;
+.default-effect-shell.neural-model-effect .neural-model-resource-selector > .node-resource-selector {
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.default-effect-shell .node-param-tab.is-active {
-  background: linear-gradient(180deg, rgba(228, 232, 241, 0.22) 0%, rgba(173, 182, 201, 0.12) 100%);
-  color: #f4f7ff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 18px rgba(0, 0, 0, 0.18);
+.default-effect-shell.neural-model-effect .neural-model-resource-selector .resource-controls {
+  gap: 8px;
+}
+
+.default-effect-shell .effect-inline-resource-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.default-effect-shell .effect-inline-resource-selectors .node-resource-selector {
+  flex: 1 1 280px;
+  min-width: 0;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.default-effect-shell .effect-inline-resource-selectors .resource-controls {
+  gap: 8px;
 }
 
 .default-effect-shell .params-controls {
@@ -2388,46 +2342,6 @@ body.signal-path-resizing * {
   color: rgba(231, 236, 246, 0.76);
   font-size: 11px;
   font-weight: 600;
-}
-
-.default-effect-shell .node-param-knob {
-  width: 40px;
-  height: 40px;
-  border-width: 1px;
-  border-color: rgba(184, 197, 226, 0.18);
-  background:
-    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.02) 28%, transparent 34%),
-    linear-gradient(180deg, rgba(66, 73, 93, 0.98) 0%, rgba(34, 38, 50, 1) 42%, rgba(16, 18, 25, 1) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -7px 10px rgba(0, 0, 0, 0.34),
-    0 10px 16px rgba(0, 0, 0, 0.28);
-}
-
-.default-effect-shell .node-param-knob::after {
-  content: "";
-  position: absolute;
-  inset: 5px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.default-effect-shell .node-param-knob:hover {
-  border-color: rgba(255, 190, 120, 0.48);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.068),
-    inset 0 -7px 10px rgba(0, 0, 0, 0.168),
-    0 12px 20px rgba(0, 0, 0, 0.065),
-    0 0 0 3px rgba(255, 190, 120, 0.08);
-}
-
-.default-effect-shell .node-param-knob .knob-indicator {
-  width: 3px;
-  height: 14px;
-  top: 5px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #fff4df 0%, #ffbf5d 100%);
-  box-shadow: 0 0 8px rgba(255, 191, 93, 0.22);
 }
 
 .default-effect-shell .resource-controls {
@@ -2706,32 +2620,46 @@ body.signal-path-resizing * {
 }
 
 .node-param-tabs {
-  display: inline-flex;
-  gap: 6px;
-  padding: 4px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  align-self: flex-start;
+  display: flex;
+  align-self: stretch;
+  gap: 18px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .node-param-tab {
-  border: none;
+  min-height: 32px;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  padding: 6px 12px;
-  border-radius: 999px;
+  letter-spacing: 0.08em;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.node-param-tab:hover {
+  color: var(--text-primary);
+}
+
+.node-param-tab:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
 }
 
 .node-param-tab.is-active {
-  background: rgba(255, 255, 255, 0.18);
-  color: var(--text-primary);
+  border-bottom-color: var(--color-accent);
+  background: transparent;
+  color: var(--color-accent);
 }
 
 .node-param-tab-panels {
@@ -2742,6 +2670,7 @@ body.signal-path-resizing * {
 
 .node-param-tab-panel {
   display: none;
+  padding-top:4px;
 }
 
 .node-param-tab-panel.is-active {
@@ -2816,9 +2745,6 @@ body.signal-path-resizing * {
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  border: 1px solid rgba(170, 183, 214, 0.1);
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(13, 16, 24, 0.6), rgba(17, 20, 29, 0.32));
   overflow: hidden;
 }
 
@@ -3037,29 +2963,6 @@ body.signal-path-resizing * {
   gap: 4px;
 }
 
-.param-knob {
-  width: 48px;
-  height: 48px;
-  appearance: none;
-  -webkit-appearance: none;
-  background: linear-gradient(135deg, #4a4a5a, #3a3a4a);
-  border-radius: 50%;
-  cursor: pointer;
-  border: 2px solid #5a5a6a;
-  box-shadow: 
-    0 2px 6px var(--overlay-darker),
-    inset 0 1px 0 rgba(255,255,255,0.1);
-  transition: all 0.2s;
-  position: relative;
-}
-
-.param-knob:hover {
-  border-color: var(--color-primary);
-  box-shadow: 
-    0 2px 8px rgba(224, 120, 72, 0.3),
-    inset 0 1px 0 rgba(255,255,255,0.1);
-}
-
 .node-params-content {
   display: flex;
   flex-wrap: wrap;
@@ -3080,39 +2983,6 @@ body.signal-path-resizing * {
   color: #8888a0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.node-param-knob {
-  width: 40px;
-  height: 40px;
-  background: linear-gradient(135deg, #505060, #38384a);
-  touch-action: none;
-  border-radius: 50%;
-  position: relative;
-  cursor: pointer;
-  border: 2px solid #606078;
-  box-shadow: 0 2px 6px var(--overlay-darker);
-}
-
-.node-param-knob .knob-indicator {
-  width: 2px;
-  height: 14px;
-  background: #50b878;
-  position: absolute;
-  top: 5px;
-  left: 50%;
-  transform-origin: bottom center;
-  transform: translateX(-50%);
-  border-radius: 1px;
-}
-
-.node-param-knob:hover {
-  border-color: #50b878;
-}
-
-.node-param-knob:focus-visible {
-  outline: 2px solid #50b878;
-  outline-offset: 2px;
 }
 
 .node-param-value {
@@ -3904,16 +3774,6 @@ body.signal-path-resizing * {
   max-width: 70px;
 }
 
-.mixer-input-controls .node-param-knob {
-  width: 36px;
-  height: 36px;
-}
-
-.mixer-input-controls .node-param-knob .knob-indicator {
-  height: 12px;
-  top: 4px;
-}
-
 .mixer-input-controls .node-param-value {
   font-size: 9px;
 }
@@ -3974,11 +3834,10 @@ body.signal-path-resizing * {
 }
 
 .custom-layout-backdrop .node-param-tabs {
-  padding: 5px;
+  padding: 0;
 }
 
 .custom-layout-backdrop .node-param-tab {
-  min-height: 34px;
   letter-spacing: 0.08em;
 }
 
@@ -4084,9 +3943,9 @@ body.signal-path-resizing * {
 }
 
 .custom-knob-pedal {
-  background: linear-gradient(145deg, #e0e0e0, #b0b0b0) !important;
+  background: #c8cad2 !important;
   border-color: #888 !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  box-shadow: none;
 }
 
 .custom-knob-pedal .knob-indicator {
@@ -4094,9 +3953,9 @@ body.signal-path-resizing * {
 }
 
 .custom-knob-amp {
-  background: radial-gradient(circle at 35% 35%, #555, #1a1a1a) !important;
-  border: 2px solid #666 !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  background: #2f3038 !important;
+  border: 1px solid #666 !important;
+  box-shadow: none;
 }
 
 .custom-knob-amp .knob-indicator {

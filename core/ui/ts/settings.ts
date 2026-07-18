@@ -17,8 +17,8 @@ import { showConfirm } from "./dialogs.js";
 import { initCompositeEditor, renderCompositeList } from "./compositeEditor.js";
 import { initLayoutManager, renderLayoutList } from "./layoutManager.js";
 import { initBlendManager, renderBlendList } from "./blendManager.js";
-import { scheduleSignalPathLayoutAdapt, updateSelectedNodePeakMeter } from "./signalPath.js";
-import { getCurrentUiSettings, updateUiSettings } from "./windowSettings.js";
+import { updateSelectedNodePeakMeter } from "./signalPath.js";
+import { updateUiSettings } from "./windowSettings.js";
 import { getApiBaseUrl } from "./toneSharingPanel.js";
 import {
   FEATURE_DEFINITIONS,
@@ -128,7 +128,6 @@ const namAutoInputCalibrationToggle = document.getElementById("nam-auto-input-ca
 const factoryArchiveLoadingRow = document.getElementById("factory-archive-loading-row") as HTMLElement | null;
 const factoryArchiveSettingsSection = document.getElementById("factory-archive-settings-section") as HTMLElement | null;
 const updateCheckToggle = document.getElementById("update-check-toggle") as HTMLInputElement | null;
-const preferCompactSignalPathToggle = document.getElementById("prefer-compact-signal-path-toggle") as HTMLInputElement | null;
 const tone3000UseSoundshedApiToggle = document.getElementById("tone3000-use-soundshed-api-toggle") as HTMLInputElement | null;
 const tone3000ApiKeyRow = document.getElementById("tone3000-api-key-row") as HTMLElement | null;
 const tone3000ProxyInfoHint = document.getElementById("tone3000-proxy-info-hint") as HTMLElement | null;
@@ -191,7 +190,6 @@ export function initSettingsPanel(): void {
   initTone3000UseSoundshedApiToggle();
   initTone3000ProxyHealthCheck();
   initUpdateCheckToggle();
-  initPreferCompactSignalPathToggle();
   initEquipmentTabs();
   initLibraryFilters();
   initLibraryCleanup();
@@ -570,42 +568,6 @@ export function initThemeSelect(): void {
   window.addEventListener("themeChanged", ((event: CustomEvent) => {
     themeSelect.value = event.detail.theme as ThemeName;
   }) as EventListener);
-}
-
-function syncPreferCompactSignalPathToggle(): void {
-  if (!preferCompactSignalPathToggle) {
-    return;
-  }
-  const preferCompact = Boolean(
-    getCurrentUiSettings().preferCompactSignalPath
-      ?? uiState.uiSettings?.preferCompactSignalPath
-      ?? false,
-  );
-  preferCompactSignalPathToggle.checked = preferCompact;
-}
-
-function initPreferCompactSignalPathToggle(): void {
-  if (!preferCompactSignalPathToggle || preferCompactSignalPathToggle.dataset.bound === "true") {
-    return;
-  }
-  preferCompactSignalPathToggle.dataset.bound = "true";
-
-  preferCompactSignalPathToggle.addEventListener("change", () => {
-    const preferCompact = Boolean(preferCompactSignalPathToggle.checked);
-    uiState.uiSettings = {
-      ...(uiState.uiSettings ?? { zoom: 1 }),
-      preferCompactSignalPath: preferCompact,
-    };
-    updateUiSettings({ preferCompactSignalPath: preferCompact });
-    scheduleSignalPathLayoutAdapt();
-  });
-
-  window.addEventListener("uiSettingsApplied", () => {
-    syncPreferCompactSignalPathToggle();
-    scheduleSignalPathLayoutAdapt();
-  });
-
-  syncPreferCompactSignalPathToggle();
 }
 
 export function initZoomControls(): void {
@@ -1182,7 +1144,6 @@ export function refreshSettingsView(): void {
     const updateCheckEnabled = getSettingValue(UPDATE_CHECK_ENABLED_SETTING);
     updateCheckToggle.checked = updateCheckEnabled === null ? true : Boolean(updateCheckEnabled);
   }
-  syncPreferCompactSignalPathToggle();
   if (tone3000UseSoundshedApiToggle) {
     const useSoundshedApi = getSettingValue(TONE3000_USE_SOUNDSHED_API_SETTING);
     tone3000UseSoundshedApiToggle.checked = Boolean(useSoundshedApi);

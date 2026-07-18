@@ -155,7 +155,6 @@
 
 body.theme-classic {
   background-color: #2a1f15;
-  background-image: none;
 }
 
 .theme-classic select {
@@ -273,12 +272,11 @@ body.theme-classic {
 /* ===== From amp.css ===== */
 .theme-classic .effect-visualization {
   background-color: #1f1815;
-  border: 1px solid #5a5048;
   box-shadow: inset 0 4px 10px rgba(0, 0, 0, 0.3);
 }
 
 .theme-classic .effect-visualization::before {
-  background: linear-gradient(180deg, rgba(245, 241, 232, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .theme-classic .effect-visualization::after {
@@ -498,8 +496,9 @@ body.theme-classic {
 
 /* ===== From signal-path.css ===== */
 .theme-classic .node-param-tabs {
-  background: rgba(61, 47, 37, 0.8);
-  border-color: rgba(245, 241, 232, 0.12);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .theme-classic .node-param-tab {
@@ -507,13 +506,20 @@ body.theme-classic {
 }
 
 .theme-classic .node-param-tab.is-active {
-  background: rgba(255, 244, 214, 0.22);
-  color: var(--text-dark-primary);
+  background: transparent;
+  color: var(--color-accent);
 }
 
 .theme-classic .default-effect-shell {
   border-color: rgba(245, 241, 232, 0.12);
   background: #3d2f25;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+.theme-classic .default-effect-shell-equipment-panel {
+  border-color: rgba(245, 241, 232, 0.12);
+  background: #1f1815;
+  box-shadow: none;
 }
 
 .theme-classic .default-effect-shell-title {
@@ -531,19 +537,30 @@ body.theme-classic {
 
 .theme-classic .default-effect-shell-chip,
 .theme-classic .default-effect-shell .close-params-btn,
-.theme-classic .default-effect-shell .node-param-tabs,
 .theme-classic .default-effect-shell .resource-picker-btn,
 .theme-classic .default-effect-shell .resource-clear-btn,
 .theme-classic .default-effect-shell .resource-browse-btn,
-.theme-classic .default-effect-shell .blend-open-btn,
+.theme-classic .default-effect-shell .blend-open-btn {
+  color: var(--text-dark-primary);
+}
+
 .theme-classic .default-effect-shell .default-effect-section,
 .theme-classic .default-effect-shell .node-param-group-block,
-.theme-classic .default-effect-shell .eq-visualizer,
 .theme-classic .default-effect-shell .mixer-inputs-section,
 .theme-classic .default-effect-shell .node-resource-selector {
-  border-color: rgba(255, 232, 187, 0.16);
-  background: linear-gradient(180deg, rgba(72, 46, 27, 0.82) 0%, rgba(49, 30, 18, 0.94) 100%);
-  color: var(--text-dark-primary);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.theme-classic .default-effect-shell .eq-visualizer {
+  border: 0;
+  background: #2a1f15;
+  box-shadow: none;
+}
+
+.theme-classic .default-effect-shell.neural-model-effect .node-param-tabs {
+  margin-top: 4px;
 }
 
 .theme-classic .default-effect-shell .plugin-host-load-error {
@@ -591,8 +608,7 @@ body.theme-classic {
 }
 
 .theme-classic .eq-visualizer {
-  background: rgba(42, 36, 30, 0.8);
-  border-color: #5a5048;
+  background: #2a1f15;
 }
 
 .theme-classic .eq-visualizer-header {
@@ -664,7 +680,6 @@ body.theme-classic {
 }
 
 /* Theme-classic controls inside a custom backdrop */
-.custom-layout-backdrop.theme-classic .node-param-tabs,
 .custom-layout-backdrop.theme-classic .resource-picker-btn,
 .custom-layout-backdrop.theme-classic .resource-clear-btn,
 .custom-layout-backdrop.theme-classic .resource-browse-btn,

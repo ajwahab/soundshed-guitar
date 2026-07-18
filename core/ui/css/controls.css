@@ -17,7 +17,7 @@
   filter: grayscale(0.2);
 }
 
-.knob-label, .amp-knob-label {
+.knob-label {
   font-size: 9px;
   font-weight: 700;
   color: var(--text-muted);
@@ -44,24 +44,18 @@
   flex-shrink: 0;
 }
 
-/* 3D inner body — covers the ring center, leaving only the outer ring band */
+/* Solid inner body keeps the value ring legible without decorative depth. */
 .knob::before {
   content: "";
   position: absolute;
   inset: 4px;
   border-radius: 50%;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--knob-body-from), #fff 3%) 0%,
-    var(--knob-body-from) 50%,
-    color-mix(in srgb, var(--knob-body-to), #000 8%) 100%
-  );
+  background: var(--control-knob-bg);
+  border: 1px solid var(--control-border);
   box-shadow:
     0 0 0 2px var(--bg-secondary),
-    0 3px 7px rgba(0, 0, 0, 0.5),
-    0 1px 1px rgba(0, 0, 0, 0.35),
-    inset 0 1px 1px color-mix(in srgb, var(--knob-body-highlight), transparent 45%),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.4);
+    inset 0 1px 0 var(--knob-border-highlight),
+    inset 0 -1px 0 var(--knob-border-shadow);
   pointer-events: none;
   z-index: 1;
 }
@@ -87,8 +81,6 @@
 }
 
 .knob-label,
-.amp-knob-label,
-.effect-knob-label,
 .node-param-label,
 .custom-control-label {
   cursor: default;
@@ -100,8 +92,6 @@
 }
 
 .knob-label.is-editing,
-.amp-knob-label.is-editing,
-.effect-knob-label.is-editing,
 .node-param-label.is-editing,
 .custom-control-label.is-editing {
   min-height: 1.4em;

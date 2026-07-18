@@ -273,20 +273,6 @@ body:not(.is-standalone) .input-mode-control {
   cursor: not-allowed;
 }
 
-.metronome-knob {
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  background: var(--knob-dark-bg);
-  border: 2px solid var(--knob-dark-border);
-  box-shadow: 0 4px 10px rgba(0,0,0,0.45), inset 0 2px 4px rgba(255,255,255,0.08);
-  touch-action: none;
-}
-
-.metronome-knob .knob-indicator {
-  background: var(--knob-dark-indicator);
-}
-
 .metronome-value {
   font-size: 11px;
   color: var(--text-dark-secondary);

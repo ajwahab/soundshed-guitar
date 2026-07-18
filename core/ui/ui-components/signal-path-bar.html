@@ -1,5 +1,5 @@
     <!-- Signal Path Bar -->
-    <section class="signal-path-bar" id="signal-path-bar">
+    <section class="signal-path-bar film-grain" id="signal-path-bar">
       <!-- Composite edit mode banner -->
       <div class="composite-edit-banner" id="composite-edit-banner" style="display: none;">
         <span class="composite-edit-banner-label">Editing Composite:</span>
@@ -52,11 +52,12 @@
         id="signal-path-resize-handle"
         role="separator"
         aria-orientation="horizontal"
-        aria-label="Resize signal path"
+        aria-label="Signal chain display mode"
         aria-valuemin="48"
-        aria-valuemax="320"
+        aria-valuemax="96"
         aria-valuenow="96"
-        title="Drag to resize signal path (double-click to reset)"
+        aria-valuetext="Full signal chain"
+        title="Drag up for compact signal chain or down for full (double-click for full)"
         tabindex="0"
       >
         <span class="signal-path-resize-handle-grip" aria-hidden="true"></span>

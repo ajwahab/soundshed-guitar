@@ -281,6 +281,12 @@ function normalizeCommunityPresetSearchValue(value: unknown): string {
   return value.trim().toLowerCase();
 }
 
+function getToneSharingDisplayTags(tags: string[] | null | undefined): string[] {
+  return Array.isArray(tags)
+    ? tags.filter((tag) => normalizeCommunityPresetSearchValue(tag) !== "preset")
+    : [];
+}
+
 function matchesCommunityPresetSearch(item: ToneSharingItem, query: string): boolean {
   const normalizedQuery = normalizeCommunityPresetSearchValue(query);
   if (!normalizedQuery) {
@@ -1871,8 +1877,9 @@ async function renderFeedRows(rows: ToneSharingRow[]): Promise<void> {
                 `<span class="tone-sharing-card-stat"><span class="tone-sharing-card-stat-label">Votes</span><strong>${formatCompactMetric(item.ratingCount)}</strong></span>`,
               ].join("")
             : "";
-          const tagsMarkup = item.kind === "item" && item.tags && item.tags.length > 0
-            ? `<div class="tone-sharing-card-tags">${item.tags.map((tag) => `<span class="tone-sharing-tag-badge">${escapeHtml(tag)}</span>`).join("")}</div>`
+          const displayTags = item.kind === "item" ? getToneSharingDisplayTags(item.tags) : [];
+          const tagsMarkup = displayTags.length > 0
+            ? `<div class="tone-sharing-card-tags">${displayTags.map((tag) => `<span class="tone-sharing-tag-badge">${escapeHtml(tag)}</span>`).join("")}</div>`
             : "";
           const bottomMetaMarkup = (tagsMarkup || creatorIdentityMarkup)
             ? `<div class="tone-sharing-card-bottom-meta">${tagsMarkup}${creatorIdentityMarkup}</div>`
@@ -2470,13 +2477,14 @@ async function renderPackDetail(details: ToneSharingPackDetails): Promise<void> 
         .map(
           (item) => {
             const isItemInstalled = installedLookup.itemIds.has(item.itemId);
+            const displayTags = getToneSharingDisplayTags(item.tags);
             return `
           <div class=\"tone-sharing-pack-preset-row\" data-item-id=\"${escapeHtml(item.itemId)}\">
             <div class=\"tone-sharing-pack-preset-info\">
               <div class=\"tone-sharing-pack-preset-title\">${escapeHtml(item.title)}</div>
               ${item.type ? `<div class=\"tone-sharing-pack-preset-type\">${escapeHtml(item.type)}</div>` : ""}
               ${item.description ? `<div class=\"tone-sharing-pack-preset-desc\">${escapeHtml(item.description)}</div>` : ""}
-              ${item.tags && item.tags.length > 0 ? `<div class=\"tone-sharing-pack-preset-tags\">${item.tags.map((t) => `<span class=\"tone-sharing-tag-badge\">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+              ${displayTags.length > 0 ? `<div class=\"tone-sharing-pack-preset-tags\">${displayTags.map((tag) => `<span class=\"tone-sharing-tag-badge\">${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
             </div>
             <div class=\"tone-sharing-pack-preset-actions\">
               ${renderToneIconButton({

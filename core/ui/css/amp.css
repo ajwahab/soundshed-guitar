@@ -165,29 +165,6 @@
   gap: 8px;
 }
 
-.amp-knob {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--amp-knob-bg);
-  border: 1.5px solid var(--amp-knob-border);
-  box-shadow: var(--shadow-sm);
-  position: relative;
-  cursor: pointer;
-}
-
-.amp-knob .knob-indicator {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  width: 2px;
-  height: 12px;
-  background: var(--control-indicator);
-  border-radius: 2px;
-  transform: translateX(-50%);
-  transform-origin: center 20px;
-}
-
 /* Voice Toggle */
 .voice-switch .voice-toggle {
   width: 24px;
@@ -348,4 +325,3 @@
     0 14px 0 var(--text-primary),
     20px 14px 0 var(--text-primary);
 }
-

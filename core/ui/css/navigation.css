@@ -14,7 +14,9 @@
 
 .app-title {
   font-size: 13px;
-  color: var(--text-primary);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
   user-select: none;
@@ -142,6 +144,12 @@
 .control-bar-body {
   min-height: 0;
   overflow: hidden;
+}
+
+/* Open control-bar menus must extend over the signal path; retain clipping when collapsed. */
+.control-bar.has-open-popover:not(.is-collapsed) .control-bar-body,
+.control-bar.has-open-calibration:not(.is-collapsed) .control-bar-body {
+  overflow: visible;
 }
 
 .control-bar-body-inner {
@@ -300,9 +308,9 @@
 .preset-action-btn {
   min-height: 28px;
   min-width: 30px;
-  border: 1px solid rgba(255,255,255,0.11);
+  border: none;
   border-radius: 8px;
-  background: rgba(255,255,255,0.07);
+  background: none;
   color: var(--text-dark-primary);
   cursor: pointer;
   display: inline-flex;
