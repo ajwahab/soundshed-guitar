@@ -97,6 +97,61 @@ function reportBootstrapFailure(source: string, error: unknown): void {
   postMessage({ type: "uiBootstrapError", source, details });
 }
 
+function initFooterActionsPopup(): void {
+  const footer = document.querySelector<HTMLElement>(".footer-bar");
+  const toggle = document.getElementById("footer-actions-toggle") as HTMLButtonElement | null;
+  const panel = document.getElementById("footer-actions-panel");
+  if (!footer || !toggle || !panel || toggle.dataset.bound === "true") {
+    return;
+  }
+
+  toggle.dataset.bound = "true";
+  const compactQuery = window.matchMedia("(max-width: 680px)");
+
+  const setOpen = (open: boolean) => {
+    footer.classList.toggle("footer-actions-open", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    panel.setAttribute("aria-hidden", compactQuery.matches && !open ? "true" : "false");
+  };
+
+  const syncMode = () => {
+    if (!compactQuery.matches) {
+      setOpen(false);
+      panel.setAttribute("aria-hidden", "false");
+      return;
+    }
+    setOpen(false);
+  };
+
+  toggle.addEventListener("click", () => {
+    setOpen(!footer.classList.contains("footer-actions-open"));
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!compactQuery.matches || !footer.classList.contains("footer-actions-open")) {
+      return;
+    }
+    const target = event.target as Node | null;
+    if (target && footer.contains(target)) {
+      return;
+    }
+    setOpen(false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !footer.classList.contains("footer-actions-open")) {
+      return;
+    }
+    setOpen(false);
+    if (compactQuery.matches) {
+      toggle.focus();
+    }
+  });
+
+  compactQuery.addEventListener("change", syncMode);
+  syncMode();
+}
+
 
 async function bootstrap(): Promise<void> {
   initSplashScreen();
@@ -183,6 +238,7 @@ async function bootstrap(): Promise<void> {
     footerDemoContainer.innerHTML = renderFooterDemoAudioControls();
     bindFooterDemoAudioControls();
   }
+  initFooterActionsPopup();
 
   renderActivePreset();
   await initializePresets();

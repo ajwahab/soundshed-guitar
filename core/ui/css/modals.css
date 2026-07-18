@@ -2673,9 +2673,6 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--modal-bg-raised);
-  border-radius: 8px;
-  border: 1px solid var(--modal-border-medium);
   font-size: 12px;
   color: var(--modal-text);
 }
