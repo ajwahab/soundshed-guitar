@@ -2110,36 +2110,12 @@ export function updateSelectedNodeDspStatus(): void {
   const metrics = diagnostics?.levels;
   const timeUs = getSelectedNodeDspStatusTimeUs(diagnostics);
   const latencySamples = getSelectedNodeDspStatusLatencySamples(diagnostics);
-  const clippingPercent = metrics ? (metrics.clipped ? 100 : 0) : null;
-
-  const values: Record<string, { average: string; current: string }> = {
-    peak: {
-      average: formatDspStatusDb(addDspStatusSample("peak", metrics?.peakDbfs ?? null)),
-      current: formatDspStatusDb(metrics?.peakDbfs),
-    },
-    rms: {
-      average: formatDspStatusDb(addDspStatusSample("rms", metrics?.rmsDbfs ?? null)),
-      current: formatDspStatusDb(metrics?.rmsDbfs),
-    },
-    headroom: {
-      average: formatDspStatusHeadroom(addDspStatusSample("headroom", metrics?.headroomDb ?? null)),
-      current: formatDspStatusHeadroom(metrics?.headroomDb),
-    },
-    processing: {
-      average: formatDspStatusTime(addDspStatusSample("processing", timeUs)),
-      current: formatDspStatusTime(timeUs),
-    },
-    latency: {
-      average: formatDspStatusLatency(addDspStatusSample("latency", latencySamples)),
-      current: formatDspStatusLatency(latencySamples),
-    },
-    clipping: {
-      average: (() => {
-        const average = addDspStatusSample("clipping", clippingPercent);
-        return average === null ? "—" : `${average.toFixed(1)}%`;
-      })(),
-      current: metrics ? (metrics.clipped ? "Clipped" : "Clear") : "—",
-    },
+  const values: Record<string, string> = {
+    peak: formatDspStatusDb(addDspStatusSample("peak", metrics?.peakDbfs ?? null)),
+    rms: formatDspStatusDb(addDspStatusSample("rms", metrics?.rmsDbfs ?? null)),
+    headroom: formatDspStatusHeadroom(addDspStatusSample("headroom", metrics?.headroomDb ?? null)),
+    processing: formatDspStatusTime(addDspStatusSample("processing", timeUs)),
+    latency: formatDspStatusLatency(addDspStatusSample("latency", latencySamples)),
   };
 
   const now = performance.now();
@@ -2147,12 +2123,8 @@ export function updateSelectedNodeDspStatus(): void {
     || now - lastDspStatusAverageRenderAt >= DSP_STATUS_AVERAGE_RENDER_INTERVAL_MS;
   Object.entries(values).forEach(([name, value]) => {
     const average = status.querySelector<HTMLElement>(`[data-dsp-status-average="${name}"]`);
-    const current = status.querySelector<HTMLElement>(`[data-dsp-status-current="${name}"]`);
-    if (average && shouldRenderAverage && average.textContent !== value.average) {
-      average.textContent = value.average;
-    }
-    if (current && current.textContent !== value.current) {
-      current.textContent = value.current;
+    if (average && shouldRenderAverage && average.textContent !== value) {
+      average.textContent = value;
     }
   });
   if (shouldRenderAverage) {
@@ -4091,12 +4063,11 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             </button>
             <div class="effect-dsp-status" aria-label="Live DSP status" ${selectedNodeDspStatusVisible ? "" : "hidden"}>
               <button class="effect-dsp-status-close" type="button" aria-label="Close DSP status" title="Close DSP status">×</button>
-              <div><span>Peak</span><strong data-dsp-status-average="peak">—</strong><em data-dsp-status-current="peak">—</em></div>
-              <div><span>RMS</span><strong data-dsp-status-average="rms">—</strong><em data-dsp-status-current="rms">—</em></div>
-              <div><span>Headroom</span><strong data-dsp-status-average="headroom">—</strong><em data-dsp-status-current="headroom">—</em></div>
-              <div><span>Processing</span><strong data-dsp-status-average="processing">—</strong><em data-dsp-status-current="processing">—</em></div>
-              <div><span>Latency</span><strong data-dsp-status-average="latency">—</strong><em data-dsp-status-current="latency">—</em></div>
-              <div><span>Clip rate</span><strong data-dsp-status-average="clipping">—</strong><em data-dsp-status-current="clipping">—</em></div>
+              <div><span>Peak avg</span><strong data-dsp-status-average="peak">—</strong></div>
+              <div><span>RMS avg</span><strong data-dsp-status-average="rms">—</strong></div>
+              <div><span>Headroom avg</span><strong data-dsp-status-average="headroom">—</strong></div>
+              <div><span>Processing avg</span><strong data-dsp-status-average="processing">—</strong></div>
+              <div><span>Latency avg</span><strong data-dsp-status-average="latency">—</strong></div>
             </div>
           </div>
           <div class="default-effect-shell-meta" aria-label="Module status">
