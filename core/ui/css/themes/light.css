@@ -243,10 +243,7 @@
 }
 
 .theme-light .preset-action-btn {
-  background: #ffffff;
-  border-color: var(--border-light);
   color: var(--text-secondary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .theme-light .preset-action-btn:hover {
@@ -428,46 +425,6 @@
 .theme-light .effect-visualization .mixer-mute-label,
 .theme-light .effect-visualization .mixer-no-inputs {
   color: rgba(69, 83, 110, 0.72);
-}
-
-.theme-light .effect-visualization .mixer-inputs-section .node-param-knob {
-  border-width: 1px;
-  border-color: var(--border-medium);
-  background: #f3f4f6;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-.theme-light .effect-visualization .mixer-inputs-section .node-param-knob::after {
-  content: none;
-}
-
-.theme-light .effect-visualization .mixer-inputs-section .node-param-knob .knob-indicator {
-  width: 3px;
-  height: 10px;
-  top: 5px;
-  border-radius: 2px;
-  background: var(--control-indicator);
-  box-shadow: none;
-}
-
-.theme-light .default-effect-shell .node-param-knob {
-  border-width: 1px;
-  border-color: var(--border-medium);
-  background: #f3f4f6;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-.theme-light .default-effect-shell .node-param-knob::after {
-  content: none;
-}
-
-.theme-light .default-effect-shell .node-param-knob .knob-indicator {
-  width: 3px;
-  height: 10px;
-  top: 5px;
-  border-radius: 2px;
-  background: var(--control-indicator);
-  box-shadow: none;
 }
 
 .theme-light .node-params-title {
@@ -657,25 +614,6 @@
   border-color: var(--border-light);
 }
 
-.custom-layout-backdrop.theme-light .node-param-knob {
-  border-width: 1px;
-  border-color: var(--border-medium);
-  background: #f3f4f6;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-.custom-layout-backdrop.theme-light .node-param-knob::after {
-  content: none;
-}
-
-.custom-layout-backdrop.theme-light .node-param-knob .knob-indicator {
-  width: 3px;
-  height: 10px;
-  top: 5px;
-  border-radius: 2px;
-  background: var(--control-indicator);
-  box-shadow: none;
-}
 
 /* ===== Notification Toast ===== */
 .theme-light .notification-toast {

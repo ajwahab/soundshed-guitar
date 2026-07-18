@@ -101,29 +101,19 @@
   
   /* Knob & Control Colors */
   --control-bg: #ffffff;
-  --control-knob-bg: #ffffff;
+  --control-knob-bg: #e8eaef;
   --control-border: #c8cad6;
   --control-indicator: #5a5a6a;
+  --knob-border-highlight: rgba(255, 255, 255, 0.72);
+  --knob-border-shadow: rgba(41, 48, 64, 0.16);
   --knob-ring-color: #2ec868;
   --knob-ring-track: rgba(0,0,0,0.18);
-  --knob-body-highlight: rgba(255,255,255,0.5);
-  --knob-body-from: #e8eaef;
-  --knob-body-to: #c8cad4;
 
   /* Blend Mapping Indicators */
   --blend-mapped-point: #6b6b7c;
   --blend-mapped-point-selectable: var(--color-accent);
   --blend-mapped-point-active: #50b878;
   --blend-mapped-point-glow: rgba(232, 136, 80, 0.45);
-  
-  /* Amp Knob Colors */
-  --amp-knob-bg: #ffffff;
-  --amp-knob-border: #d0d2de;
-  
-  /* Dark Knob Colors */
-  --knob-dark-bg: #3a3a48;
-  --knob-dark-border: #50505e;
-  --knob-dark-indicator: #50b878;
   
   /* Toggle Colors */
   --toggle-bg: #b0b4c0;

@@ -69,20 +69,13 @@
   --control-bg: #4a403a;
   --control-border: #6b5f4f;
   --control-indicator: #f5f1e8;
+  --knob-border-highlight: rgba(245, 241, 232, 0.24);
+  --knob-border-shadow: rgba(42, 31, 21, 0.34);
 
-  /* Knob styling - vintage brushed metal with amber indicator */
-  --knob-body-from: #9a8a7a;
-  --knob-body-to: #6a5a4a;
-  --knob-body-highlight: rgba(255, 255, 255, 0.12);
+  /* Knob styling - solid studio-metal surface with amber indicator */
+  --control-knob-bg: #8a7a6a;
   --knob-ring-color: #f0a010;
   --knob-ring-track: rgba(255, 244, 220, 0.15);
-
-  --amp-knob-bg: #8a7a6a;
-  --amp-knob-border: #6b5f4f;
-
-  --knob-dark-bg: #9a8a7a;
-  --knob-dark-border: #6b5f4f;
-  --knob-dark-indicator: #f0a010;
 
   /* Toggle */
   --toggle-bg: #4a403a;
@@ -473,8 +466,6 @@ body.theme-classic {
 }
 
 .theme-classic .preset-action-btn {
-  background: transparent;
-  border: 1px solid rgba(107, 95, 79, 0.4);
   color: var(--text-dark-tertiary);
 }
 
@@ -498,9 +489,6 @@ body.theme-classic {
   border-bottom-color: var(--color-accent) !important;
 }
 
-.theme-classic .app-title {
-  color: rgba(255, 244, 220, 0.85);
-}
 
 .theme-classic .nav-settings-btn {
   border-color: rgba(188, 138, 91, 0.35) !important;

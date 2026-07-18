@@ -228,7 +228,7 @@ function initializeMetronomeKnobs(): void {
   }
 
   const volumeKnob = panel.querySelector<HTMLElement>(
-    '.metronome-knob[data-param="metronome_volume"]',
+    '.knob[data-param="metronome_volume"]',
   );
   if (volumeKnob) {
     metronomeVolumeKnob = new GenericKnob({
@@ -246,7 +246,7 @@ function initializeMetronomeKnobs(): void {
   }
 
   const panKnob = panel.querySelector<HTMLElement>(
-    '.metronome-knob[data-param="metronome_pan"]',
+    '.knob[data-param="metronome_pan"]',
   );
   if (panKnob) {
     metronomePanKnob = new GenericKnob({

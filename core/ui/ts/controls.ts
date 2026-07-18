@@ -167,7 +167,7 @@ export class GenericKnob {
       ?? (config.valueDisplayId ? document.getElementById(config.valueDisplayId) : null);
     this.labelElement = config.labelElement
       ?? (this.knobElement.parentElement?.querySelector(
-        ".knob-label, .amp-knob-label, .effect-knob-label, .node-param-label, .custom-control-label",
+        ".knob-label, .node-param-label, .custom-control-label",
       ) as HTMLElement | null);
     this.editableValueElement = this.valueDisplay;
     if (this.editableValueElement && !this.editableValueElement.dataset.originalLabel) {
@@ -1460,7 +1460,7 @@ function initializeEQControls(): void {
   };
 
   // Low Shelf Band
-  const lowGainKnob = document.querySelector('.eq-knob[data-param="eq_low_gain"]') as HTMLElement | null;
+  const lowGainKnob = document.querySelector('.knob[data-param="eq_low_gain"]') as HTMLElement | null;
   if (lowGainKnob) {
     const knobInstance = new GenericKnob({
       knobElement: lowGainKnob,
@@ -1478,7 +1478,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_low_gain", knobInstance);
   }
 
-  const lowFreqKnob = document.querySelector('.eq-knob[data-param="eq_low_freq"]') as HTMLElement | null;
+  const lowFreqKnob = document.querySelector('.knob[data-param="eq_low_freq"]') as HTMLElement | null;
   if (lowFreqKnob) {
     const knobInstance = new GenericKnob({
       knobElement: lowFreqKnob,
@@ -1497,7 +1497,7 @@ function initializeEQControls(): void {
   }
 
   // Low-Mid Band
-  const lowMidGainKnob = document.querySelector('.eq-knob[data-param="eq_lowmid_gain"]') as HTMLElement | null;
+  const lowMidGainKnob = document.querySelector('.knob[data-param="eq_lowmid_gain"]') as HTMLElement | null;
   if (lowMidGainKnob) {
     const knobInstance = new GenericKnob({
       knobElement: lowMidGainKnob,
@@ -1515,7 +1515,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_lowmid_gain", knobInstance);
   }
 
-  const lowMidFreqKnob = document.querySelector('.eq-knob[data-param="eq_lowmid_freq"]') as HTMLElement | null;
+  const lowMidFreqKnob = document.querySelector('.knob[data-param="eq_lowmid_freq"]') as HTMLElement | null;
   if (lowMidFreqKnob) {
     const knobInstance = new GenericKnob({
       knobElement: lowMidFreqKnob,
@@ -1533,7 +1533,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_lowmid_freq", knobInstance);
   }
 
-  const lowMidQKnob = document.querySelector('.eq-knob[data-param="eq_lowmid_q"]') as HTMLElement | null;
+  const lowMidQKnob = document.querySelector('.knob[data-param="eq_lowmid_q"]') as HTMLElement | null;
   if (lowMidQKnob) {
     const knobInstance = new GenericKnob({
       knobElement: lowMidQKnob,
@@ -1552,7 +1552,7 @@ function initializeEQControls(): void {
   }
 
   // High-Mid Band
-  const highMidGainKnob = document.querySelector('.eq-knob[data-param="eq_highmid_gain"]') as HTMLElement | null;
+  const highMidGainKnob = document.querySelector('.knob[data-param="eq_highmid_gain"]') as HTMLElement | null;
   if (highMidGainKnob) {
     const knobInstance = new GenericKnob({
       knobElement: highMidGainKnob,
@@ -1570,7 +1570,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_highmid_gain", knobInstance);
   }
 
-  const highMidFreqKnob = document.querySelector('.eq-knob[data-param="eq_highmid_freq"]') as HTMLElement | null;
+  const highMidFreqKnob = document.querySelector('.knob[data-param="eq_highmid_freq"]') as HTMLElement | null;
   if (highMidFreqKnob) {
     const knobInstance = new GenericKnob({
       knobElement: highMidFreqKnob,
@@ -1588,7 +1588,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_highmid_freq", knobInstance);
   }
 
-  const highMidQKnob = document.querySelector('.eq-knob[data-param="eq_highmid_q"]') as HTMLElement | null;
+  const highMidQKnob = document.querySelector('.knob[data-param="eq_highmid_q"]') as HTMLElement | null;
   if (highMidQKnob) {
     const knobInstance = new GenericKnob({
       knobElement: highMidQKnob,
@@ -1607,7 +1607,7 @@ function initializeEQControls(): void {
   }
 
   // High Shelf Band
-  const highGainKnob = document.querySelector('.eq-knob[data-param="eq_high_gain"]') as HTMLElement | null;
+  const highGainKnob = document.querySelector('.knob[data-param="eq_high_gain"]') as HTMLElement | null;
   if (highGainKnob) {
     const knobInstance = new GenericKnob({
       knobElement: highGainKnob,
@@ -1625,7 +1625,7 @@ function initializeEQControls(): void {
     knobInstances.set("eq_high_gain", knobInstance);
   }
 
-  const highFreqKnob = document.querySelector('.eq-knob[data-param="eq_high_freq"]') as HTMLElement | null;
+  const highFreqKnob = document.querySelector('.knob[data-param="eq_high_freq"]') as HTMLElement | null;
   if (highFreqKnob) {
     const knobInstance = new GenericKnob({
       knobElement: highFreqKnob,
@@ -1641,6 +1641,24 @@ function initializeEQControls(): void {
       sendParameter: false,
     });
     knobInstances.set("eq_high_freq", knobInstance);
+  }
+
+  const highQKnob = document.querySelector('.knob[data-param="eq_high_q"]') as HTMLElement | null;
+  if (highQKnob) {
+    const knobInstance = new GenericKnob({
+      knobElement: highQKnob,
+      paramId: "eq_high_q",
+      minValue: 0.1,
+      maxValue: 10.0,
+      defaultValue: 0.707,
+      displayFormat: (value) => value.toFixed(1),
+      valueDisplayId: "eq-high-q-value",
+      sensitivity: 0.05,
+      onValueChange: (value) => onEqValueChange("eq_high_q", value),
+      onValueCommit: (value) => onEqValueCommit("eq_high_q", value),
+      sendParameter: false,
+    });
+    knobInstances.set("eq_high_q", knobInstance);
   }
 
   // Create interactive EQ curve with draggable handles
