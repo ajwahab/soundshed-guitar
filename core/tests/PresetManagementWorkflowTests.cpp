@@ -1712,6 +1712,52 @@ bool TestStandaloneDeserializeStateIgnoresEmbeddedPresetSnapshot()
     return true;
 }
 
+bool TestStandaloneStartupInputModeOverridesRestoredPreset()
+{
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "standalone-input-mode-restore";
+    std::error_code ec;
+    fs::remove_all(sandbox, ec);
+    fs::create_directories(sandbox, ec);
+    SetSettingsEnvRoot(sandbox);
+
+    const fs::path settingsPath = sandbox / "Soundshed Guitar" / "data" / "v1" / "settings" / "app.json";
+    fs::create_directories(settingsPath.parent_path(), ec);
+    {
+        nlohmann::json settings = nlohmann::json::object();
+        settings["lastPresetId"] = "saved-preset";
+        settings["inputChannel.monoMode"] = true;
+        settings["inputChannel.mono"] = 1;
+        std::ofstream output(settingsPath);
+        output << settings.dump(2);
+    }
+
+    const fs::path userPresetDir = sandbox / "Soundshed Guitar" / "data" / "v1" / "presets" / "user";
+    fs::create_directories(userPresetDir, ec);
+
+    auto savedPreset = BuildPassthroughPreset("saved-preset", "Saved Preset");
+    auto presetChain = guitarfx::GlobalSignalChainConfig::CreateDefault();
+    presetChain.monoMode = false;
+    presetChain.inputChannel = 0;
+    savedPreset.globalSignalChain = presetChain;
+    if (!guitarfx::PresetStorage::SaveToFile(savedPreset, userPresetDir / "saved-preset.json"))
+    {
+        std::cerr << "Failed to write saved preset file\n";
+        return false;
+    }
+
+    TestHost host(sandbox, {}, true);
+    guitarfx::PluginController controller(host);
+    controller.Initialize();
+
+    if (!controller.GetMixer().IsMonoMode() || controller.GetMixer().GetInputChannel() != 1)
+    {
+        std::cerr << "Standalone startup restored preset input mode instead of selected app input channel\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -1738,6 +1784,7 @@ int main()
     run("Save As creates new preset id", TestSaveAsCreatesNewPresetId());
     run("Factory preset archive startup import", TestFactoryPresetArchiveStartupImport());
     run("Standalone ignores embedded host snapshot", TestStandaloneDeserializeStateIgnoresEmbeddedPresetSnapshot());
+    run("Standalone startup keeps selected input channel", TestStandaloneStartupInputModeOverridesRestoredPreset());
     run("Riff library path normalization", TestRiffLibraryPathNormalization());
     run("Optimized NAM metadata alias parsing", TestOptimizedNamMetadataAliasParsing());
 

@@ -2214,6 +2214,7 @@ void PluginController::Initialize()
         mRiffLibraryIndex = LoadRiffLibraryIndex();
     }
     LoadLastSessionState();
+    ApplyInputModeSettingsFromAppSettings();
 
     // Initialize automation system
     mAutomationSlots.SetMixer(&mPresetMixer);
@@ -10909,6 +10910,21 @@ void PluginController::ApplyPreset(const Preset& preset)
     chainConfig.outputGain = outputGainDb;
     chainConfig.autoLevelInput = false;
     chainConfig.autoLevelOutput = false;
+    if (mHost.IsStandalone())
+    {
+        constexpr auto kMonoModeKey  = "inputChannel.monoMode";
+        constexpr auto kInputChanKey = "inputChannel.mono";
+
+        const auto monoIt = mAppSettings.find(kMonoModeKey);
+        const auto chanIt = mAppSettings.find(kInputChanKey);
+
+        chainConfig.monoMode = (monoIt != mAppSettings.end() && monoIt->is_boolean())
+            ? monoIt->get<bool>()
+            : true;
+        chainConfig.inputChannel = (chanIt != mAppSettings.end() && chanIt->is_number_integer())
+            ? std::clamp(chanIt->get<int>(), 0, 1)
+            : 0;
+    }
 
     normalizedPreset.global.inputTrim = inputGainDb;
     normalizedPreset.global.outputTrim = outputGainDb;

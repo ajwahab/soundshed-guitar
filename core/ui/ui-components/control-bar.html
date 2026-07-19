@@ -7,9 +7,33 @@
   </button>
   <div class="control-bar-body">
     <div class="control-bar-body-inner">
-      <!--#include:ui-components/input-control-group.html-->
-      <!--#include:ui-components/preset-group.html-->
-      <!--#include:ui-components/output-control-group.html-->
+      <div class="control-bar-tabs" role="tablist" aria-label="Control bar sections">
+        <button
+          class="control-bar-tab is-active"
+          id="control-bar-preset-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="control-bar-preset-panel"
+          data-control-bar-tab="preset"
+        >Preset</button>
+        <button
+          class="control-bar-tab"
+          id="control-bar-controls-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="control-bar-controls-panel"
+          data-control-bar-tab="controls"
+        >Controls</button>
+      </div>
+      <div class="control-bar-panel control-bar-controls-panel" id="control-bar-controls-panel" role="tabpanel" aria-labelledby="control-bar-controls-tab">
+        <!--#include:ui-components/input-control-group.html-->
+        <!--#include:ui-components/output-control-group.html-->
+      </div>
+      <div class="control-bar-panel control-bar-preset-panel is-active" id="control-bar-preset-panel" role="tabpanel" aria-labelledby="control-bar-preset-tab">
+        <!--#include:ui-components/preset-group.html-->
+      </div>
     </div>
   </div>
   <!--#include:ui-components/preset-library-popover.html-->

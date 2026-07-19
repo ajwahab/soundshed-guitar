@@ -182,6 +182,74 @@ export function initializeTabButtons(): void {
   });
 }
 
+export function initializeControlBarTabs(): void {
+  const bar = document.querySelector<HTMLElement>(".control-bar");
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-control-bar-tab]"));
+  if (!bar || tabs.length === 0) {
+    return;
+  }
+
+  const panels = Array.from(bar.querySelectorAll<HTMLElement>(".control-bar-panel"));
+  const compactQuery = window.matchMedia("(max-width: 980px)");
+  let activeTabId = "preset";
+
+  const activateControlBarTab = (tabId: string) => {
+    activeTabId = tabId;
+
+    tabs.forEach((tab) => {
+      const isActive = tab.dataset.controlBarTab === tabId;
+      tab.classList.toggle("is-active", isActive);
+      tab.setAttribute("aria-selected", isActive ? "true" : "false");
+      tab.tabIndex = isActive ? 0 : -1;
+    });
+
+    panels.forEach((panel) => {
+      const isActive = panel.id === `control-bar-${tabId}-panel`;
+      panel.classList.toggle("is-active", isActive);
+      panel.hidden = compactQuery.matches && !isActive;
+    });
+  };
+
+  const syncControlBarTabMode = () => {
+    tabs.forEach((tab) => {
+      tab.tabIndex = tab.dataset.controlBarTab === activeTabId ? 0 : -1;
+    });
+
+    panels.forEach((panel) => {
+      const isActive = panel.id === `control-bar-${activeTabId}-panel`;
+      panel.classList.toggle("is-active", isActive);
+      panel.hidden = compactQuery.matches && !isActive;
+    });
+  };
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => {
+      const tabId = tab.dataset.controlBarTab;
+      if (tabId) {
+        activateControlBarTab(tabId);
+      }
+    });
+
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+
+      event.preventDefault();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const nextIndex = (index + direction + tabs.length) % tabs.length;
+      tabs[nextIndex].focus();
+      const tabId = tabs[nextIndex].dataset.controlBarTab;
+      if (tabId) {
+        activateControlBarTab(tabId);
+      }
+    });
+  });
+
+  compactQuery.addEventListener("change", syncControlBarTabMode);
+  activateControlBarTab("preset");
+}
+
 export function applyUiViewState(state?: UiViewState): void {
   if (!state) {
     return;
