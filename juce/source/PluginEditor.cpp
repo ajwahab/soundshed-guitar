@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <unordered_map>
@@ -251,6 +252,41 @@ namespace
         juce::Logger::writeToLog (message);
 #endif
     }
+
+#if JUCE_LINUX
+    bool hasNonEmptyEnvironmentVariable (const char* name)
+    {
+        if (const auto* value = std::getenv (name); value != nullptr)
+            return value[0] != '\0';
+
+        return false;
+    }
+
+    void setLinuxWebKitExecPathFallback()
+    {
+        if (hasNonEmptyEnvironmentVariable ("WEBKIT_EXEC_PATH"))
+            return;
+
+        const std::filesystem::path candidateDirs[] = {
+            "/usr/libexec/webkit2gtk-4.1",
+            "/usr/libexec/webkit2gtk-4.0"
+        };
+
+        for (const auto& candidateDir : candidateDirs)
+        {
+            std::error_code error;
+            if (!std::filesystem::exists (candidateDir / "WebKitWebProcess", error))
+                continue;
+
+            if (::setenv ("WEBKIT_EXEC_PATH", candidateDir.c_str(), 0) == 0)
+                writeStartupLog ("[PluginEditor] WEBKIT_EXEC_PATH fallback: " + juce::String (candidateDir.string()));
+            else
+                writeStartupLog ("[PluginEditor] WARNING: failed to set WEBKIT_EXEC_PATH fallback: " + juce::String (candidateDir.string()));
+
+            return;
+        }
+    }
+#endif
 }
 
 PluginEditor::PluginEditor (PluginProcessorAdapter& p)
@@ -292,6 +328,10 @@ PluginEditor::PluginEditor (PluginProcessorAdapter& p)
           return juce::File (resolved.string());
       }()),
       webView ([this] {
+#if JUCE_LINUX
+          setLinuxWebKitExecPathFallback();
+#endif
+
           auto options = juce::WebBrowserComponent::Options {}
                              .withBackend (getPreferredBrowserBackend())
                              .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2 {}
