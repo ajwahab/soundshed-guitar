@@ -1572,14 +1572,14 @@ function getNodeCategory(node: GraphNode): string {
   return category;
 }
 
-function isNodeBypassed(node: GraphNode): boolean {
+export function isNodeBypassed(node: GraphNode): boolean {
   const anyNode = node as unknown as { bypassed?: unknown; enabled?: unknown };
   if (typeof anyNode.bypassed === "boolean") return anyNode.bypassed;
   if (typeof anyNode.enabled === "boolean") return !anyNode.enabled;
   return false;
 }
 
-function applySignalPathNodeBypassState(node: GraphNode, preset: Preset, bypassed: boolean): void {
+export function applySignalPathNodeBypassState(node: GraphNode, preset: Preset, bypassed: boolean): void {
   sendSignalPathNodeBypassUpdate(node.id, preset.id, bypassed);
   (node as unknown as { bypassed?: boolean }).bypassed = bypassed;
   (node as unknown as { enabled?: boolean }).enabled = !bypassed;
@@ -1619,7 +1619,7 @@ function isProtectedSignalPathNode(node: GraphNode): boolean {
   return node.type === EffectGuids.kSplitter || node.type === EffectGuids.kMixer;
 }
 
-function isToggleableSignalPathNode(node: GraphNode | null | undefined): node is GraphNode {
+export function isToggleableSignalPathNode(node: GraphNode | null | undefined): node is GraphNode {
   if (!node) {
     return false;
   }

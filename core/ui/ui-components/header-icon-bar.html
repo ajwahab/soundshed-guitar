@@ -3,6 +3,7 @@
       <span class="icon-bar-spacer"></span>
       <nav class="nav-tabs" aria-label="Main navigation" x-data>
         <button class="icon-btn nav-tab" :class="{ active: $store.ui && $store.ui.mainPanel === 'visualizer' }" x-on:click="$store.ui && $store.ui.switchMainPanel('visualizer')" data-panel="visualizer" title="Play">PLAY</button>
+        <button class="icon-btn nav-tab" :class="{ active: $store.ui && $store.ui.mainPanel === 'performance' }" x-on:click="$store.ui && $store.ui.switchMainPanel('performance')" data-panel="performance" title="Performance">PERFORMANCE</button>
         <button class="icon-btn nav-tab" :class="{ active: $store.ui && $store.ui.mainPanel === 'sharing' }" x-on:click="$store.ui && $store.ui.switchMainPanel('sharing')" data-panel="sharing" title="Tones">TONES</button>
         <button class="icon-btn nav-tab" :class="{ active: $store.ui && $store.ui.mainPanel === 'jam' }" x-on:click="$store.ui && $store.ui.switchMainPanel('jam')" data-panel="jam" title="Jam">JAM</button>
       </nav>

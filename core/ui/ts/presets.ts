@@ -75,6 +75,8 @@ const MAX_RECENT_PRESETS = 4;
 
 const activeTagFilters = new Set<string>();
 const presetNameCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+let presetChooserOverride: ((presetId: string) => void | Promise<void>) | null = null;
+let presetChooserCloseOverride: (() => void) | null = null;
 
 const pendingPresetRequests = new Map<string, {
   presetId: string;
@@ -743,6 +745,14 @@ function openPresetLibraryPopover(): void {
   }
   closePresetExtraActionsMenu();
   syncPresetLibraryFeatureVisibility();
+  const controlBar = presetLibraryPopover.closest<HTMLElement>(".control-bar");
+  controlBar?.classList.remove("is-collapsed");
+  const collapseButton = document.getElementById("control-bar-collapse-btn");
+  collapseButton?.setAttribute("aria-expanded", "true");
+  collapseButton?.setAttribute("aria-label", "Collapse controls");
+  if (collapseButton instanceof HTMLElement) {
+    collapseButton.title = "Collapse controls";
+  }
   presetLibraryPopover.classList.add("open");
   presetLibraryPopover.setAttribute("aria-hidden", "false");
   presetChooserLabel?.setAttribute("aria-expanded", "true");
@@ -753,10 +763,24 @@ function closePresetLibraryPopover(): void {
   if (!presetLibraryPopover) {
     return;
   }
+  const onClose = presetChooserCloseOverride;
   presetLibraryPopover.classList.remove("open");
   presetLibraryPopover.setAttribute("aria-hidden", "true");
   presetChooserLabel?.setAttribute("aria-expanded", "false");
+  presetChooserOverride = null;
+  presetChooserCloseOverride = null;
+  onClose?.();
   syncPresetHeaderPopoverLayer();
+}
+
+export function openPresetChooserForSelection(
+  onSelect: (presetId: string) => void | Promise<void>,
+  onClose?: () => void,
+): void {
+  presetChooserOverride = onSelect;
+  presetChooserCloseOverride = onClose ?? null;
+  openPresetLibraryPopover();
+  presetSearchElement?.focus({ preventScroll: true });
 }
 
 function togglePresetLibraryPopover(): void {
@@ -1053,6 +1077,7 @@ function persistSetlists(): void {
     type: "setSetlists",
     setlists: uiState.setlists ?? [],
     activeSetlistId: uiState.activeSetlistId ?? "",
+    cursorIndex: uiState.setlistCursorIndex ?? 0,
   });
 }
 
@@ -1132,6 +1157,22 @@ function addPresetToSetlist(presetId: string): void {
   setlist.slots.push({ presetId });
   persistSetlists();
   renderSetlistPanel();
+}
+
+export function assignPresetToActiveSetlistSlot(slotIndex: number, presetId: string): boolean {
+  const setlist = findSetlistById(uiState.activeSetlistId);
+  if (!setlist || slotIndex < 0 || !presetId.trim()) {
+    return false;
+  }
+
+  while (setlist.slots.length <= slotIndex) {
+    setlist.slots.push({ presetId: "" });
+  }
+
+  setlist.slots[slotIndex] = { presetId };
+  persistSetlists();
+  renderSetlistPanel();
+  return true;
 }
 
 function moveSetlistSlot(fromIndex: number, toIndex: number): void {
@@ -1677,6 +1718,13 @@ function renderPresetUI(preset: Preset | null): void {
     : sortPresetsAlphabetically(uiState.filteredPresets);
 
   renderPresetList(visiblePresets, uiState.activePresetId, async (presetId) => {
+    const override = presetChooserOverride;
+    if (override) {
+      presetChooserOverride = null;
+      await override(presetId);
+      closePresetLibraryPopover();
+      return;
+    }
     await applyPresetFromLibrary(presetId);
   }, {
     folders: sortPresetFoldersAlphabetically(uiState.presetFolders ?? []),

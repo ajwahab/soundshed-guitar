@@ -39,6 +39,7 @@ import { applyUiViewState } from "./navigation.js";
 import { triggerUpdateCheck } from "./updateCheck.js";
 import { getPresetSceneGraphs, normalizePresetScenes } from "./presetScenes.js";
 import { shouldMarkSignalPathNodeConfigUpdateDirty } from "./signalPathConfigUpdates.js";
+import { applyPerformancePadAppSettings, refreshPerformancePads } from "./performancePads.js";
 
 function normalizeResourceRef(ref?: ResourceRef | null): void {
   if (!ref) return;
@@ -573,6 +574,7 @@ export function handleIncomingMessage(message: string): void {
         applyToneSharingAppSettings(appSettings);
         applyJamAppSettings();
         applyPresetRecentsFromAppSettings();
+        applyPerformancePadAppSettings(appSettings as import("./types.js").AppSettings);
         triggerUpdateCheck();
       }
       const globalSignalChain = (payload as { globalSignalChain?: GlobalSignalChainConfig }).globalSignalChain;
@@ -713,6 +715,7 @@ export function handleIncomingMessage(message: string): void {
         }
       }
       renderActivePreset();
+      refreshPerformancePads();
       syncControlsFromState();
       updatePresetActionButtons();
       updatePresetDropdownSelection();
@@ -889,6 +892,7 @@ export function handleIncomingMessage(message: string): void {
         setPresetDirty(false);
       }
       renderActivePreset();
+      refreshPerformancePads();
       syncControlsFromState();
       updatePresetActionButtons();
       break;
@@ -1211,12 +1215,14 @@ export function handleIncomingMessage(message: string): void {
     case "setlists": {
       const setlistsPayload = payload as { setlists?: Setlist[]; activeSetlistId?: string | null };
       applySetlistsFromBackend(setlistsPayload.setlists ?? [], setlistsPayload.activeSetlistId ?? null);
+      refreshPerformancePads();
       break;
     }
     case "setlistCursorChanged": {
       const cursorPayload = payload as { cursorIndex?: number; presetId?: string; activeSetlistId?: string };
       if (typeof cursorPayload.cursorIndex === "number") {
         applySetlistCursorFromBackend(cursorPayload.cursorIndex, cursorPayload.presetId, cursorPayload.activeSetlistId);
+        refreshPerformancePads();
       }
       break;
     }

@@ -113,7 +113,7 @@ export function switchMainPanel(panelId: string): void {
   // Hide signal path bar for full-height panels (everything except visualizer)
   const signalPathBar = document.getElementById("signal-path-bar");
   const mainContent = document.querySelector(".main-content") as HTMLElement | null;
-  const fullHeightPanels = ["jam", "settings", "sharing", "advanced", "mixer"];
+  const fullHeightPanels = ["performance", "jam", "settings", "sharing", "advanced", "mixer"];
   const isFullHeight = fullHeightPanels.includes(effectivePanelId);
 
   if (signalPathBar) {
