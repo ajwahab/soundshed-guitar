@@ -144,6 +144,16 @@
   --modal-input-border: #5a5048;
   --modal-input-placeholder: #b8ad9f;
 
+  --eq-curve-grid: rgba(245, 241, 232, 0.12);
+  --eq-curve-response: rgba(240, 160, 16, 0.94);
+  --eq-curve-handle-stroke: rgba(42, 31, 21, 0.88);
+  --eq-curve-tooltip-bg: rgba(31, 24, 21, 0.92);
+  --eq-curve-tooltip-text: #f5f1e8;
+
+  --performance-plot-line: rgba(240, 160, 16, 0.95);
+  --performance-plot-fill: rgba(240, 160, 16, 0.16);
+  --performance-plot-grid: rgba(184, 173, 159, 0.22);
+
   /* Scrollbars */
   --sb-track: var(--bg-secondary);
   --sb-track-border: var(--border-light);
@@ -287,10 +297,6 @@ body.theme-classic {
 
 
 /* ===== From amp.css ===== */
-.theme-classic .effect-visualization {
-  background-color: #1f1815;
-  box-shadow: inset 0 4px 10px rgba(0, 0, 0, 0.3);
-}
 
 .theme-classic .effect-visualization::before {
   background: rgba(0, 0, 0, 0.2);
@@ -551,7 +557,6 @@ body.theme-classic {
 }
 
 .theme-classic .default-effect-shell-chip,
-.theme-classic .default-effect-shell .close-params-btn,
 .theme-classic .default-effect-shell .resource-picker-btn,
 .theme-classic .default-effect-shell .resource-clear-btn,
 .theme-classic .default-effect-shell .resource-browse-btn,
@@ -592,14 +597,12 @@ body.theme-classic {
   color: var(--text-dark-primary);
 }
 
-.theme-classic .node-params-close,
-.theme-classic .close-params-btn {
+.theme-classic .node-params-close {
   background: rgba(255, 244, 214, 0.12);
   color: var(--text-dark-tertiary);
 }
 
-.theme-classic .node-params-close:hover,
-.theme-classic .close-params-btn:hover {
+.theme-classic .node-params-close:hover {
   background: rgba(255, 244, 214, 0.2);
   color: var(--text-dark-primary);
 }

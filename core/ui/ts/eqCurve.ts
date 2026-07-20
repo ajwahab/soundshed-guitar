@@ -1,10 +1,29 @@
 export type EqBand = { freq: number; gainDb: number; q: number; shelfType?: 'low' | 'high' };
 
+function getEqCurveThemeColors(canvas: HTMLCanvasElement): {
+  grid: string;
+  response: string;
+  handleStroke: string;
+  tooltipBackground: string;
+  tooltipText: string;
+} {
+  const styles = window.getComputedStyle(canvas);
+  return {
+    grid: styles.getPropertyValue("--eq-curve-grid").trim() || "rgba(255,255,255,0.08)",
+    response: styles.getPropertyValue("--eq-curve-response").trim() || "rgba(72, 168, 224, 0.9)",
+    handleStroke: styles.getPropertyValue("--eq-curve-handle-stroke").trim() || "rgba(255, 255, 255, 0.9)",
+    tooltipBackground: styles.getPropertyValue("--eq-curve-tooltip-bg").trim() || "rgba(0, 0, 0, 0.8)",
+    tooltipText: styles.getPropertyValue("--eq-curve-tooltip-text").trim() || "#ffffff",
+  };
+}
+
 export function drawEqCurve(canvas: HTMLCanvasElement, bands: EqBand[]): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     return;
   }
+
+  const themeColors = getEqCurveThemeColors(canvas);
 
   const width = canvas.width;
   const height = canvas.height;
@@ -20,7 +39,7 @@ export function drawEqCurve(canvas: HTMLCanvasElement, bands: EqBand[]): void {
   const maxFreq = 20000;
   const sampleRate = 44100;
 
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.strokeStyle = themeColors.grid;
   ctx.lineWidth = 1;
   const gridLines = 4;
   for (let i = 0; i <= gridLines; i += 1) {
@@ -40,7 +59,7 @@ export function drawEqCurve(canvas: HTMLCanvasElement, bands: EqBand[]): void {
     ctx.stroke();
   });
 
-  ctx.strokeStyle = "rgba(72, 168, 224, 0.9)";
+  ctx.strokeStyle = themeColors.response;
   ctx.lineWidth = 2;
   ctx.beginPath();
 
@@ -570,6 +589,8 @@ export class EqCurveInteraction {
   }
 
   private drawHandles(ctx: CanvasRenderingContext2D): void {
+    const themeColors = getEqCurveThemeColors(this.canvas);
+
     // Draw Q connecting lines first (behind handles)
     for (const handle of this.handles) {
       if (handle.type !== "q-left" && handle.type !== "q-right") continue;
@@ -622,7 +643,7 @@ export class EqCurveInteraction {
         ctx.fillRect(handle.x - size / 2, handle.y - size / 2, size, size);
       }
 
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.strokeStyle = themeColors.handleStroke;
       ctx.lineWidth = isDragged ? 2 : 1.5;
       if (handle.type === "main") {
         ctx.stroke();
@@ -663,7 +684,7 @@ export class EqCurveInteraction {
 
       // Tooltip background
       const r = 4;
-      ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+      ctx.fillStyle = themeColors.tooltipBackground;
       ctx.beginPath();
       ctx.moveTo(bgX + r, bgY);
       ctx.lineTo(bgX + bgW - r, bgY);
@@ -677,7 +698,7 @@ export class EqCurveInteraction {
       ctx.closePath();
       ctx.fill();
 
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = themeColors.tooltipText;
       ctx.fillText(label, handle.x, labelY);
       ctx.restore();
     }

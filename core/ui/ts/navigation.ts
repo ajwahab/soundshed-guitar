@@ -12,7 +12,13 @@ function getTabButtons() { return Array.from(document.querySelectorAll(".tab-but
 function getTabPanels() { return Array.from(document.querySelectorAll(".tab-panel")); }
 function getPanelSwitchButtons() { return Array.from(document.querySelectorAll(".icon-bar .icon-btn, .panel-switch")); }
 function getMainTabPanels() { return Array.from(document.querySelectorAll(".main-content .tab-panel")); }
-function getPadsFooterButton() { return document.getElementById("footer-pads-btn") as HTMLButtonElement | null; }
+function getPadsFooterButtons(): HTMLButtonElement[] {
+  const buttons = [
+    document.getElementById("footer-pads-btn") as HTMLButtonElement | null,
+    document.getElementById("footer-compact-pads-btn") as HTMLButtonElement | null,
+  ];
+  return buttons.filter((button): button is HTMLButtonElement => Boolean(button));
+}
 function getPlayPanel() { return document.getElementById("panel-visualizer") as HTMLElement | null; }
 function getPerformancePanel() { return document.getElementById("panel-performance") as HTMLElement | null; }
 function isPlayViewMode(value: unknown): value is "visualizer" | "pads" { return value === "visualizer" || value === "pads"; }
@@ -61,7 +67,7 @@ function applyPlayViewMode(mode: "visualizer" | "pads", persistState = true): vo
   playViewMode = mode;
   const playPanel = getPlayPanel();
   const performancePanel = getPerformancePanel();
-  const padsFooterButton = getPadsFooterButton();
+  const padsFooterButtons = getPadsFooterButtons();
   const showPads = mode === "pads";
 
   if (playPanel) {
@@ -71,10 +77,10 @@ function applyPlayViewMode(mode: "visualizer" | "pads", persistState = true): vo
     performancePanel.classList.toggle("active", showPads);
     performancePanel.setAttribute("aria-hidden", showPads ? "false" : "true");
   }
-  if (padsFooterButton) {
-    padsFooterButton.classList.toggle("is-active", showPads);
-    padsFooterButton.setAttribute("aria-pressed", showPads ? "true" : "false");
-  }
+  padsFooterButtons.forEach((button) => {
+    button.classList.toggle("is-active", showPads);
+    button.setAttribute("aria-pressed", showPads ? "true" : "false");
+  });
   if (persistState) {
     updateUiViewState({ playView: mode });
   }
@@ -190,12 +196,17 @@ export function switchMainPanel(panelId: string): void {
 }
 
 export function initializePlayFooterPadsToggle(): void {
-  const padsFooterButton = getPadsFooterButton();
-  if (!padsFooterButton || padsFooterButton.dataset.bound === "true") {
+  const padsFooterButtons = getPadsFooterButtons();
+  if (!padsFooterButtons.length) {
     return;
   }
-  padsFooterButton.dataset.bound = "true";
-  padsFooterButton.addEventListener("click", togglePlayViewMode);
+  padsFooterButtons.forEach((button) => {
+    if (button.dataset.bound === "true") {
+      return;
+    }
+    button.dataset.bound = "true";
+    button.addEventListener("click", togglePlayViewMode);
+  });
   applyPlayViewMode(playViewMode, false);
 }
 

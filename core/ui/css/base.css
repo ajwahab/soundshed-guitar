@@ -439,6 +439,12 @@ body:not(.is-standalone) .input-mode-control {
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
+.footer-compact-shortcuts {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
 .footer-actions-toggle:hover,
 .footer-actions-toggle[aria-expanded="true"] {
   background: var(--bg-dark-tertiary);
@@ -868,14 +874,22 @@ body:not(.is-standalone) .input-mode-control {
 
 @media (max-width: 680px) {
   .footer-bar {
-    justify-content: flex-end;
+    justify-content: space-between;
     min-height: 38px;
     padding: 5px 10px;
   }
 
+  .footer-compact-shortcuts {
+    display: inline-flex;
+  }
+
+  .footer-compact-shortcuts .footer-btn {
+    min-height: 28px;
+    padding-inline: 9px;
+  }
+
   .footer-actions-toggle {
     display: inline-flex;
-    margin-left: auto;
   }
 
   .footer-actions-panel {
@@ -966,6 +980,7 @@ body:not(.is-standalone) .input-mode-control {
 }
 
 @media (max-width: 680px) and (pointer: coarse) {
+  .footer-compact-shortcuts .footer-btn,
   .footer-actions-toggle,
   .footer-btn,
   .bpm-display.metronome-only,

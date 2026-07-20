@@ -80,6 +80,16 @@
   --modal-input-border: #d1d5db;
   --modal-input-placeholder: #a0a8b3;
 
+  --eq-curve-grid: rgba(17, 19, 24, 0.12);
+  --eq-curve-response: rgba(104, 136, 168, 0.96);
+  --eq-curve-handle-stroke: rgba(17, 19, 24, 0.82);
+  --eq-curve-tooltip-bg: rgba(17, 19, 24, 0.92);
+  --eq-curve-tooltip-text: #ffffff;
+
+  --performance-plot-line: rgba(104, 136, 168, 0.96);
+  --performance-plot-fill: rgba(104, 136, 168, 0.16);
+  --performance-plot-grid: rgba(145, 153, 168, 0.42);
+
   /* Scrollbars */
   --sb-track: var(--bg-tertiary);
   --sb-track-border: var(--border-light);
@@ -118,6 +128,32 @@
 
 .theme-light .footer-btn:hover {
   color: var(--text-primary);
+}
+
+.theme-light #footer-pads-btn,
+.theme-light #footer-compact-pads-btn {
+  border-color: var(--border-medium);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow:
+    0 1px 2px rgba(17, 19, 24, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.theme-light #footer-pads-btn:hover,
+.theme-light #footer-compact-pads-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-strong);
+}
+
+.theme-light #footer-pads-btn.is-active,
+.theme-light #footer-compact-pads-btn.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 56%, var(--border-medium));
+  background: color-mix(in srgb, var(--color-accent) 16%, var(--bg-elevated));
+  color: var(--color-accent-dark);
+  box-shadow:
+    0 0 0 1px rgba(181, 82, 30, 0.12),
+    0 3px 8px rgba(181, 82, 30, 0.12);
 }
 
 .theme-light .footer-actions-toggle {
@@ -259,6 +295,78 @@
 /* ===== From modals.css ===== */
 .theme-light .save-preset-modal .form-group select {
   color-scheme: light;
+}
+
+
+/* ===== From performance-pads.css ===== */
+.theme-light .performance-pad-view {
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 34%),
+    linear-gradient(180deg, #fffdf9 0%, var(--bg-primary) 100%);
+}
+
+.theme-light .performance-mode-switch,
+.theme-light .performance-bank-btn,
+.theme-light .performance-bank-current,
+.theme-light .performance-effect-context,
+.theme-light .performance-assignment-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 243, 238, 0.96) 100%);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 12%, var(--border-medium));
+  box-shadow:
+    0 8px 24px rgba(17, 19, 24, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.theme-light .performance-pad {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(243, 244, 246, 0.98) 100%);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 10%, var(--border-medium));
+  box-shadow:
+    0 10px 24px rgba(17, 19, 24, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.theme-light .performance-pad-number {
+  background: rgba(17, 19, 24, 0.06);
+  color: var(--text-muted);
+}
+
+.theme-light .performance-pad.is-empty {
+  background: linear-gradient(180deg, rgba(249, 250, 251, 0.95) 0%, rgba(243, 244, 246, 0.98) 100%);
+  border-color: var(--border-medium);
+}
+
+.theme-light .performance-pad.is-active,
+.theme-light .performance-effect-pad.is-on {
+  border-color: color-mix(in srgb, var(--color-success) 48%, var(--color-accent) 10%);
+  background: linear-gradient(180deg, rgba(219, 240, 224, 0.98) 0%, rgba(205, 232, 214, 0.98) 100%);
+}
+
+.theme-light .performance-bank-inline-action,
+.theme-light .performance-header-action,
+.theme-light .performance-bank-inline-btn,
+.theme-light .performance-pad-assign-btn {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: color-mix(in srgb, var(--color-accent) 18%, var(--border-medium));
+  color: var(--text-secondary);
+  box-shadow:
+    0 1px 2px rgba(17, 19, 24, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.theme-light .performance-bank-inline-btn.is-primary,
+.theme-light .performance-mode-btn.is-active,
+.theme-light .performance-assign-btn,
+.theme-light .performance-pad-assign-btn:hover,
+.theme-light .performance-pad-assign-btn:focus-visible {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--text-on-accent);
+}
+
+.theme-light .performance-bank-editor-field input {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: var(--border-medium);
+  color: var(--text-primary);
 }
 
 .theme-light .save-preset-modal .form-group select option,
@@ -517,7 +625,6 @@
 }
 
 .theme-light .default-effect-shell-chip,
-.theme-light .default-effect-shell .close-params-btn,
 .theme-light .default-effect-shell .node-param-tabs,
 .theme-light .default-effect-shell .resource-picker-btn,
 .theme-light .default-effect-shell .resource-clear-btn,
@@ -670,14 +777,12 @@
   color: var(--text-primary);
 }
 
-.theme-light .node-params-close,
-.theme-light .close-params-btn {
+.theme-light .node-params-close {
   background: transparent;
   color: var(--text-muted);
 }
 
-.theme-light .node-params-close:hover,
-.theme-light .close-params-btn:hover {
+.theme-light .node-params-close:hover {
   background: rgba(181, 82, 30, 0.1);
   color: var(--text-primary);
 }

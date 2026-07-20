@@ -1126,15 +1126,15 @@ function isBankAvailable(bank: number, excludeId?: string): boolean {
   return !(uiState.setlists ?? []).some((setlist) => setlist.bank === bank && setlist.id !== excludeId);
 }
 
-function createSetlist(name: string, bank?: number | null): void {
+export function createSetlist(name: string, bank?: number | null): Setlist | null {
   const trimmed = normalizeSetlistName(name);
   if (!trimmed) {
     showNotification("Setlist name required", "Enter a setlist name.");
-    return;
+    return null;
   }
   if (typeof bank === "number" && !isBankAvailable(bank)) {
     showNotification("Bank already used", "Only one setlist can use a bank number.");
-    return;
+    return null;
   }
 
   const newSetlist: Setlist = {
@@ -1147,6 +1147,7 @@ function createSetlist(name: string, bank?: number | null): void {
   uiState.setlists.push(newSetlist);
   persistSetlists();
   setActiveSetlist(newSetlist.id);
+  return newSetlist;
 }
 
 function addPresetToSetlist(presetId: string): void {
@@ -1170,6 +1171,62 @@ export function assignPresetToActiveSetlistSlot(slotIndex: number, presetId: str
   }
 
   setlist.slots[slotIndex] = { presetId };
+  persistSetlists();
+  renderSetlistPanel();
+  return true;
+}
+
+export function clearActiveSetlistSlot(slotIndex: number): boolean {
+  const setlist = findSetlistById(uiState.activeSetlistId);
+  if (!setlist || slotIndex < 0 || slotIndex >= setlist.slots.length) {
+    return false;
+  }
+  setlist.slots[slotIndex] = { presetId: "" };
+  persistSetlists();
+  renderSetlistPanel();
+  return true;
+}
+
+export function updateActiveSetlistDetails(name: string, bank?: number | null): boolean {
+  const setlist = findSetlistById(uiState.activeSetlistId);
+  if (!setlist) {
+    showNotification("No setlist selected", "Select a setlist before editing it.");
+    return false;
+  }
+
+  const trimmed = normalizeSetlistName(name);
+  if (!trimmed) {
+    showNotification("Setlist name required", "Enter a setlist name.");
+    return false;
+  }
+  if (typeof bank === "number" && (!Number.isFinite(bank) || bank < 0)) {
+    showNotification("Invalid bank", "Bank must be a non-negative number.");
+    return false;
+  }
+  if (typeof bank === "number" && !isBankAvailable(bank, setlist.id)) {
+    showNotification("Bank already used", "Only one setlist can use a bank number.");
+    return false;
+  }
+
+  setlist.name = trimmed;
+  setlist.bank = typeof bank === "number" ? bank : null;
+  persistSetlists();
+  renderSetlistPanel();
+  return true;
+}
+
+export function deleteActiveSetlist(): boolean {
+  const setlists = uiState.setlists ?? [];
+  const activeIndex = setlists.findIndex((setlist) => setlist.id === uiState.activeSetlistId);
+  if (activeIndex < 0) {
+    showNotification("No setlist selected", "Select a setlist before deleting it.");
+    return false;
+  }
+
+  setlists.splice(activeIndex, 1);
+  const nextActive = setlists[activeIndex] ?? setlists[activeIndex - 1] ?? null;
+  uiState.activeSetlistId = nextActive?.id ?? null;
+  uiState.setlistCursorIndex = 0;
   persistSetlists();
   renderSetlistPanel();
   return true;

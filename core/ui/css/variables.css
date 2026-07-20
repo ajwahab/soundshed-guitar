@@ -225,6 +225,16 @@
   --modal-input-text: #e0e0f0;
   --modal-input-border: #3a3a44;
   --modal-input-placeholder: #a0a0b0;
+
+  --eq-curve-grid: rgba(255, 255, 255, 0.08);
+  --eq-curve-response: rgba(72, 168, 224, 0.92);
+  --eq-curve-handle-stroke: rgba(255, 255, 255, 0.9);
+  --eq-curve-tooltip-bg: rgba(0, 0, 0, 0.8);
+  --eq-curve-tooltip-text: #ffffff;
+
+  --performance-plot-line: rgba(104, 184, 104, 0.95);
+  --performance-plot-fill: rgba(104, 184, 104, 0.18);
+  --performance-plot-grid: rgba(255, 255, 255, 0.14);
 }
 
 /* Per-theme token overrides live in css/themes/{light,dark,classic}.css */

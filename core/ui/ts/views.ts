@@ -788,6 +788,19 @@ export function renderPresetDetails(
 
 let dspPerformancePlotRafId: number | null = null;
 
+function getPerformancePlotThemeColors(canvas: HTMLCanvasElement): {
+  line: string;
+  fill: string;
+  grid: string;
+} {
+  const styles = window.getComputedStyle(canvas);
+  return {
+    line: styles.getPropertyValue("--performance-plot-line").trim() || "rgba(104, 184, 104, 0.95)",
+    fill: styles.getPropertyValue("--performance-plot-fill").trim() || "rgba(104, 184, 104, 0.18)",
+    grid: styles.getPropertyValue("--performance-plot-grid").trim() || "rgba(255, 255, 255, 0.14)",
+  };
+}
+
 function isDSPPerformanceTabVisible(): boolean {
   const panel = document.getElementById("equipment-tab-performance");
   return Boolean(panel && panel.classList.contains("active") && !panel.hasAttribute("hidden"));
@@ -812,6 +825,7 @@ export function updateDSPPerformancePlot(): void {
 
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
+  const themeColors = getPerformancePlotThemeColors(canvas);
 
   const history = uiState.dspPerformanceHistory;
   if (history.length === 0) return;
@@ -834,30 +848,44 @@ export function updateDSPPerformancePlot(): void {
   ctx.clearRect(0, 0, displayWidth, displayHeight);
 
   // Set up drawing
-  ctx.strokeStyle = "#00ff00";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-
   const width = displayWidth;
   const height = displayHeight;
   const maxLoad = Math.max(...history.map(h => h.dspLoadPercent), 100); // At least 100% for scale
 
-  // Draw line
   const sampleCount = Math.max(1, history.length - 1);
-  history.forEach((stat, index) => {
-    const x = (index / sampleCount) * width;
-    const y = height - (stat.dspLoadPercent / maxLoad) * height;
+  const points = history.map((stat, index) => ({
+    x: (index / sampleCount) * width,
+    y: height - (stat.dspLoadPercent / maxLoad) * height,
+  }));
+
+  ctx.beginPath();
+  points.forEach((point, index) => {
     if (index === 0) {
-      ctx.moveTo(x, y);
+      ctx.moveTo(point.x, point.y);
     } else {
-      ctx.lineTo(x, y);
+      ctx.lineTo(point.x, point.y);
     }
   });
+  ctx.lineTo(width, height);
+  ctx.lineTo(0, height);
+  ctx.closePath();
+  ctx.fillStyle = themeColors.fill;
+  ctx.fill();
 
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+  ctx.strokeStyle = themeColors.line;
+  ctx.lineWidth = 2;
   ctx.stroke();
 
   // Draw grid lines
-  ctx.strokeStyle = "#333";
+  ctx.strokeStyle = themeColors.grid;
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 5]);
 

@@ -2133,25 +2133,33 @@ export function updateSelectedNodeDspStatus(): void {
 }
 
 function bindSelectedNodeDspStatusToggle(): void {
-  const toggle = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".default-effect-shell-meter-toggle");
+  const meterToggle = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".default-effect-shell-meter-toggle");
+  const dspBadge = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".dsp-badge-toggle");
   const status = nodeParamsPanelElement?.querySelector<HTMLElement>(".effect-dsp-status");
-  if (!toggle || !status) {
+  if (!status) {
     return;
   }
 
-  toggle.addEventListener("click", () => {
-    selectedNodeDspStatusVisible = !selectedNodeDspStatusVisible;
-    toggle.setAttribute("aria-expanded", String(selectedNodeDspStatusVisible));
-    toggle.title = selectedNodeDspStatusVisible ? "Hide DSP status" : "Show DSP status";
-    status.hidden = !selectedNodeDspStatusVisible;
+  function setDspVisible(visible: boolean): void {
+    selectedNodeDspStatusVisible = visible;
+    meterToggle?.setAttribute("aria-expanded", String(visible));
+    if (meterToggle) {
+      meterToggle.title = visible ? "Hide DSP status" : "Show DSP status";
+    }
+    if (dspBadge) {
+      dspBadge.setAttribute("aria-expanded", String(visible));
+      dspBadge.title = visible ? "Hide DSP status" : "Show DSP status";
+      dspBadge.classList.toggle("is-active", visible);
+    }
+    status!.hidden = !visible;
     updateSelectedNodeDspStatus();
-  });
+  }
+
+  meterToggle?.addEventListener("click", () => setDspVisible(!selectedNodeDspStatusVisible));
+  dspBadge?.addEventListener("click", () => setDspVisible(!selectedNodeDspStatusVisible));
 
   status.querySelector<HTMLButtonElement>(".effect-dsp-status-close")?.addEventListener("click", () => {
-    selectedNodeDspStatusVisible = false;
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.title = "Show DSP status";
-    status.hidden = true;
+    setDspVisible(false);
   });
 }
 
@@ -4093,6 +4101,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           <div class="default-effect-shell-meta" aria-label="Module status">
             ${architectureBadge ? `<span class="default-effect-shell-chip default-effect-shell-chip-architecture" title="Loaded model architecture">${architectureBadge}</span>` : ""}
             ${calibrationMetadataChip}
+            <button class="default-effect-shell-chip default-effect-shell-chip-dsp dsp-badge-toggle${selectedNodeDspStatusVisible ? " is-active" : ""}" type="button" aria-expanded="${selectedNodeDspStatusVisible}" title="${selectedNodeDspStatusVisible ? "Hide DSP status" : "Show DSP status"}" aria-label="Toggle DSP status">DSP</button>
             <button
               class="default-effect-shell-toggle node-bypass-btn ${nodeIsBypassed ? "bypassed" : ""}"
               data-node-id="${node.id}"
@@ -4104,7 +4113,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${shellLayoutButton}
           </div>
-          <button class="close-params-btn" type="button" aria-label="Close effect panel" title="Close effect panel">×</button>
         </div>
         <div class="default-effect-shell-content${equipmentImage ? " has-equipment-image" : ""}">
           ${shellEquipmentPanel}
@@ -4130,7 +4138,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindCustomEffectActionControls(node);
   bindBlendEditorControls(nodeParamsPanelElement, node);
   bindBlendModeOverride(node);
-  bindCloseButton();
   bindBypassButton(node, preset);
   bindSelectedNodeDspStatusToggle();
   bindCustomizeLayoutButton(node);
@@ -5391,23 +5398,6 @@ function getNodeResourceIds(node: GraphNode): string[] {
   });
 
   return Array.from(new Set(ids));
-}
-
-function bindCloseButton(): void {
-  const closeBtn = nodeParamsPanelElement?.querySelector(".close-params-btn");
-  if (closeBtn) {
-    closeBtn.addEventListener("click", () => {
-      nodeParamsPanelElement?.classList.remove("visible");
-      selectedNodeId = null;
-      selectedNodeDspStatusNodeId = null;
-      selectedNodeDspStatusVisible = false;
-      updateEffectVisualization();
-      
-      // Deselect all nodes
-      const nodeElements = signalPathNodesElement?.querySelectorAll(".signal-node");
-      nodeElements?.forEach((el) => el.classList.remove("selected"));
-    });
-  }
 }
 
 function bindBypassButton(node: GraphNode, preset: Preset): void {

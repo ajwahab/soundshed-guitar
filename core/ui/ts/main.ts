@@ -283,6 +283,11 @@ async function bootstrap(): Promise<void> {
     scheduleDSPPerformancePlotUpdate();
   });
 
+  window.addEventListener("themeChanged", () => {
+    refreshEqModalVisualization();
+    scheduleDSPPerformancePlotUpdate();
+  });
+
   const signalTestButton = document.getElementById("run-signal-test");
   if (signalTestButton) {
     signalTestButton.addEventListener("click", requestSignalPathTest);
