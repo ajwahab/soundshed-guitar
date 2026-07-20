@@ -12,10 +12,15 @@ function getTabButtons() { return Array.from(document.querySelectorAll(".tab-but
 function getTabPanels() { return Array.from(document.querySelectorAll(".tab-panel")); }
 function getPanelSwitchButtons() { return Array.from(document.querySelectorAll(".icon-bar .icon-btn, .panel-switch")); }
 function getMainTabPanels() { return Array.from(document.querySelectorAll(".main-content .tab-panel")); }
+function getPadsFooterButton() { return document.getElementById("footer-pads-btn") as HTMLButtonElement | null; }
+function getPlayPanel() { return document.getElementById("panel-visualizer") as HTMLElement | null; }
+function getPerformancePanel() { return document.getElementById("panel-performance") as HTMLElement | null; }
+function isPlayViewMode(value: unknown): value is "visualizer" | "pads" { return value === "visualizer" || value === "pads"; }
 
 let pendingSend = false;
 const sendDelayMs = 200;
 let applyingViewState = false;
+let playViewMode: "visualizer" | "pads" = "visualizer";
 
 function mergeViewState(base: UiViewState, update: UiViewState): UiViewState {
   const settings = {
@@ -52,6 +57,36 @@ function updateUiViewState(update: UiViewState): void {
   }, sendDelayMs);
 }
 
+function applyPlayViewMode(mode: "visualizer" | "pads", persistState = true): void {
+  playViewMode = mode;
+  const playPanel = getPlayPanel();
+  const performancePanel = getPerformancePanel();
+  const padsFooterButton = getPadsFooterButton();
+  const showPads = mode === "pads";
+
+  if (playPanel) {
+    playPanel.classList.toggle("show-performance-pads", showPads);
+  }
+  if (performancePanel) {
+    performancePanel.classList.toggle("active", showPads);
+    performancePanel.setAttribute("aria-hidden", showPads ? "false" : "true");
+  }
+  if (padsFooterButton) {
+    padsFooterButton.classList.toggle("is-active", showPads);
+    padsFooterButton.setAttribute("aria-pressed", showPads ? "true" : "false");
+  }
+  if (persistState) {
+    updateUiViewState({ playView: mode });
+  }
+}
+
+function togglePlayViewMode(): void {
+  if (uiState.uiViewState?.mainPanel !== "visualizer") {
+    switchMainPanel("visualizer");
+  }
+  applyPlayViewMode(playViewMode === "pads" ? "visualizer" : "pads");
+}
+
 export function activateTab(tabId: string): void {
   const tabButtons = getTabButtons();
   const tabPanels = getTabPanels();
@@ -79,11 +114,16 @@ export function switchMainPanel(panelId: string): void {
     const Alpine = (window as any).Alpine;
     const uiStore = Alpine && Alpine.store && Alpine.store('ui');
     if (uiStore) {
-      uiStore.mainPanel = panelId === 'library' ? 'settings' : (panelId === 'scalex' ? 'sharing' : panelId);
+      uiStore.mainPanel = panelId === "library"
+        ? "settings"
+        : (panelId === "scalex" ? "sharing" : (panelId === "performance" ? "visualizer" : panelId));
     }
   } catch {}
   const requestedSettingsTab = panelId === "library" ? "library" : null;
-  const normalizedPanelId = panelId === "scalex"
+  const openPadsView = panelId === "performance";
+  const normalizedPanelId = panelId === "performance"
+    ? "visualizer"
+    : panelId === "scalex"
     ? "sharing"
     : requestedSettingsTab
       ? "settings"
@@ -113,7 +153,7 @@ export function switchMainPanel(panelId: string): void {
   // Hide signal path bar for full-height panels (everything except visualizer)
   const signalPathBar = document.getElementById("signal-path-bar");
   const mainContent = document.querySelector(".main-content") as HTMLElement | null;
-  const fullHeightPanels = ["performance", "jam", "settings", "sharing", "advanced", "mixer"];
+  const fullHeightPanels = ["jam", "settings", "sharing", "advanced", "mixer"];
   const isFullHeight = fullHeightPanels.includes(effectivePanelId);
 
   if (signalPathBar) {
@@ -142,7 +182,21 @@ export function switchMainPanel(panelId: string): void {
     initializeToneSharingPanel();
   }
 
+  if (openPadsView) {
+    applyPlayViewMode("pads");
+  }
+
   updateUiViewState({ mainPanel: effectivePanelId });
+}
+
+export function initializePlayFooterPadsToggle(): void {
+  const padsFooterButton = getPadsFooterButton();
+  if (!padsFooterButton || padsFooterButton.dataset.bound === "true") {
+    return;
+  }
+  padsFooterButton.dataset.bound = "true";
+  padsFooterButton.addEventListener("click", togglePlayViewMode);
+  applyPlayViewMode(playViewMode, false);
 }
 
 export function initializeIconBarTabs(options?: { onEq?: () => void; onMetronome?: () => void }): void {
@@ -261,6 +315,9 @@ export function applyUiViewState(state?: UiViewState): void {
   applyingViewState = true;
   if (next.mainPanel) {
     switchMainPanel(next.mainPanel);
+  }
+  if (isPlayViewMode(next.playView)) {
+    applyPlayViewMode(next.playView, false);
   }
   if (next.presetTab) {
     activateTab(next.presetTab);

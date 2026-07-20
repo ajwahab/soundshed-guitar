@@ -234,6 +234,7 @@ export const uiState: UiState = {
   uiSettings: { zoom: 1 },
   uiViewState: {
     mainPanel: "visualizer",
+    playView: "visualizer",
     presetTab: "details",
     settings: {
       equipmentTab: "settings",

@@ -126,6 +126,7 @@ export interface UiSettings {
 
 export interface UiViewState {
   mainPanel?: string;
+  playView?: "visualizer" | "pads";
   presetTab?: string;
   settings?: {
     equipmentTab?: string;

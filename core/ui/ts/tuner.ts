@@ -132,19 +132,10 @@ export function initializeTuner(): void {
   tunerCentsValue = document.getElementById("tuner-cents-value");
   tunerCentsIndicator = document.getElementById("tuner-cents-indicator");
 
-  // Find and wire up the TUNER button in the footer
-  const footerButtons = document.querySelectorAll(".footer-btn");
-  console.log("[Tuner] Found", footerButtons.length, "footer buttons");
-  let tunerButtonFound = false;
-  footerButtons.forEach((btn) => {
-    console.log("[Tuner] Button text:", JSON.stringify(btn.textContent));
-    if (btn.textContent?.trim() === "TUNER") {
-      console.log("[Tuner] Found TUNER button, adding click listener");
-      btn.addEventListener("click", openTuner);
-      tunerButtonFound = true;
-    }
-  });
-  if (!tunerButtonFound) {
+  const tunerButton = document.getElementById("footer-tuner-btn");
+  if (tunerButton) {
+    tunerButton.addEventListener("click", openTuner);
+  } else {
     console.error("[Tuner] TUNER button not found in footer!");
   }
 

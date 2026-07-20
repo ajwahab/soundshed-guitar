@@ -737,8 +737,7 @@ input[type="range"]:focus-visible {
   min-width: 0;
   padding: 6px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border-dark-medium);
-  background: #3a3a4a;
+  background:#3a3a4a99;
   color: var(--text-dark-primary);
   font-size: 12px;
   white-space: nowrap;

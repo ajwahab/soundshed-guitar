@@ -17,6 +17,14 @@
   display: flex;
 }
 
+#panel-visualizer:not(.show-performance-pads) .performance-pad-view {
+  display: none;
+}
+
+#panel-visualizer.show-performance-pads .visualization-panel {
+  display: none;
+}
+
 .performance-pad-header {
   display: flex;
   align-items: center;

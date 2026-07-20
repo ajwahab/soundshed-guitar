@@ -24,7 +24,7 @@ import { initializeAutomationPanel } from "./automationPanel.js";
 import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar } from "./signalPath.js";
 import { initializeCustomEffectDesignerModal } from "./customEffectDesigner.js";
 import { initializeDialogModals } from "./dialogs.js";
-import { activateTab, initializeControlBarTabs, initializeIconBarTabs, initializeTabButtons, switchMainPanel, initControlBarCollapse } from "./navigation.js";
+import { activateTab, initializeControlBarTabs, initializeIconBarTabs, initializePlayFooterPadsToggle, initializeTabButtons, switchMainPanel, initControlBarCollapse } from "./navigation.js";
 import { initializeRiffLibraryPanel } from "./riffLibrary.js";
 import { initMultiRigTab } from "./multiPresetMixer.js";
 import { applyBuildFlags } from "./buildFlags.js";
@@ -241,6 +241,7 @@ async function bootstrap(): Promise<void> {
     bindFooterDemoAudioControls();
   }
   initFooterActionsPopup();
+  initializePlayFooterPadsToggle();
   initializePerformancePads();
 
   renderActivePreset();

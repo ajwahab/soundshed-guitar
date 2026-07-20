@@ -348,10 +348,6 @@ function renderModeButton(nextMode: PerformancePadMode, label: string): string {
 function renderHeader(): string {
   return `
     <header class="performance-pad-header">
-      <div class="performance-pad-title-block">
-        <div class="performance-pad-kicker">Live Performance</div>
-        <h2>Performance</h2>
-      </div>
       <div class="performance-pad-controls" aria-label="Performance pad controls">
         <div class="performance-mode-switch" role="group" aria-label="Pad mode">
           ${renderModeButton("setlist", "Setlist")}

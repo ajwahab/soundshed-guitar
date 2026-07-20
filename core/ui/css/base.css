@@ -503,6 +503,12 @@ body:not(.is-standalone) .input-mode-control {
   color: var(--text-dark-primary);
 }
 
+.footer-btn.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 62%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 24%, var(--bg-dark-secondary));
+  color: var(--text-dark-primary);
+}
+
 .footer-metronome-btn {
   width: 28px;
   height: 28px;
