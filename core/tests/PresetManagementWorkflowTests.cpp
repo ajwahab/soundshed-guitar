@@ -784,9 +784,9 @@ bool TestLoadPresetRemapsHostedPluginResourceByStableId()
     }
 }
 
-bool TestLoadPresetRestoresUnifiedLevelState()
+bool TestLoadPresetPreservesInstanceGlobalFxState()
 {
-    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "level-load";
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "global-fx-preset-load";
     std::error_code ec;
     fs::remove_all(sandbox, ec);
     fs::create_directories(sandbox, ec);
@@ -795,6 +795,11 @@ bool TestLoadPresetRestoresUnifiedLevelState()
     TestHost host(sandbox);
     guitarfx::PluginController controller(host);
     controller.Initialize();
+
+    controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "input.gain"}, {"value", -3.25}}.dump());
+    controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "output.gain"}, {"value", -1.5}}.dump());
+    controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "gate.enabled"}, {"value", true}}.dump());
+    controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "gate.threshold"}, {"value", -52.0}}.dump());
 
     auto preset = BuildPassthroughPreset("p-level-load", "Level Load");
     preset.global.inputTrim = -9.5;
@@ -816,10 +821,10 @@ bool TestLoadPresetRestoresUnifiedLevelState()
     }
 
     const auto chain = controller.GetMixer().GetGlobalChainConfig();
-    if (std::abs(chain.inputGain - preset.global.inputTrim) > 1e-9
-        || std::abs(chain.outputGain - preset.global.outputTrim) > 1e-9)
+    if (std::abs(chain.inputGain - (-3.25)) > 1e-9
+        || std::abs(chain.outputGain - (-1.5)) > 1e-9)
     {
-        std::cerr << "Unified level state did not migrate preset trims into global chain\n";
+        std::cerr << "Preset load should not replace instance global input/output levels\n";
         return false;
     }
 
@@ -829,16 +834,115 @@ bool TestLoadPresetRestoresUnifiedLevelState()
         return false;
     }
 
-    if (std::abs(controller.GetParamValue(guitarfx::PluginController::kParamInputTrim) - preset.global.inputTrim) > 1e-9
-        || std::abs(controller.GetParamValue(guitarfx::PluginController::kParamOutputTrim) - preset.global.outputTrim) > 1e-9)
+    const auto* gate = chain.preChainGraph.FindNode("global_gate");
+    if (!gate || !gate->enabled || std::abs(gate->params.at("threshold") - (-52.0)) > 1e-9)
     {
-        std::cerr << "Controller parameter values were not synced to unified level state\n";
+        std::cerr << "Preset load should not replace instance global gate state\n";
+        return false;
+    }
+
+    if (std::abs(controller.GetParamValue(guitarfx::PluginController::kParamInputTrim) - (-3.25)) > 1e-9
+        || std::abs(controller.GetParamValue(guitarfx::PluginController::kParamOutputTrim) - (-1.5)) > 1e-9)
+    {
+        std::cerr << "Controller parameter values were not synced to preserved global FX state\n";
         return false;
     }
 
     if (active->global.autoLevelInput || active->global.autoLevelOutput)
     {
         std::cerr << "Active preset still carries retired mixer auto-level flags\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool TestStandalonePersistsGlobalFxSettingsBetweenLaunches()
+{
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "standalone-global-fx";
+    std::error_code ec;
+    fs::remove_all(sandbox, ec);
+    fs::create_directories(sandbox, ec);
+    SetSettingsEnvRoot(sandbox);
+
+    {
+        TestHost host(sandbox, {}, true);
+        guitarfx::PluginController controller(host);
+        controller.Initialize();
+
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "input.gain"}, {"value", -6.0}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "output.gain"}, {"value", -2.0}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "gate.enabled"}, {"value", true}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "gate.threshold"}, {"value", -48.0}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "transpose.enabled"}, {"value", true}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "transpose.semitones"}, {"value", 5}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "eq.enabled"}, {"value", true}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "eq.lowGain"}, {"value", 1.75}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "eq.highMidQ"}, {"value", 1.4}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "doubler.enabled"}, {"value", true}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "doubler.delay"}, {"value", 31.0}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "doubler.mix"}, {"value", 0.35}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "doubler.detune"}, {"value", 7.5}}.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "setGlobalChainParam"}, {"path", "limiter.enabled"}, {"value", true}}.dump());
+    }
+
+    const fs::path settingsPath = sandbox / "Soundshed Guitar" / "data" / "v1" / "settings" / "app.json";
+    std::ifstream settingsInput(settingsPath);
+    const auto persisted = nlohmann::json::parse(settingsInput, nullptr, false);
+    if (persisted.is_discarded() || !persisted.contains("globalFx.settings"))
+    {
+        std::cerr << "Standalone global FX settings were not written to app settings\n";
+        return false;
+    }
+
+    TestHost reloadedHost(sandbox, {}, true);
+    guitarfx::PluginController reloaded(reloadedHost);
+    reloaded.Initialize();
+
+    const auto chain = reloaded.GetMixer().GetGlobalChainConfig();
+    if (std::abs(chain.inputGain - (-6.0)) > 1e-9
+        || std::abs(chain.outputGain - (-2.0)) > 1e-9)
+    {
+        std::cerr << "Standalone global input/output levels were not restored\n";
+        return false;
+    }
+
+    const auto* gate = chain.preChainGraph.FindNode("global_gate");
+    if (!gate || !gate->enabled || std::abs(gate->params.at("threshold") - (-48.0)) > 1e-9)
+    {
+        std::cerr << "Standalone global gate settings were not restored\n";
+        return false;
+    }
+
+    const auto* transpose = chain.preChainGraph.FindNode("global_transpose");
+    if (!transpose || !transpose->enabled || std::abs(transpose->params.at("semitones") - 5.0) > 1e-9)
+    {
+        std::cerr << "Standalone global transpose settings were not restored\n";
+        return false;
+    }
+
+    const auto* eq = chain.postChainGraph.FindNode("global_eq");
+    if (!eq || !eq->enabled
+        || std::abs(eq->params.at("lowGain") - 1.75) > 1e-9
+        || std::abs(eq->params.at("highMidQ") - 1.4) > 1e-9)
+    {
+        std::cerr << "Standalone global EQ settings were not restored\n";
+        return false;
+    }
+
+    const auto* doubler = chain.postChainGraph.FindNode("global_doubler");
+    if (!doubler || !doubler->enabled
+        || std::abs(doubler->params.at("time") - 31.0) > 1e-9
+        || std::abs(doubler->params.at("mix") - 0.35) > 1e-9
+        || std::abs(doubler->params.at("detune") - 7.5) > 1e-9)
+    {
+        std::cerr << "Standalone global doubler settings were not restored\n";
+        return false;
+    }
+
+    if (chain.limiterEnabled)
+    {
+        std::cerr << "Limiter should not be part of standalone global FX persistence; it is mixer state, not pre/post FX\n";
         return false;
     }
 
@@ -1128,7 +1232,7 @@ bool TestUserInputCalibrationTrainingBypassesActiveProfileWithoutPersistingSelec
     return true;
 }
 
-bool TestSavePresetUsesGlobalChainLevels()
+bool TestSavePresetDoesNotPersistGlobalFxSettings()
 {
     const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "level-save";
     std::error_code ec;
@@ -1169,37 +1273,13 @@ bool TestSavePresetUsesGlobalChainLevels()
         return false;
     }
 
-    if (std::abs(fromFile->global.inputTrim - 7.0) < 1e-9)
+    if (std::abs(fromFile->global.inputTrim) > 1e-9
+        || std::abs(fromFile->global.outputTrim) > 1e-9
+        || fromFile->global.autoLevelInput
+        || fromFile->global.autoLevelOutput
+        || fromFile->globalSignalChain.has_value())
     {
-        std::cerr << "Unexpected sign inversion while saving input trim\n";
-        return false;
-    }
-
-    if (std::abs(fromFile->global.inputTrim - (-7.0)) > 1e-9
-        || std::abs(fromFile->global.outputTrim - (-2.5)) > 1e-9)
-    {
-        std::cerr << "Saved preset did not persist current global chain gain values\n";
-        return false;
-    }
-
-    if (fromFile->global.autoLevelInput || fromFile->global.autoLevelOutput)
-    {
-        std::cerr << "Saved preset should not persist retired mixer auto-level flags\n";
-        return false;
-    }
-
-    if (!fromFile->globalSignalChain.has_value())
-    {
-        std::cerr << "Saved preset missing global signal chain after unified level save\n";
-        return false;
-    }
-
-    if (std::abs(fromFile->globalSignalChain->inputGain - (-7.0)) > 1e-9
-        || std::abs(fromFile->globalSignalChain->outputGain - (-2.5)) > 1e-9
-        || fromFile->globalSignalChain->autoLevelInput
-        || fromFile->globalSignalChain->autoLevelOutput)
-    {
-        std::cerr << "Saved global signal chain level state mismatch\n";
+        std::cerr << "Saved preset should not persist global FX state\n";
         return false;
     }
 
@@ -1774,12 +1854,13 @@ int main()
     run("Load preset rehydrates scrubbed hosted plugin state", TestLoadPresetRehydratesScrubbedHostedPluginState());
     run("Load preset rehydrates scrubbed hosted plugin state from active preset", TestLoadPresetRehydratesScrubbedHostedPluginStateFromActivePreset());
     run("Load preset remaps hosted plugin resource by stable id", TestLoadPresetRemapsHostedPluginResourceByStableId());
-    run("Load preset restores unified level state", TestLoadPresetRestoresUnifiedLevelState());
+    run("Load preset preserves instance global FX state", TestLoadPresetPreservesInstanceGlobalFxState());
+    run("Standalone persists global FX settings between launches", TestStandalonePersistsGlobalFxSettingsBetweenLaunches());
     run("Load preset retires NAM input auto-leveling", TestLoadPresetRetiresNamInputAutoLeveling());
     run("Load preset preserves disabled NAM calibration toggle", TestLoadPresetPreservesDisabledNamCalibrationToggle());
     run("Load app settings applies user input calibration", TestLoadAppSettingsAppliesUserInputCalibrationProfile());
     run("User input calibration training bypasses active profile", TestUserInputCalibrationTrainingBypassesActiveProfileWithoutPersistingSelection());
-    run("Save preset uses global chain levels", TestSavePresetUsesGlobalChainLevels());
+    run("Save preset does not persist global FX settings", TestSavePresetDoesNotPersistGlobalFxSettings());
     run("Save/Get/Delete preset workflow", TestSaveGetDeletePresetWorkflow());
     run("Save As creates new preset id", TestSaveAsCreatesNewPresetId());
     run("Factory preset archive startup import", TestFactoryPresetArchiveStartupImport());

@@ -356,8 +356,9 @@ namespace guitarfx
     if (normalizedPreset.designedPeakInputDbfs.has_value())
       json["designedPeakInputDbfs"] = normalizedPreset.designedPeakInputDbfs.value();
 
-    // Global signal chain settings are intentionally not persisted.
-    // Presets should only store the signal graph / scenes.
+    // Global signal chain settings are intentionally never persisted in presets—they are
+    // per-instance state (app settings for standalone, host state for plugins) and must not
+    // mix with portable preset data. Presets store only the signal graph / effects chain.
 
     if (!normalizedPreset.scenes.empty())
     {
@@ -529,8 +530,9 @@ namespace guitarfx
       if (!normalizedPreset.tags.empty())
         json["tags"] = normalizedPreset.tags;
 
-      // Global signal chain settings are intentionally not persisted.
-      // Presets should only store the signal graph / scenes.
+      // Global signal chain settings are intentionally never persisted in presets—they are
+      // per-instance state (app settings for standalone, host state for plugins) and must not
+      // mix with portable preset data. Presets store only the signal graph / effects chain.
 
       if (!normalizedPreset.scenes.empty())
       {

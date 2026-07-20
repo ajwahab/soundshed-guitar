@@ -140,6 +140,7 @@ namespace
     constexpr const char* kNominalOperatingLevelSettingKey = "audio.dsp.nominalOperatingLevelDbfs";
     constexpr const char* kOutputProtectionCeilingSettingKey = "audio.dsp.outputProtectionCeilingDbfs";
     constexpr const char* kMultiThreadedProcessingSettingKey = "audio.processing.multiThreaded";
+    constexpr const char* kGlobalFxSettingsKey = "globalFx.settings";
     constexpr const char* kNamSlimmableSizeSettingKey = "audio.nam.slimmableSize";
     constexpr const char* kNamSlimmableNodeConfigKey = "slimmableSize";
     constexpr const char* kNamInterfaceCalibrationLevelDbuSettingKey = "audio.nam.interfaceCalibrationLevelDbu";
@@ -403,6 +404,50 @@ namespace
             return 0;
 
         return static_cast<int>(std::round(std::clamp(semitonesIt->second, -12.0, 12.0)));
+    }
+
+    nlohmann::json SerializeGlobalFxSettings(const guitarfx::GlobalSignalChainConfig& config)
+    {
+        // Serialize global FX (gate, transpose, EQ, doubler) to app settings for persistence.
+        // This is per-instance state saved to app.json (standalone) or host state (plugin).
+        // Global FX are NEVER saved in presets—presets contain only the signal graph.
+        return nlohmann::json{
+            {"inputGain", config.inputGain},
+            {"outputGain", config.outputGain},
+            {"preChainGraph", guitarfx::SerializeSignalGraph(config.preChainGraph)},
+            {"postChainGraph", guitarfx::SerializeSignalGraph(config.postChainGraph)}
+        };
+    }
+
+    bool IsPersistedGlobalFxParam(int paramIdx)
+    {
+        // Global FX parameters that are persisted to app settings (standalone) or host state (plugin).
+        // Limiter is intentionally excluded—it is mixer state, not part of the pre/post FX chain.
+        // Note: Global FX are NEVER persisted in presets; they are per-instance state only.
+        switch (paramIdx)
+        {
+        case guitarfx::PluginController::kParamInputTrim:
+        case guitarfx::PluginController::kParamOutputTrim:
+        case guitarfx::PluginController::kParamGateEnabled:
+        case guitarfx::PluginController::kParamGateThreshold:
+        case guitarfx::PluginController::kParamDoublerEnabled:
+        case guitarfx::PluginController::kParamDoublerDelay:
+        case guitarfx::PluginController::kParamTranspose:
+        case guitarfx::PluginController::kParamEQEnabled:
+        case guitarfx::PluginController::kParamEQLowGain:
+        case guitarfx::PluginController::kParamEQLowFreq:
+        case guitarfx::PluginController::kParamEQLowMidGain:
+        case guitarfx::PluginController::kParamEQLowMidFreq:
+        case guitarfx::PluginController::kParamEQLowMidQ:
+        case guitarfx::PluginController::kParamEQHighMidGain:
+        case guitarfx::PluginController::kParamEQHighMidFreq:
+        case guitarfx::PluginController::kParamEQHighMidQ:
+        case guitarfx::PluginController::kParamEQHighGain:
+        case guitarfx::PluginController::kParamEQHighFreq:
+            return true;
+        default:
+            return false;
+        }
     }
 
     std::filesystem::path ResolveRiffTakePathForRuntime(const std::filesystem::path& storedPath,
@@ -2199,6 +2244,7 @@ void PluginController::Initialize()
     ApplyDspLevelTargetSettingsFromAppSettings();
     ApplyProcessingModeSettingsFromAppSettings();
     ApplyInputModeSettingsFromAppSettings();
+    ApplyGlobalFxSettingsFromAppSettings();
     ApplyNamSlimmableSettingsFromAppSettings();
     ApplyNamInterfaceCalibrationFromAppSettings();
     ApplyUserInputCalibrationSettingsFromAppSettings();
@@ -3108,6 +3154,47 @@ void PluginController::ApplyInputModeSettingsFromAppSettings()
     mPresetMixer.SetInputChannel(storedChannel);
 }
 
+void PluginController::ApplyGlobalFxSettingsFromAppSettings()
+{
+    if (!mHost.IsStandalone())
+        return;
+
+    const auto it = mAppSettings.find(kGlobalFxSettingsKey);
+    if (it == mAppSettings.end() || !it->is_object())
+        return;
+
+    try
+    {
+        auto config = it->get<GlobalSignalChainConfig>();
+        config.autoLevelInput = false;
+        config.autoLevelOutput = false;
+
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            mPresetMixer.SetGlobalChainConfig(config);
+            mParamValues[kParamInputTrim] = config.inputGain;
+            mParamValues[kParamOutputTrim] = config.outputGain;
+            mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
+        }
+        UpdateHostLatency();
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "[Plugin] Failed to apply global FX settings: " << e.what() << std::endl;
+    }
+}
+
+void PluginController::PersistGlobalFxSettingsToAppSettings()
+{
+    mHost.NotifyStateChanged();
+
+    if (!mHost.IsStandalone())
+        return;
+
+    mAppSettings[kGlobalFxSettingsKey] = SerializeGlobalFxSettings(mPresetMixer.GetGlobalChainConfig());
+    SaveAppSettings();
+}
+
 void PluginController::ApplyNamSlimmableSettingsFromAppSettings()
 {
     bool settingsChanged = false;
@@ -3773,8 +3860,13 @@ void PluginController::OnWebContentLoaded()
 
 void PluginController::OnParamChange(int paramIdx, double value)
 {
-    std::lock_guard<std::mutex> lock(mDSPMutex);
-    ApplyParamChangeLocked(paramIdx, value);
+    {
+        std::lock_guard<std::mutex> lock(mDSPMutex);
+        ApplyParamChangeLocked(paramIdx, value);
+    }
+
+    if (IsPersistedGlobalFxParam(paramIdx))
+        PersistGlobalFxSettingsToAppSettings();
 }
 
 void PluginController::ApplyParamChangeLocked(int paramIdx, double value)
@@ -4236,57 +4328,67 @@ void PluginController::HandleSetGlobalChainParamRequest(const nlohmann::json& pa
 {
     std::string path = payload.value("path", "");
     auto value = payload.value("value", nlohmann::json());
-    std::lock_guard<std::mutex> lock(mDSPMutex);
+    bool persistGlobalFx = false;
+    {
+        std::lock_guard<std::mutex> lock(mDSPMutex);
 
-    // Route paramPath strings to the corresponding mixer methods
-    if (path == "gate.enabled") mPresetMixer.SetGlobalGateEnabled(value.get<bool>());
-    else if (path == "gate.threshold") mPresetMixer.SetGlobalGateThreshold(value.get<double>());
-    else if (path == "gate.attack") mPresetMixer.SetGlobalGateAttack(value.get<double>());
-    else if (path == "gate.hold") mPresetMixer.SetGlobalGateHold(value.get<double>());
-    else if (path == "gate.release") mPresetMixer.SetGlobalGateRelease(value.get<double>());
-    else if (path == "transpose.enabled")
-    {
-        const bool enabled = value.get<bool>();
-        mPresetMixer.SetGlobalTransposeEnabled(enabled);
-        if (!enabled)
-            mParamValues[kParamTranspose] = 0.0;
-        UpdateHostLatency();
+        // Route paramPath strings to the corresponding mixer methods
+        if (path == "gate.enabled") { mPresetMixer.SetGlobalGateEnabled(value.get<bool>()); persistGlobalFx = true; }
+        else if (path == "gate.threshold") { mPresetMixer.SetGlobalGateThreshold(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "gate.attack") { mPresetMixer.SetGlobalGateAttack(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "gate.hold") { mPresetMixer.SetGlobalGateHold(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "gate.release") { mPresetMixer.SetGlobalGateRelease(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "transpose.enabled")
+        {
+            const bool enabled = value.get<bool>();
+            mPresetMixer.SetGlobalTransposeEnabled(enabled);
+            if (!enabled)
+                mParamValues[kParamTranspose] = 0.0;
+            UpdateHostLatency();
+            persistGlobalFx = true;
+        }
+        else if (path == "transpose.semitones")
+        {
+            const int semitones = std::clamp(value.get<int>(), -12, 12);
+            mPresetMixer.SetGlobalTranspose(semitones);
+            mParamValues[kParamTranspose] = static_cast<double>(semitones);
+            UpdateHostLatency();
+            persistGlobalFx = true;
+        }
+        else if (path == "eq.enabled") { mPresetMixer.SetGlobalEQEnabled(value.get<bool>()); persistGlobalFx = true; }
+        else if (path == "doubler.enabled") { mPresetMixer.SetGlobalDoublerEnabled(value.get<bool>()); persistGlobalFx = true; }
+        else if (path == "doubler.delay") { mPresetMixer.SetGlobalDoublerDelay(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "doubler.mix") { mPresetMixer.SetGlobalDoublerMix(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "doubler.detune") { mPresetMixer.SetGlobalDoublerDetune(value.get<double>()); persistGlobalFx = true; }
+        else if (path == "input.gain")
+        {
+            const double gainDb = value.get<double>();
+            mPresetMixer.SetGlobalInputGain(gainDb);
+            mParamValues[kParamInputTrim] = gainDb;
+            persistGlobalFx = true;
+        }
+        else if (path == "output.gain")
+        {
+            const double gainDb = value.get<double>();
+            mPresetMixer.SetGlobalOutputGain(gainDb);
+            mParamValues[kParamOutputTrim] = gainDb;
+            persistGlobalFx = true;
+        }
+        else if (path == "limiter.enabled") mPresetMixer.SetLimiterEnabled(value.get<bool>());
+        else if (path == "eq.lowGain") { mPresetMixer.SetGlobalEQBandGain(0, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.lowFreq") { mPresetMixer.SetGlobalEQBandFrequency(0, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.lowMidGain") { mPresetMixer.SetGlobalEQBandGain(1, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.lowMidFreq") { mPresetMixer.SetGlobalEQBandFrequency(1, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.lowMidQ") { mPresetMixer.SetGlobalEQBandQ(1, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.highMidGain") { mPresetMixer.SetGlobalEQBandGain(2, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.highMidFreq") { mPresetMixer.SetGlobalEQBandFrequency(2, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.highMidQ") { mPresetMixer.SetGlobalEQBandQ(2, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.highGain") { mPresetMixer.SetGlobalEQBandGain(3, value.get<double>()); persistGlobalFx = true; }
+        else if (path == "eq.highFreq") { mPresetMixer.SetGlobalEQBandFrequency(3, value.get<double>()); persistGlobalFx = true; }
     }
-    else if (path == "transpose.semitones")
-    {
-        const int semitones = std::clamp(value.get<int>(), -12, 12);
-        mPresetMixer.SetGlobalTranspose(semitones);
-        mParamValues[kParamTranspose] = static_cast<double>(semitones);
-        UpdateHostLatency();
-    }
-    else if (path == "eq.enabled") mPresetMixer.SetGlobalEQEnabled(value.get<bool>());
-    else if (path == "doubler.enabled") mPresetMixer.SetGlobalDoublerEnabled(value.get<bool>());
-    else if (path == "doubler.delay") mPresetMixer.SetGlobalDoublerDelay(value.get<double>());
-    else if (path == "doubler.mix") mPresetMixer.SetGlobalDoublerMix(value.get<double>());
-    else if (path == "doubler.detune") mPresetMixer.SetGlobalDoublerDetune(value.get<double>());
-    else if (path == "input.gain")
-    {
-        const double gainDb = value.get<double>();
-        mPresetMixer.SetGlobalInputGain(gainDb);
-        mParamValues[kParamInputTrim] = gainDb;
-    }
-    else if (path == "output.gain")
-    {
-        const double gainDb = value.get<double>();
-        mPresetMixer.SetGlobalOutputGain(gainDb);
-        mParamValues[kParamOutputTrim] = gainDb;
-    }
-    else if (path == "limiter.enabled") mPresetMixer.SetLimiterEnabled(value.get<bool>());
-    else if (path == "eq.lowGain") mPresetMixer.SetGlobalEQBandGain(0, value.get<double>());
-    else if (path == "eq.lowFreq") mPresetMixer.SetGlobalEQBandFrequency(0, value.get<double>());
-    else if (path == "eq.lowMidGain") mPresetMixer.SetGlobalEQBandGain(1, value.get<double>());
-    else if (path == "eq.lowMidFreq") mPresetMixer.SetGlobalEQBandFrequency(1, value.get<double>());
-    else if (path == "eq.lowMidQ") mPresetMixer.SetGlobalEQBandQ(1, value.get<double>());
-    else if (path == "eq.highMidGain") mPresetMixer.SetGlobalEQBandGain(2, value.get<double>());
-    else if (path == "eq.highMidFreq") mPresetMixer.SetGlobalEQBandFrequency(2, value.get<double>());
-    else if (path == "eq.highMidQ") mPresetMixer.SetGlobalEQBandQ(2, value.get<double>());
-    else if (path == "eq.highGain") mPresetMixer.SetGlobalEQBandGain(3, value.get<double>());
-    else if (path == "eq.highFreq") mPresetMixer.SetGlobalEQBandFrequency(3, value.get<double>());
+
+    if (persistGlobalFx)
+        PersistGlobalFxSettingsToAppSettings();
 
     // No echo: the UI already owns the values it sent.
     // Full state is pushed via HandleGetGlobalChainRequest / HandleSetGlobalChainRequest.
@@ -10418,8 +10520,14 @@ void PluginController::HandleSetGlobalChainRequest(const nlohmann::json& payload
     if (payload.contains("config"))
     {
         auto config = payload["config"].get<GlobalSignalChainConfig>();
-        std::lock_guard<std::mutex> dspLock(mDSPMutex);
-        mPresetMixer.SetGlobalChainConfig(config);
+        {
+            std::lock_guard<std::mutex> dspLock(mDSPMutex);
+            mPresetMixer.SetGlobalChainConfig(config);
+            mParamValues[kParamInputTrim] = config.inputGain;
+            mParamValues[kParamOutputTrim] = config.outputGain;
+            mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
+        }
+        PersistGlobalFxSettingsToAppSettings();
     }
     SendGlobalChainStateToUI();
 }
@@ -10898,13 +11006,12 @@ void PluginController::ApplyPreset(const Preset& preset)
     TryRemapHostedPluginResources(normalizedPreset);
     EnsurePresetBoundaryGainNodes(normalizedPreset);
 
-    auto chainConfig = normalizedPreset.globalSignalChain.value_or(mPresetMixer.GetGlobalChainConfig());
-    const double inputGainDb = normalizedPreset.globalSignalChain.has_value()
-        ? chainConfig.inputGain
-        : normalizedPreset.global.inputTrim;
-    const double outputGainDb = normalizedPreset.globalSignalChain.has_value()
-        ? chainConfig.outputGain
-        : normalizedPreset.global.outputTrim;
+    // Global settings (gate, transpose, EQ, doubler, limiter) must never come from presets.
+    // They are per-instance state and come from app settings (standalone) or host state (plugin).
+    // Preserve current global FX state when loading a preset—ignore any preset-level overrides.
+    auto chainConfig = mPresetMixer.GetGlobalChainConfig();
+    const double inputGainDb = chainConfig.inputGain;
+    const double outputGainDb = chainConfig.outputGain;
 
     chainConfig.inputGain = inputGainDb;
     chainConfig.outputGain = outputGainDb;
