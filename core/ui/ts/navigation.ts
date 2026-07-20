@@ -364,3 +364,27 @@ export function initControlBarCollapse(): void {
     localStorage.setItem(CONTROL_BAR_COLLAPSED_KEY, String(collapsed));
   });
 }
+
+const SIGNAL_PATH_COLLAPSED_KEY = "guitarfx.signalPathCollapsed";
+
+export function initSignalPathCollapse(): void {
+  const bar = document.getElementById("signal-path-bar");
+  const btn = document.getElementById("signal-path-collapse-btn");
+  if (!bar || !btn) return;
+
+  const apply = (collapsed: boolean) => {
+    bar.classList.toggle("is-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.setAttribute("aria-label", collapsed ? "Expand signal chain" : "Collapse signal chain");
+    btn.title = collapsed ? "Expand signal chain" : "Collapse signal chain";
+  };
+
+  // Restore saved state
+  apply(localStorage.getItem(SIGNAL_PATH_COLLAPSED_KEY) === "true");
+
+  btn.addEventListener("click", () => {
+    const collapsed = !bar.classList.contains("is-collapsed");
+    apply(collapsed);
+    localStorage.setItem(SIGNAL_PATH_COLLAPSED_KEY, String(collapsed));
+  });
+}

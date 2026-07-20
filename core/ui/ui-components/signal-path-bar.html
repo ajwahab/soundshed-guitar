@@ -1,5 +1,13 @@
     <!-- Signal Path Bar -->
     <section class="signal-path-bar film-grain" id="signal-path-bar">
+      <button class="signal-path-collapse-btn" id="signal-path-collapse-btn" type="button"
+        aria-expanded="true" aria-label="Collapse signal chain" title="Collapse signal chain">
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <path d="M3.5 5.75 8 10.25l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="signal-path-collapsed-label" aria-hidden="true"><span>SIGNAL CHAIN</span></span>
+      </button>
+      <div class="signal-path-body">
       <!-- Composite edit mode banner -->
       <div class="composite-edit-banner" id="composite-edit-banner" style="display: none;">
         <span class="composite-edit-banner-label">Editing Composite:</span>
@@ -64,5 +72,6 @@
       </div>
       <div class="signal-path-toolbar" id="signal-path-toolbar">
         <div class="signal-path-scene-toolbar" id="signal-path-scene-toolbar"></div>
+      </div>
       </div>
     </section>

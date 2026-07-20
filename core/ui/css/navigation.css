@@ -140,6 +140,82 @@
   transform: rotate(0deg); /* Collapsed: chevron points down = expand */
 }
 
+/* Muted label shown only when the control bar is collapsed */
+.control-bar-collapsed-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  overflow: hidden;
+  opacity: 0;
+  transition: grid-template-columns 0.18s ease, opacity 0.18s ease;
+}
+
+.control-bar-collapsed-label > span {
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.control-bar.is-collapsed .control-bar-collapsed-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
+/* ── Signal Path collapse button ──────────────────────────────────────────── */
+.signal-path-collapse-btn {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0.38;
+  line-height: 1;
+  padding: 2px 6px;
+  transition: opacity 0.15s ease;
+  user-select: none;
+  z-index: 1;
+}
+
+.signal-path-collapse-btn:hover {
+  opacity: 0.75;
+}
+
+.signal-path-collapse-btn svg {
+  transition: transform 0.2s ease;
+  transform: rotate(180deg);
+}
+
+.signal-path-bar.is-collapsed .signal-path-collapse-btn svg {
+  transform: rotate(0deg);
+}
+
+.signal-path-collapsed-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  overflow: hidden;
+  opacity: 0;
+  transition: grid-template-columns 0.18s ease, opacity 0.18s ease;
+}
+
+.signal-path-collapsed-label > span {
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.signal-path-bar.is-collapsed .signal-path-collapsed-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
 /* Body holds the actual grid content — clips to 0 when collapsed */
 .control-bar-body {
   min-height: 0;

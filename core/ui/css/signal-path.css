@@ -3,8 +3,9 @@
 /* Signal Path Bar */
 .signal-path-bar {
   --signal-path-scroll-height: 96px;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  transition: grid-template-rows 0.22s ease;
   border-bottom: none;
   padding: 0;
   gap: 0;
@@ -12,6 +13,18 @@
   flex-shrink: 0;
   position: relative;
   background: var(--bg-secondary);
+}
+
+.signal-path-bar.is-collapsed {
+  grid-template-rows: auto 0fr;
+}
+
+/* Body wraps all collapsible content; clips to 0 when the bar is collapsed */
+.signal-path-body {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Composite Edit Mode Banner */
