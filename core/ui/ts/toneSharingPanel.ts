@@ -41,6 +41,9 @@ type ToneSharingItem = {
   averageRating?: number | null;
   currentUserFavorite?: boolean;
   currentUserRating?: number | null;
+  downloadCount?: number;
+  downloadsCount?: number;
+  downloads_count?: number;
   description?: string | null;
   tags?: string[] | null;
 };
@@ -136,6 +139,7 @@ type ToneSharingRow = {
     averageRating?: number | null;
     currentUserFavorite?: boolean;
     currentUserRating?: number | null;
+    downloadCount?: number;
     description?: string | null;
     tags?: string[] | null;
     thumbnailUrl?: string | null;
@@ -285,6 +289,25 @@ function getToneSharingDisplayTags(tags: string[] | null | undefined): string[] 
   return Array.isArray(tags)
     ? tags.filter((tag) => normalizeCommunityPresetSearchValue(tag) !== "preset")
     : [];
+}
+
+function resolveDownloadCountValue(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+function resolveToneSharingDownloadCount(item: Record<string, unknown>): number | undefined {
+  const directCount = resolveDownloadCountValue(item.downloadCount);
+  if (typeof directCount === "number") {
+    return directCount;
+  }
+  const pluralCount = resolveDownloadCountValue(item.downloadsCount);
+  if (typeof pluralCount === "number") {
+    return pluralCount;
+  }
+  return resolveDownloadCountValue(item.downloads_count);
 }
 
 function matchesCommunityPresetSearch(item: ToneSharingItem, query: string): boolean {
@@ -1805,7 +1828,7 @@ async function renderFeedRows(rows: ToneSharingRow[]): Promise<void> {
     return;
   }
 
-  const useTiledLayout = browseMode === "featured" || browseMode === "items";
+  const useTiledLayout = browseMode === "featured" || browseMode === "items" || browseMode === "packs";
   feed.classList.toggle("tone-sharing-feed--tiled", useTiledLayout);
   const installedLookup = buildInstalledToneSharingLookup();
 
@@ -1846,10 +1869,22 @@ async function renderFeedRows(rows: ToneSharingRow[]): Promise<void> {
           const creatorData = item as unknown as Record<string, unknown>;
           const creatorHandle = resolveCreatorProfileHandle(creatorData);
           const creatorAvatarUrl = resolveCreatorAvatarUrl(creatorData);
+          const itemDownloadCount = item.kind === "item"
+            ? resolveToneSharingDownloadCount(item as unknown as Record<string, unknown>) ?? 0
+            : 0;
           const typeLabel = item.kind === "item" ? (item.type ?? "preset") : "pack";
           const itemId = escapeHtml(item.id);
           const safeTitle = escapeHtml(item.title);
           const safeTypeLabel = escapeHtml(typeLabel);
+          const showTypeChip = typeLabel.trim().toLowerCase() !== "preset";
+          const metaChips = [
+            ...(showTypeChip
+              ? [`<span class="tone-sharing-meta-chip">${safeTypeLabel}</span>`]
+              : []),
+            ...(item.kind === "item"
+              ? [`<span class="tone-sharing-meta-chip">${formatCompactMetric(itemDownloadCount)} downloads</span>`]
+              : []),
+          ];
           const creatorDisplayName = typeof item.creatorDisplayName === "string" ? item.creatorDisplayName.trim() : "";
           const creatorLineLabel = creatorDisplayName && creatorHandle && creatorDisplayName !== creatorHandle
             ? `${creatorDisplayName} (${creatorHandle})`
@@ -1901,7 +1936,7 @@ async function renderFeedRows(rows: ToneSharingRow[]): Promise<void> {
                         ${moderationBadge}
                       </div>
                       <div class="tone-sharing-card-item-meta">
-                        <span class="tone-sharing-meta-chip">${safeTypeLabel}</span>
+                        ${metaChips.join("")}
                       </div>
                       ${itemStats ? `<div class="tone-sharing-card-item-stats">${itemStats}</div>` : ""}
                       ${safeDescription ? `<div class="${descriptionClass}">${safeDescription}</div>` : ""}
@@ -2010,9 +2045,11 @@ function updateActiveSharedFilter(): void {
 
 function updateBrowseFooter(): void {
   const footer = element<HTMLElement>("tone-sharing-feed-footer");
+  const prevButton = element<HTMLButtonElement>("tone-sharing-page-prev");
   const button = element<HTMLButtonElement>("tone-sharing-load-more");
+  const nextButton = element<HTMLButtonElement>("tone-sharing-page-next");
   const label = element<HTMLElement>("tone-sharing-feed-footer-label");
-  if (!footer || !button || !label) {
+  if (!footer || !prevButton || !button || !nextButton || !label) {
     return;
   }
 
@@ -2020,16 +2057,39 @@ function updateBrowseFooter(): void {
   if (!supportsPaging) {
     footer.classList.add("tone-sharing-feed-footer--hidden");
     label.textContent = "";
+    prevButton.classList.add("tone-sharing-feed-footer-btn--hidden");
+    nextButton.classList.add("tone-sharing-feed-footer-btn--hidden");
+    button.classList.remove("tone-sharing-feed-footer-btn--hidden");
+    prevButton.disabled = false;
     button.disabled = false;
+    nextButton.disabled = false;
     button.textContent = "Load More";
     return;
   }
 
   footer.classList.remove("tone-sharing-feed-footer--hidden");
-  button.disabled = browseCollections.loadingMore || !browseCollections.hasMore;
-  button.textContent = browseCollections.loadingMore ? "Loading..." : "Load More";
+  const loadingLabel = browseCollections.loadingMore ? "Loading..." : "Load More";
+  button.textContent = loadingLabel;
 
   const loadedCount = browseMode === "items" ? browseCollections.items.length : browseCollections.packs.length;
+  if (browseMode === "packs") {
+    button.classList.add("tone-sharing-feed-footer-btn--hidden");
+    prevButton.classList.remove("tone-sharing-feed-footer-btn--hidden");
+    nextButton.classList.remove("tone-sharing-feed-footer-btn--hidden");
+    prevButton.disabled = browseCollections.loadingMore || browseCollections.page <= 1;
+    nextButton.disabled = browseCollections.loadingMore || !browseCollections.hasMore;
+    prevButton.textContent = browseCollections.loadingMore ? "Loading..." : "Previous";
+    nextButton.textContent = browseCollections.loadingMore ? "Loading..." : "Next";
+    label.textContent = loadedCount > 0
+      ? `Page ${browseCollections.page}${browseCollections.hasMore ? "" : " · end of results"}`
+      : "";
+    return;
+  }
+
+  prevButton.classList.add("tone-sharing-feed-footer-btn--hidden");
+  nextButton.classList.add("tone-sharing-feed-footer-btn--hidden");
+  button.classList.remove("tone-sharing-feed-footer-btn--hidden");
+  button.disabled = browseCollections.loadingMore || !browseCollections.hasMore;
   const normalizedSearch = normalizeCommunityPresetSearchValue(communityPresetSearchQuery);
   if (browseMode === "items" && normalizedSearch) {
     const shownCount = filterCommunityPresetItems(browseCollections.items).length;
@@ -2094,11 +2154,17 @@ async function loadStandardBrowsePage(page: number, append = false): Promise<voi
   }
 
   if (browseMode === "packs") {
-    const response = await apiFetch<{ page?: number; pageSize?: number; packs: ToneSharingPack[] }>(`/packs?page=${page}&pageSize=${pageSize}`);
+    const response = await apiFetch<{ page?: number; pageSize?: number; totalPages?: number; totalCount?: number; packs: ToneSharingPack[] }>(`/packs?page=${page}&pageSize=${pageSize}`);
     browseCollections.page = response.page ?? page;
     browseCollections.pageSize = response.pageSize ?? pageSize;
-    browseCollections.packs = append ? [...browseCollections.packs, ...response.packs] : response.packs.slice();
-    browseCollections.hasMore = response.packs.length >= browseCollections.pageSize;
+    browseCollections.packs = response.packs.slice();
+    if (typeof response.totalPages === "number" && Number.isFinite(response.totalPages) && response.totalPages > 0) {
+      browseCollections.hasMore = browseCollections.page < Math.floor(response.totalPages);
+    } else if (typeof response.totalCount === "number" && Number.isFinite(response.totalCount) && response.totalCount >= 0) {
+      browseCollections.hasMore = (browseCollections.page * browseCollections.pageSize) < Math.floor(response.totalCount);
+    } else {
+      browseCollections.hasMore = response.packs.length >= browseCollections.pageSize;
+    }
     await renderStandardBrowseCollection();
   }
 }
@@ -2137,6 +2203,9 @@ function buildSingleRow(title: string, entries: Array<{ id: string; title: strin
       averageRating: kind === "item" ? (entry as ToneSharingItem).averageRating ?? null : undefined,
       currentUserFavorite: kind === "item" ? (entry as ToneSharingItem).currentUserFavorite : undefined,
       currentUserRating: kind === "item" ? (entry as ToneSharingItem).currentUserRating ?? null : undefined,
+      downloadCount: kind === "item"
+        ? resolveToneSharingDownloadCount((entry as unknown as Record<string, unknown>)) ?? 0
+        : undefined,
       description: kind === "pack" ? (entry as ToneSharingPack).description ?? null : (entry as ToneSharingItem).description ?? null,
       tags: kind === "item" ? (entry as ToneSharingItem).tags ?? null : null,
       thumbnailUrl: kind === "pack"
@@ -4082,7 +4151,7 @@ function bindTopControls(): void {
     }
   });
   element<HTMLButtonElement>("tone-sharing-load-more")?.addEventListener("click", () => {
-    if (browseCollections.loadingMore || !browseCollections.hasMore || activeSharedTarget !== null) {
+    if (browseCollections.loadingMore || !browseCollections.hasMore || activeSharedTarget !== null || browseMode !== "items") {
       return;
     }
 
@@ -4091,6 +4160,38 @@ function bindTopControls(): void {
     void loadStandardBrowsePage(browseCollections.page + 1, true)
       .catch((error) => {
         setUploadStatus(`Load more failed: ${(error as Error).message}`);
+      })
+      .finally(() => {
+        browseCollections.loadingMore = false;
+        updateBrowseFooter();
+      });
+  });
+  element<HTMLButtonElement>("tone-sharing-page-prev")?.addEventListener("click", () => {
+    if (browseMode !== "packs" || browseCollections.loadingMore || activeSharedTarget !== null || browseCollections.page <= 1) {
+      return;
+    }
+
+    browseCollections.loadingMore = true;
+    updateBrowseFooter();
+    void loadStandardBrowsePage(browseCollections.page - 1)
+      .catch((error) => {
+        setUploadStatus(`Failed to load previous page: ${(error as Error).message}`);
+      })
+      .finally(() => {
+        browseCollections.loadingMore = false;
+        updateBrowseFooter();
+      });
+  });
+  element<HTMLButtonElement>("tone-sharing-page-next")?.addEventListener("click", () => {
+    if (browseMode !== "packs" || browseCollections.loadingMore || activeSharedTarget !== null || !browseCollections.hasMore) {
+      return;
+    }
+
+    browseCollections.loadingMore = true;
+    updateBrowseFooter();
+    void loadStandardBrowsePage(browseCollections.page + 1)
+      .catch((error) => {
+        setUploadStatus(`Failed to load next page: ${(error as Error).message}`);
       })
       .finally(() => {
         browseCollections.loadingMore = false;

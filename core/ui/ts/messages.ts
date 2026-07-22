@@ -170,6 +170,7 @@ let telemetryUiDelayTimer: number | null = null;
 let telemetryUiLastFlushMs = 0;
 let telemetryUiPendingDsp = false;
 let telemetryUiPendingSignalDiagnostics = false;
+let sharedSyncRefreshTimer: number | null = null;
 
 function flushTelemetryUiUpdates(): void {
   if (telemetryUiPendingDsp) {
@@ -221,6 +222,17 @@ function queueTelemetryUiUpdate(kind: "dsp" | "signalDiagnostics"): void {
   }
 
   scheduleTelemetryUiFlush();
+}
+
+function scheduleSharedSyncRefresh(): void {
+  if (sharedSyncRefreshTimer !== null) {
+    return;
+  }
+
+  sharedSyncRefreshTimer = window.setTimeout(() => {
+    sharedSyncRefreshTimer = null;
+    postMessage({ type: "getSharedSyncState" });
+  }, 150);
 }
 
 function isSensitiveDebugKey(key: string): boolean {
@@ -1184,6 +1196,52 @@ export function handleIncomingMessage(message: string): void {
         os: infoPayload.os ?? uiState.environment?.os,
         cpu: infoPayload.cpu ?? uiState.environment?.cpu,
       });
+      refreshSettingsView();
+      break;
+    }
+    case "sharedSyncUpdated": {
+      scheduleSharedSyncRefresh();
+      break;
+    }
+    case "sharedSyncState": {
+      const sharedPayload = payload as {
+        appSettings?: Record<string, unknown>;
+        uiSettings?: UiSettings;
+        resourceLibrary?: Record<string, unknown[]>;
+        blendLibrary?: unknown[];
+        customEffectLibrary?: unknown[];
+      };
+
+      if (sharedPayload.appSettings) {
+        uiState.appSettings = sharedPayload.appSettings as import("./types.js").AppSettings;
+        applyStoredDemoAudioSelection();
+        applyToneSharingAppSettings(sharedPayload.appSettings);
+        applyJamAppSettings();
+        applyPresetRecentsFromAppSettings();
+        applyPerformancePadAppSettings(sharedPayload.appSettings as import("./types.js").AppSettings);
+        triggerUpdateCheck();
+        applyStoredInputChannel();
+      }
+
+      if (sharedPayload.uiSettings) {
+        uiState.uiSettings = sharedPayload.uiSettings;
+      }
+
+      if (sharedPayload.resourceLibrary) {
+        uiState.resourceLibrary = sharedPayload.resourceLibrary as import("./types.js").ResourceLibrary;
+      }
+
+      if (Array.isArray(sharedPayload.blendLibrary)) {
+        uiState.blendLibrary = sharedPayload.blendLibrary as import("./types.js").BlendLibrary;
+        renderBlendList();
+      }
+
+      if (Array.isArray(sharedPayload.customEffectLibrary)) {
+        handleCustomEffectLibrary(sharedPayload.customEffectLibrary as import("./types.js").CustomEffectLibrary);
+      }
+
+      refreshFxSelector();
+      refreshPerformancePads();
       refreshSettingsView();
       break;
     }

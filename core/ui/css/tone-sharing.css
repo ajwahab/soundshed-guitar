@@ -300,6 +300,17 @@
   gap: 10px;
   padding: 10px 0 2px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.tone-sharing-feed-footer-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tone-sharing-feed-footer-btn--hidden {
+  display: none;
 }
 
 .tone-sharing-feed-footer--hidden {
