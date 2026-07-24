@@ -113,6 +113,7 @@ type HostedPluginLoadFailure = {
   resourceIndex?: number;
   resource: PluginResourceSupportInfo;
   message: string;
+  errorCode?: string;
 };
 const hostedPluginLoadFailures = new Map<string, HostedPluginLoadFailure>();
 
@@ -210,6 +211,7 @@ export function handleHostedPluginResourceLoadFailed(payload: {
   filePath?: string;
   resourceIndex?: number;
   message?: string;
+  errorCode?: string;
 }): void {
   if (payload.resourceType && payload.resourceType !== "plugin") {
     return;
@@ -230,6 +232,7 @@ export function handleHostedPluginResourceLoadFailed(payload: {
     resourceIndex: typeof payload.resourceIndex === "number" ? payload.resourceIndex : undefined,
     resource,
     message,
+    errorCode: payload.errorCode?.trim() || undefined,
   };
   hostedPluginLoadFailures.set(nodeId, failure);
 
@@ -597,7 +600,8 @@ function getHostedPluginLoadFailureForResource(node: GraphNode, resourceIndex: n
 function buildHostedPluginLoadErrorMarkup(failure: HostedPluginLoadFailure): string {
   const unsupportedPlugin = getUnsupportedPluginSelection(failure.resource);
   const title = unsupportedPlugin ? "Selected Plugin Type Not Supported" : "Plugin Load Error";
-  const detail = failure.message.trim() || "The selected plugin cannot be hosted by this build.";
+  const baseDetail = failure.message.trim() || "The selected plugin cannot be hosted by this build.";
+  const detail = failure.errorCode ? `${baseDetail} (code: ${failure.errorCode})` : baseDetail;
   return buildHostedPluginWarningMarkup(title, detail);
 }
 

@@ -151,6 +151,40 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Build Hosted Plugin Batch Scan Test (JUCE)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"${workspaceFolder}/juce/builds",
+				"--config",
+				"Debug",
+				"--target",
+				"HostedPluginBatchScanTests"
+			],
+			"group": "build",
+			"problemMatcher": "$msCompile"
+		},
+		{
+			"label": "Run Hosted Plugin Batch Scan Test (JUCE)",
+			"dependsOn": [
+				"Build Hosted Plugin Batch Scan Test (JUCE)"
+			],
+			"dependsOrder": "sequence",
+			"type": "shell",
+			"command": "ctest",
+			"args": [
+				"-R",
+				"HostedPluginBatchScanTests",
+				"--output-on-failure"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}/juce/builds"
+			},
+			"group": "test",
+			"problemMatcher": []
+		},
+		{
 			"label": "Build SoundshedGuitar (JUCE Linux x64) Release",
 			"type": "shell",
 			"command": "bash",

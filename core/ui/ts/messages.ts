@@ -1074,6 +1074,7 @@ export function handleIncomingMessage(message: string): void {
         filePath?: string;
         resourceIndex?: number;
         message?: string;
+        errorCode?: string;
       });
       break;
     }

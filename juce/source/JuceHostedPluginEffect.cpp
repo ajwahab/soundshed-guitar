@@ -26,6 +26,7 @@ namespace guitarfx
         constexpr const char* kPluginFormatConfigKey = "pluginFormat";
         constexpr const char* kPluginNameConfigKey = "pluginName";
         constexpr const char* kPluginManufacturerConfigKey = "pluginManufacturer";
+        constexpr const char* kPluginLastErrorCodeConfigKey = "lastErrorCode";
         constexpr const char* kHostedPluginTraceLogFileName = "logs/session-log.txt";
         constexpr std::uint64_t kFNVOffsetBasis = 14695981039346656037ull;
         constexpr std::uint64_t kFNVPrime = 1099511628211ull;
@@ -264,6 +265,83 @@ namespace guitarfx
 
             return "Unrecognized plugin file type '" + (extension.empty() ? std::string { "(none)" } : extension)
                    + "'. Supported plugin formats on this platform: " + GetSupportedPluginFormatsDescription() + ".";
+        }
+
+        std::string DescribeRegisteredFormats (const juce::AudioPluginFormatManager& manager)
+        {
+            std::ostringstream stream;
+            stream << "count=" << manager.getNumFormats() << " [";
+            for (int i = 0; i < manager.getNumFormats(); ++i)
+            {
+                if (i > 0)
+                    stream << ", ";
+
+                auto* format = manager.getFormat (i);
+                stream << (format != nullptr ? FromJuceString (format->getName()) : std::string { "<null>" });
+            }
+            stream << "]";
+            return stream.str();
+        }
+
+        std::string DescribePluginDescriptionForLog (const juce::PluginDescription& description)
+        {
+            std::ostringstream stream;
+            stream << "name='" << FromJuceString (description.name)
+                   << "', format='" << FromJuceString (description.pluginFormatName)
+                   << "', manufacturer='" << FromJuceString (description.manufacturerName)
+                   << "', category='" << FromJuceString (description.category)
+                   << "', fileOrIdentifier='" << FromJuceString (description.fileOrIdentifier)
+                   << "', identifier='" << FromJuceString (description.createIdentifierString())
+                   << "'";
+            return stream.str();
+        }
+
+        std::string DescribeBundlePayloadForLog (const std::filesystem::path& path)
+        {
+#if JUCE_MAC
+            std::error_code ec;
+            if (!std::filesystem::is_directory (path, ec))
+                return "path is not a directory bundle";
+
+            const auto macOsDir = path / "Contents" / "MacOS";
+            if (!std::filesystem::exists (macOsDir, ec))
+                return "missing Contents/MacOS";
+
+            if (!std::filesystem::is_directory (macOsDir, ec))
+                return "Contents/MacOS exists but is not a directory";
+
+            std::size_t executableCount = 0;
+            std::vector<std::string> sampleNames;
+            for (std::filesystem::directory_iterator it (macOsDir, std::filesystem::directory_options::skip_permission_denied, ec), end;
+                 it != end && !ec; it.increment (ec))
+            {
+                const auto candidate = it->path();
+                if (std::filesystem::is_regular_file (candidate, ec))
+                {
+                    ++executableCount;
+                    if (sampleNames.size() < 4)
+                        sampleNames.push_back (candidate.filename().string());
+                }
+            }
+
+            std::ostringstream stream;
+            stream << "Contents/MacOS regularFiles=" << executableCount;
+            if (!sampleNames.empty())
+            {
+                stream << " [";
+                for (std::size_t i = 0; i < sampleNames.size(); ++i)
+                {
+                    if (i > 0)
+                        stream << ", ";
+                    stream << sampleNames[i];
+                }
+                stream << "]";
+            }
+            return stream.str();
+#else
+            juce::ignoreUnused (path);
+            return {};
+#endif
         }
 
         void AppendHostedPluginTrace (const std::string& message)
@@ -606,6 +684,7 @@ namespace guitarfx
 
         juce::addDefaultFormatsToManager (mFormatManager);
         mFormatsAdded = true;
+        AppendHostedPluginTrace ("EnsureFormatsAdded registeredFormats=" + DescribeRegisteredFormats (mFormatManager));
     }
 
     void JuceHostedPluginEffect::Prepare (double sampleRate, int maxBlockSize)
@@ -757,6 +836,8 @@ namespace guitarfx
             return CapturePluginStateBase64();
         if (key == "lastError")
             return mLastError;
+        if (key == kPluginLastErrorCodeConfigKey || key == "lastErrorCode")
+            return mLastErrorCode;
         return {};
     }
 
@@ -783,7 +864,8 @@ namespace guitarfx
             return LoadPluginFromPath (paths.front());
 
         SetError ("No plugin file was provided. Use Browse to select a plugin. Supported formats: "
-                  + GetSupportedPluginFormatsDescription() + ".");
+                  + GetSupportedPluginFormatsDescription() + ".",
+                  "resource-missing");
         return false;
     }
 
@@ -802,7 +884,8 @@ namespace guitarfx
             if (const auto loaded = juce::MessageManager::callSync ([this, &path] { return LoadPluginFromPath (path); }))
                 return *loaded;
 
-            SetError ("Plugin loading could not be scheduled on the UI thread. Please try again.");
+            SetError ("Plugin loading could not be scheduled on the UI thread. Please try again.",
+                      "thread-scheduling");
             return false;
         }
 
@@ -821,7 +904,8 @@ namespace guitarfx
         if (!pluginFile.exists())
         {
             SetError ("Plugin file was not found: " + ToDisplayPath (resolvedPath)
-                      + ". The plugin may have been moved or uninstalled.");
+                      + ". The plugin may have been moved or uninstalled.",
+                      "file-not-found");
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
             return false;
@@ -830,20 +914,39 @@ namespace guitarfx
         juce::OwnedArray<juce::PluginDescription> descriptions;
         const auto fileOrIdentifier = pluginFile.getFullPathName();
         const juce::String formatHint = NormalizePluginFormatHint (mPluginFormat);
+        std::ostringstream scanLog;
 
-        const auto scanWithFormats = [this, &descriptions, &fileOrIdentifier] (const juce::String& restrictToFormat)
+        const auto scanWithFormats = [this, &descriptions, &fileOrIdentifier, &scanLog] (const juce::String& restrictToFormat)
         {
+            scanLog << "scan pass restrictTo='" << FromJuceString (restrictToFormat) << "'\n";
             for (int i = 0; i < mFormatManager.getNumFormats(); ++i)
             {
                 auto* format = mFormatManager.getFormat (i);
                 if (!format)
+                {
+                    scanLog << "  format[" << i << "] <null>\n";
                     continue;
+                }
+
+                const std::string formatName = FromJuceString (format->getName());
 
                 if (restrictToFormat.isNotEmpty() && !format->getName().equalsIgnoreCase (restrictToFormat))
+                {
+                    scanLog << "  format='" << formatName << "' skippedByRestrict=true\n";
                     continue;
+                }
 
-                if (format->fileMightContainThisPluginType (fileOrIdentifier) || restrictToFormat.isNotEmpty())
+                const bool fileMightContain = format->fileMightContainThisPluginType (fileOrIdentifier);
+                const bool attempted = fileMightContain || restrictToFormat.isNotEmpty();
+                const int before = descriptions.size();
+                if (attempted)
                     format->findAllTypesForFile (descriptions, fileOrIdentifier);
+
+                const int added = descriptions.size() - before;
+                scanLog << "  format='" << formatName
+                        << "', fileMightContain=" << (fileMightContain ? "true" : "false")
+                        << ", attempted=" << (attempted ? "true" : "false")
+                        << ", addedDescriptions=" << added << "\n";
             }
         };
 
@@ -860,10 +963,26 @@ namespace guitarfx
                 message = "No loadable plugin was found at: " + ToDisplayPath (resolvedPath)
                           + ". Check that it is a 64-bit plugin built for this platform. Supported formats: "
                           + GetSupportedPluginFormatsDescription() + ".";
-            SetError (message);
+
+            AppendHostedPluginTrace ("LoadPluginFromPath scan failed path=" + ToDisplayPath (resolvedPath)
+                                     + ", formatHint='" + FromJuceString (formatHint) + "', registeredFormats="
+                                     + DescribeRegisteredFormats (mFormatManager)
+                                     + ", bundlePayload=" + DescribeBundlePayloadForLog (resolvedPath)
+                                     + "\n" + scanLog.str());
+            SetError (message, "scan-no-descriptions");
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
             return false;
+        }
+
+        for (int i = 0; i < descriptions.size(); ++i)
+        {
+            auto* description = descriptions[i];
+            if (!description)
+                continue;
+
+            AppendHostedPluginTrace ("LoadPluginFromPath candidate[" + std::to_string (i) + "] "
+                                     + DescribePluginDescriptionForLog (*description));
         }
 
         juce::PluginDescription* selected = descriptions.getFirst();
@@ -881,7 +1000,7 @@ namespace guitarfx
 
         if (!selected)
         {
-            SetError ("Plugin scan returned no selectable plugin descriptions");
+            SetError ("Plugin scan returned no selectable plugin descriptions", "scan-no-selection");
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
             return false;
@@ -890,13 +1009,17 @@ namespace guitarfx
         if (IsBlockedSelfHostedPluginCandidate (*selected, resolvedPath))
         {
             SetError ("Soundshed Guitar cannot be loaded inside the hosted plugin slot."
-                      " Please choose a different plugin.");
+                      " Please choose a different plugin.",
+                      "plugin-blocked-self");
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
             return false;
         }
 
         juce::String error;
+        // Loading is already on the JUCE message thread. Keep creation synchronous:
+        // createPluginInstanceAsync requires a nested dispatch loop here, which caused
+        // valid AU/VST3 initializations to hit an artificial timeout.
         auto instance = mFormatManager.createPluginInstance (*selected, mSampleRate, mMaxBlockSize, error);
         if (!instance)
         {
@@ -904,11 +1027,18 @@ namespace guitarfx
                                                                ? selected->name
                                                                : pluginFile.getFileNameWithoutExtension());
             std::string message = "Failed to open plugin '" + pluginName + "'";
+            std::string errorCode = "instantiate-failed";
             if (error.isNotEmpty())
                 message += ": " + FromJuceString (error);
             else
                 message += ". The plugin may be incompatible with this host or built for a different architecture.";
-            SetError (message);
+
+            AppendHostedPluginTrace ("LoadPluginFromPath instantiate failed selected="
+                                     + DescribePluginDescriptionForLog (*selected)
+                                     + ", sampleRate=" + std::to_string (mSampleRate)
+                                     + ", blockSize=" + std::to_string (mMaxBlockSize)
+                                     + ", juceError='" + FromJuceString (error) + "'");
+            SetError (message, errorCode);
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
             return false;
@@ -916,8 +1046,13 @@ namespace guitarfx
 
         if (!ConfigurePluginBuses (*instance))
         {
+            AppendHostedPluginTrace ("LoadPluginFromPath bus layout unsupported for plugin='"
+                                     + FromJuceString (instance->getName())
+                                     + "' inputBusCount=" + std::to_string (instance->getBusCount (true))
+                                     + ", outputBusCount=" + std::to_string (instance->getBusCount (false)));
             SetError ("Plugin '" + FromJuceString (instance->getName())
-                      + "' does not support a mono or stereo layout, so it cannot be used in the signal chain.");
+                      + "' does not support a mono or stereo layout, so it cannot be used in the signal chain.",
+                      "bus-layout-unsupported");
             instance->releaseResources();
             ReleaseHostedPlugin();
             ClearLoadedPluginMetadata();
@@ -936,6 +1071,7 @@ namespace guitarfx
         }
         AttachHostedPluginListeners();
         mLastError.clear();
+        mLastErrorCode.clear();
 
         if (mRuntimeConfigChangedCallback)
         {
@@ -1344,51 +1480,67 @@ namespace guitarfx
         }
 
         auto open = [this]() {
-            if (!mPlugin)
-                return;
-
-            if (sActiveHostedPluginEditorOwner != nullptr && sActiveHostedPluginEditorOwner != this)
-                sActiveHostedPluginEditorOwner->ClosePluginEditor();
-
-            if (mEditorWindow)
+            try
             {
+                if (!mPlugin)
+                    return;
+
+                if (sActiveHostedPluginEditorOwner != nullptr && sActiveHostedPluginEditorOwner != this)
+                    sActiveHostedPluginEditorOwner->ClosePluginEditor();
+
+                if (mEditorWindow)
+                {
+                    EnsurePluginStateBaseline();
+                    mEditorWindow->setVisible (true);
+                    mEditorWindow->toFront (true);
+                    sActiveHostedPluginEditorOwner = this;
+                    return;
+                }
+
+                // Plugin editor/view creation can touch state shared with the audio
+                // thread (LV2 view creation in particular); suspend processing
+                // (passthrough) for the duration.
+                const juce::SpinLock::ScopedLockType lock (mPluginProcessLock);
+
+                auto* editor = mPlugin->hasEditor()
+                                   ? mPlugin->createEditorAndMakeActive()
+                                   : static_cast<juce::AudioProcessorEditor*> (new juce::GenericAudioProcessorEditor (*mPlugin));
+                if (!editor)
+                {
+                    SetError ("Hosted plugin did not provide an editor");
+                    return;
+                }
+
+                const auto title = mPluginDescription.name.isNotEmpty()
+                                       ? mPluginDescription.name
+                                       : mPlugin->getName();
                 EnsurePluginStateBaseline();
-                mEditorWindow->setVisible (true);
-                mEditorWindow->toFront (true);
+                mEditorWindow = std::make_unique<HostedPluginEditorWindow> (title, editor, [this]() {
+                    if (sActiveHostedPluginEditorOwner == this)
+                        sActiveHostedPluginEditorOwner = nullptr;
+                    ScheduleAutoCapture (false);
+                });
                 sActiveHostedPluginEditorOwner = this;
-                return;
             }
-
-            // Plugin editor/view creation can touch state shared with the audio
-            // thread (LV2 view creation in particular); suspend processing
-            // (passthrough) for the duration.
-            const juce::SpinLock::ScopedLockType lock (mPluginProcessLock);
-
-            auto* editor = mPlugin->hasEditor()
-                               ? mPlugin->createEditorIfNeeded()
-                               : static_cast<juce::AudioProcessorEditor*> (new juce::GenericAudioProcessorEditor (*mPlugin));
-            if (!editor)
+            catch (const std::exception& ex)
             {
-                SetError ("Hosted plugin did not provide an editor");
-                return;
+                SetError ("Hosted plugin editor creation threw: " + std::string (ex.what()));
+                mEditorWindow.reset();
             }
-
-            const auto title = mPluginDescription.name.isNotEmpty()
-                                   ? mPluginDescription.name
-                                   : mPlugin->getName();
-            EnsurePluginStateBaseline();
-            mEditorWindow = std::make_unique<HostedPluginEditorWindow> (title, editor, [this]() {
-                if (sActiveHostedPluginEditorOwner == this)
-                    sActiveHostedPluginEditorOwner = nullptr;
-                ScheduleAutoCapture (false);
-            });
-            sActiveHostedPluginEditorOwner = this;
+            catch (...)
+            {
+                SetError ("Hosted plugin editor creation threw an unknown exception");
+                mEditorWindow.reset();
+            }
         };
 
         if (juce::MessageManager::getInstance()->isThisTheMessageThread())
             open();
         else
-            juce::MessageManager::callAsync (std::move (open));
+        {
+            if (!juce::MessageManager::callAsync (std::move (open)))
+                SetError ("Failed to schedule hosted plugin editor open on the message thread");
+        }
     }
 
     bool JuceHostedPluginEffect::ClosePluginEditor()
@@ -1424,10 +1576,11 @@ namespace guitarfx
         return false;
     }
 
-    void JuceHostedPluginEffect::SetError (const std::string& message)
+    void JuceHostedPluginEffect::SetError (const std::string& message, const std::string& code)
     {
         mLastError = message;
-        std::cerr << "[JuceHostedPluginEffect] " << message << std::endl;
+        mLastErrorCode = code;
+        AppendHostedPluginTrace ("SetError code=" + code + ": " + message);
     }
 
     void JuceHostedPluginEffect::parameterValueChanged (int,

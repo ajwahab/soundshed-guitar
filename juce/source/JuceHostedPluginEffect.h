@@ -77,7 +77,7 @@ namespace guitarfx
         void EnsurePluginStateBaseline();
         void OpenPluginEditor();
         bool ClosePluginEditor();
-        void SetError (const std::string& message);
+        void SetError (const std::string& message, const std::string& code = "unknown");
         void parameterValueChanged (int parameterIndex, float newValue) override;
         void parameterGestureChanged (int parameterIndex, bool gestureIsStarting) override;
         void audioProcessorParameterChanged (juce::AudioProcessor* processor, int parameterIndex, float newValue) override;
@@ -103,6 +103,7 @@ namespace guitarfx
         std::string mPluginIdentifier;
         std::string mPluginStateBase64;
         std::string mLastError;
+        std::string mLastErrorCode;
         RuntimeConfigChangedCallback mRuntimeConfigChangedCallback;
         std::vector<juce::AudioProcessorParameter*> mHostedParametersWithListeners;
 

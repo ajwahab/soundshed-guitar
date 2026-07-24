@@ -684,6 +684,57 @@ if(WIN32)
     )
 endif()
 
+if(APPLE)
+    enable_testing()
+
+    add_executable(HostedPluginBatchScanTests
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/HostedPluginBatchScanTests.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/JuceHostedPluginEffect.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/source/JuceHostedPluginEffect.h"
+    )
+
+    target_include_directories(HostedPluginBatchScanTests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/source"
+    )
+
+    target_compile_definitions(HostedPluginBatchScanTests
+        PRIVATE
+            JUCE_PLUGINHOST_VST3=1
+            JUCE_PLUGINHOST_AU=1
+            JUCE_VST3_CAN_REPLACE_VST2=0
+            JUCE_MODAL_LOOPS_PERMITTED=1
+            GUITARFX_ENABLE_PLUGIN_HOST_TEST_API=1
+    )
+
+    target_link_libraries(HostedPluginBatchScanTests
+        PRIVATE
+            SoundshedGuitarCore
+            nlohmann_json::nlohmann_json
+            juce_audio_utils
+            juce_audio_processors
+            juce_dsp
+            juce_gui_basics
+            juce_gui_extra
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags
+    )
+
+    set_target_properties(HostedPluginBatchScanTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "GuitarFX/Tests"
+    )
+
+    add_test(NAME HostedPluginBatchScanTests COMMAND HostedPluginBatchScanTests)
+    set_tests_properties(HostedPluginBatchScanTests PROPERTIES
+        SKIP_RETURN_CODE 77
+        LABELS "pluginscan"
+        TIMEOUT 600
+    )
+endif()
+
 # A separate target for Benchmarks (keeps the Tests target fast)
 # include(Benchmarks)
 

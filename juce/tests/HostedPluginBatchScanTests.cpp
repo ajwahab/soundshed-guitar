@@ -1,4 +1,4 @@
-// Batch-scans installed plugins (VST3 + LV2) and verifies that the hosted
+// Batch-scans installed plugins (VST3 + AU + LV2, platform-dependent) and verifies that the hosted
 // plugin effect can load each one, instantiate its editor UI while audio is
 // being processed concurrently, then close and release it without crashing.
 //
@@ -9,7 +9,7 @@
 // A crash anywhere aborts the process and fails the ctest run.
 //
 // Environment overrides:
-//   GUITARFX_PLUGIN_SCAN_DIRS  - semicolon-separated directories to scan
+//   GUITARFX_PLUGIN_SCAN_DIRS  - platform-separated directories to scan
 //                                (replaces the default locations).
 //   GUITARFX_PLUGIN_SCAN_LIMIT - max number of plugins to test.
 
@@ -52,9 +52,15 @@ std::vector<fs::path> GetScanRoots()
 
     if (const char* overrideDirs = std::getenv("GUITARFX_PLUGIN_SCAN_DIRS"))
     {
+#if JUCE_WINDOWS
+        constexpr char kPathSeparator = ';';
+#else
+        constexpr char kPathSeparator = ':';
+#endif
+
         std::string remaining(overrideDirs);
         size_t pos = 0;
-        while ((pos = remaining.find(';')) != std::string::npos)
+        while ((pos = remaining.find(kPathSeparator)) != std::string::npos)
         {
             if (pos > 0)
                 roots.emplace_back(remaining.substr(0, pos));
@@ -73,6 +79,11 @@ std::vector<fs::path> GetScanRoots()
     if (const char* appData = std::getenv("APPDATA"))
         roots.emplace_back(fs::path(appData) / "LV2");
 
+#if JUCE_MAC
+    roots.emplace_back("/Library/Audio/Plug-Ins/VST3");
+    roots.emplace_back("/Library/Audio/Plug-Ins/Components");
+#endif
+
     return roots;
 }
 
@@ -83,8 +94,7 @@ bool ShouldSkipCandidate(const fs::path& candidate)
     return name.find("soundshed") != std::string::npos;
 }
 
-// Collects top-level plugin entries: *.vst3 files or bundle directories, and
-// *.lv2 bundle directories. Does not descend into bundles.
+// Collects top-level plugin entries. Does not descend into plugin bundles.
 std::vector<fs::path> CollectPluginCandidates(const std::vector<fs::path>& roots)
 {
     std::vector<fs::path> candidates;
@@ -102,7 +112,13 @@ std::vector<fs::path> CollectPluginCandidates(const std::vector<fs::path>& roots
 
             const bool isVst3 = ext == ".vst3";
             const bool isLv2Bundle = ext == ".lv2" && it->is_directory(ec);
-            if ((isVst3 || isLv2Bundle) && !ShouldSkipCandidate(entry))
+#if JUCE_MAC
+            const bool isAudioUnitBundle = ext == ".component" && it->is_directory(ec);
+#else
+            constexpr bool isAudioUnitBundle = false;
+#endif
+
+            if ((isVst3 || isLv2Bundle || isAudioUnitBundle) && !ShouldSkipCandidate(entry))
                 candidates.push_back(entry);
         }
     }
@@ -168,14 +184,44 @@ private:
 
 struct ScanResult
 {
+    int vst3Candidates = 0;
+    int componentCandidates = 0;
     int loaded = 0;
+    int loadedVst3 = 0;
+    int loadedComponent = 0;
     int gracefulLoadFailures = 0;
     int hardFailures = 0;
     std::vector<std::string> failureMessages;
 };
 
+enum class PluginCandidateType
+{
+    unknown,
+    vst3,
+    component,
+    lv2,
+};
+
+PluginCandidateType DetectCandidateType(const fs::path& candidate)
+{
+    const auto ext = ToLower(candidate.extension().string());
+    if (ext == ".vst3")
+        return PluginCandidateType::vst3;
+    if (ext == ".component")
+        return PluginCandidateType::component;
+    if (ext == ".lv2")
+        return PluginCandidateType::lv2;
+    return PluginCandidateType::unknown;
+}
+
 void ExercisePlugin(const fs::path& candidate, ScanResult& result)
 {
+    const PluginCandidateType candidateType = DetectCandidateType(candidate);
+    if (candidateType == PluginCandidateType::vst3)
+        ++result.vst3Candidates;
+    else if (candidateType == PluginCandidateType::component)
+        ++result.componentCandidates;
+
     std::cout << "[SCAN] " << candidate.string() << std::endl;
 
     guitarfx::JuceHostedPluginEffect effect;
@@ -185,6 +231,26 @@ void ExercisePlugin(const fs::path& candidate, ScanResult& result)
     if (!loadedOk)
     {
         const std::string error = effect.GetConfig("lastError");
+
+        // VST3 coverage is mandatory for this test: a discovered VST3 bundle
+        // that fails to load must fail the test rather than being treated as
+        // an optional graceful skip.
+        if (candidateType == PluginCandidateType::vst3)
+        {
+            ++result.hardFailures;
+            if (error.empty())
+            {
+                result.failureMessages.push_back(candidate.string() + ": VST3 load failed without setting lastError");
+                std::cout << "  [FAIL] VST3 load failed with no error message" << std::endl;
+            }
+            else
+            {
+                result.failureMessages.push_back(candidate.string() + ": VST3 load failed: " + error);
+                std::cout << "  [FAIL] VST3 load failed: " << error << std::endl;
+            }
+            return;
+        }
+
         if (error.empty())
         {
             ++result.hardFailures;
@@ -200,6 +266,12 @@ void ExercisePlugin(const fs::path& candidate, ScanResult& result)
     }
 
     ++result.loaded;
+    const std::string loadedFormat = ToLower(effect.GetConfig("pluginFormat"));
+    if (loadedFormat.find("vst3") != std::string::npos)
+        ++result.loadedVst3;
+    else if (loadedFormat.find("audio") != std::string::npos || loadedFormat.find("au") != std::string::npos)
+        ++result.loadedComponent;
+
     std::cout << "  loaded: " << effect.GetConfig("pluginName")
               << " (" << effect.GetConfig("pluginFormat") << ")" << std::endl;
 
@@ -270,6 +342,24 @@ int main()
     std::cout << "\nBatch scan summary: loaded=" << result.loaded
               << ", gracefulLoadFailures=" << result.gracefulLoadFailures
               << ", hardFailures=" << result.hardFailures << std::endl;
+    std::cout << "Format summary: vst3 candidates=" << result.vst3Candidates
+              << ", vst3 loaded=" << result.loadedVst3
+              << ", component candidates=" << result.componentCandidates
+              << ", component loaded=" << result.loadedComponent << std::endl;
+
+#if JUCE_MAC
+    if (result.vst3Candidates > 0 && result.loadedVst3 == 0)
+    {
+        ++result.hardFailures;
+        result.failureMessages.push_back("No VST3 plugin loaded successfully on macOS (despite VST3 candidates being discovered)");
+    }
+
+    if (result.componentCandidates > 0 && result.loadedComponent == 0)
+    {
+        ++result.hardFailures;
+        result.failureMessages.push_back("No Audio Unit (.component) plugin loaded successfully on macOS (despite component candidates being discovered)");
+    }
+#endif
 
     for (const auto& message : result.failureMessages)
         std::cerr << "[HostedPluginBatchScanTests] " << message << std::endl;

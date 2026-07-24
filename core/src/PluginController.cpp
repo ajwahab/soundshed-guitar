@@ -85,6 +85,7 @@ namespace
     constexpr const char* kHostedPluginNameConfigKey = "pluginName";
     constexpr const char* kHostedPluginManufacturerConfigKey = "pluginManufacturer";
     constexpr const char* kHostedPluginFormatConfigKey = "pluginFormat";
+    constexpr const char* kHostedPluginLastErrorCodeConfigKey = "lastErrorCode";
     constexpr const char* kFactoryArchiveStateFileName = "factory-archive-state.json";
     constexpr int kFactoryArchiveStateSchemaVersion = 1;
     constexpr const char* kFactoryArchiveLoadingEnabledSettingKey = "factoryPresets.archiveLoadingEnabled";
@@ -11372,6 +11373,7 @@ bool PluginController::ReportHostedPluginResourceLoadFailure(const std::string& 
     const std::string lastError = processor->GetConfig("lastError");
     if (lastError.empty())
         return false;
+    const std::string lastErrorCode = processor->GetConfig(kHostedPluginLastErrorCodeConfigKey);
 
     nlohmann::json message{
         {"type", "hostedPluginResourceLoadFailed"},
@@ -11379,6 +11381,8 @@ bool PluginController::ReportHostedPluginResourceLoadFailure(const std::string& 
         {"resourceType", "plugin"},
         {"message", lastError}
     };
+    if (!lastErrorCode.empty())
+        message["errorCode"] = lastErrorCode;
     if (resourceIndex >= 0)
         message["resourceIndex"] = resourceIndex;
     if (!ref.resourceId.empty())
