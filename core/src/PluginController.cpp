@@ -3854,6 +3854,90 @@ void PluginController::OnWebContentLoaded()
     LoadLayoutLibrary();
 }
 
+void PluginController::ReloadSharedSyncSourcesFromDisk()
+{
+    LoadAppSettings();
+    ApplyMetronomeSettingsFromAppSettings();
+    ApplyDiagnosticsSettingsFromAppSettings();
+    ApplyDspLevelTargetSettingsFromAppSettings();
+    ApplyProcessingModeSettingsFromAppSettings();
+    ApplyInputModeSettingsFromAppSettings();
+    ApplyGlobalFxSettingsFromAppSettings();
+    ApplyNamSlimmableSettingsFromAppSettings();
+    ApplyNamInterfaceCalibrationFromAppSettings();
+    ApplyUserInputCalibrationSettingsFromAppSettings();
+    ApplyUiSettingsFromAppSettings();
+
+    LoadResourceLibraries();
+    LoadBlendLibrary();
+    LoadCustomEffectLibrary();
+
+    std::vector<std::string> definitionIds;
+    definitionIds.reserve(mCompositeLibrary.GetAllDefinitions().size());
+    for (const auto& def : mCompositeLibrary.GetAllDefinitions())
+        definitionIds.push_back(def.id);
+    for (const auto& id : definitionIds)
+        mCompositeLibrary.RemoveDefinition(id);
+    LoadCompositeLibrary();
+
+    {
+        std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
+        mRiffLibraryIndex = LoadRiffLibraryIndex();
+    }
+
+    const auto automationData = LoadUiStorageJson("automation.json", nlohmann::json::object());
+    if (!automationData.empty())
+        mAutomationSlots.LoadFromJson(automationData);
+
+    const auto setlistsData = LoadUiStorageJson("setlists.json", nlohmann::json::object());
+    mSetlistBankSize = setlistsData.value("bankSize", 8);
+    mSetlistCursorIndex = setlistsData.value("cursorIndex", 0);
+
+    InvalidateResourceUsageIndex();
+}
+
+void PluginController::PollSharedSyncState()
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now < mNextSharedSyncPollAt)
+        return;
+
+    mNextSharedSyncPollAt = now + kSharedSyncPollInterval;
+
+    const auto path = ResolveSharedSyncStatePath(mFileSystem);
+    const auto payload = LoadJsonFile(path, nlohmann::json::object());
+    if (!payload.is_object())
+        return;
+
+    const auto versionIt = payload.find("version");
+    if (versionIt == payload.end() || !versionIt->is_number_unsigned())
+        return;
+
+    const auto version = versionIt->get<std::uint64_t>();
+    if (!mSharedSyncVersionSeenInitialized)
+    {
+        mSharedSyncVersionSeen = version;
+        mSharedSyncVersionSeenInitialized = true;
+        return;
+    }
+
+    if (version <= mSharedSyncVersionSeen)
+        return;
+
+    mSharedSyncVersionSeen = version;
+    if (!mUIReady)
+        return;
+
+    nlohmann::json msg;
+    msg["type"] = "sharedSyncUpdated";
+    msg["version"] = version;
+    if (payload.contains("domains") && payload["domains"].is_array())
+        msg["domains"] = payload["domains"];
+    if (payload.contains("updatedAt"))
+        msg["updatedAt"] = payload["updatedAt"];
+    SendMessageToUI(msg.dump());
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Parameter bridging
 // ════════════════════════════════════════════════════════════════════
@@ -4073,7 +4157,7 @@ void PluginController::AppendSessionLog(const std::string& message) const
     if (message.empty())
         return;
 
-    const auto settingsDir = mFileSystem.ResolveSettingsDirectory();
+    const auto settingsDir = GetEffectiveSettingsDirectory();
     const auto logPath = settingsDir / kSessionLogFileName;
     [[maybe_unused]] const auto ensuredLogDir = mFileSystem.EnsureDirectory(logPath.parent_path());
 
@@ -4091,6 +4175,76 @@ void PluginController::AppendSessionLog(const std::string& message) const
 void PluginController::HandleStateRequest()
 {
     mPendingStateBroadcast = true;
+}
+
+void PluginController::HandleGetSharedSyncStateRequest()
+{
+    ReloadSharedSyncSourcesFromDisk();
+
+    nlohmann::json state;
+    state["type"] = "sharedSyncState";
+    state["appSettings"] = mAppSettings;
+    state["uiSettings"] = mUiSettings;
+    state["blendLibrary"] = mBlendLibrary;
+    state["presetArchiveSession"] = {
+        {"active", IsPresetArchiveSessionActive()}
+    };
+    if (mPresetArchiveSession)
+    {
+        state["presetArchiveSession"]["archiveName"] = mPresetArchiveSession->archiveName;
+        state["presetArchiveSession"]["archiveKey"] = mPresetArchiveSession->archiveKey;
+        state["presetArchiveSession"]["presetCount"] = mPresetArchiveSession->presetCount;
+    }
+
+    // Resource library summary + per-type entries for UI rendering
+    nlohmann::json libraryInfo = nlohmann::json::object();
+    auto allResources = mResourceLibrary.GetAllResources();
+    libraryInfo["totalCount"] = allResources.size();
+
+    for (const auto& resource : allResources)
+    {
+        const std::string type = resource.type;
+        if (!libraryInfo.contains(type) || !libraryInfo[type].is_array())
+            libraryInfo[type] = nlohmann::json::array();
+
+        nlohmann::json entry;
+        entry["id"] = resource.id;
+        entry["name"] = resource.name;
+        entry["category"] = resource.category;
+        entry["description"] = resource.description;
+        entry["tags"] = resource.tags;
+        entry["filePath"] = resource.filePath.empty() ? "" : resource.filePath.string();
+        entry["hash"] = resource.hash;
+        if (!resource.metadata.empty())
+            entry["metadata"] = resource.metadata;
+        const bool hasPath = !resource.filePath.empty();
+        const bool exists = hasPath && std::filesystem::exists(resource.filePath);
+        entry["fileMissing"] = !(hasPath && exists);
+
+        libraryInfo[type].push_back(entry);
+    }
+    state["resourceLibrary"] = std::move(libraryInfo);
+
+    {
+        nlohmann::json customEffects = nlohmann::json::array();
+        for (const auto& entry : mCustomEffectLibrary.GetAllEntries())
+            customEffects.push_back(SerializeCustomEffectLibraryEntry(entry));
+        state["customEffectLibrary"] = std::move(customEffects);
+    }
+
+    SendMessageToUI(state.dump());
+
+    // Send auxiliary shared datasets over their existing message contracts.
+    HandleGetThemeRequest();
+    HandleGetPresetListRequest();
+    HandleGetPresetFoldersRequest();
+    HandleGetPresetFavoritesRequest();
+    HandleGetPresetRatingsRequest();
+    HandleGetSetlistsRequest();
+    HandleGetAutomationRequest();
+    SendCompositeLibraryToUI();
+    SendCompositePresetListToUI();
+    SendRiffLibraryStateToUI();
 }
 
 void PluginController::HandleCaptureDebugSnapshotRequest(const nlohmann::json& payload)
@@ -8714,6 +8868,7 @@ void PluginController::HandleSaveCompositeDefinitionRequest(const nlohmann::json
     { ReportErrorToUI("Composite save failed", "Could not write definition file"); return; }
 
     mCompositeLibrary.AddDefinition(def);
+    TouchSharedSyncState({"composites"});
 
     nlohmann::json response;
     response["type"] = "compositeDefinitionAdded";
@@ -11851,11 +12006,77 @@ void PluginController::ClearNamCalibrationParams(GraphNode& node) const
 
 // ── Settings persistence ───────────────────────────────────────────
 
+void PluginController::TouchSharedSyncState(const std::vector<std::string>& domains) const
+{
+    if (domains.empty())
+        return;
+
+    const auto syncPath = ResolveSharedSyncStatePath(mFileSystem);
+    if (syncPath.empty())
+        return;
+
+    std::uint64_t nextVersion = 1;
+    nlohmann::json previous = LoadJsonFile(syncPath, nlohmann::json::object());
+    if (previous.is_object())
+    {
+        const auto versionIt = previous.find("version");
+        if (versionIt != previous.end() && versionIt->is_number_unsigned())
+            nextVersion = versionIt->get<std::uint64_t>() + 1;
+    }
+
+    nlohmann::json payload = nlohmann::json::object();
+    payload["version"] = nextVersion;
+    payload["updatedAt"] = BuildUtcIsoTimestamp();
+    payload["domains"] = nlohmann::json::array();
+    for (const auto& domain : domains)
+    {
+        if (domain.empty())
+            continue;
+        payload["domains"].push_back(domain);
+    }
+
+    const auto instanceIdIt = mAppSettings.find("app.instanceId");
+    if (instanceIdIt != mAppSettings.end() && instanceIdIt->is_string())
+        payload["writerInstanceId"] = instanceIdIt->get<std::string>();
+
+    try
+    {
+        [[maybe_unused]] const auto ensuredSyncParent = mFileSystem.EnsureDirectory(syncPath.parent_path());
+
+        const auto tempPath = syncPath.parent_path() / (syncPath.filename().string() + ".tmp");
+        {
+            std::ofstream ofs(tempPath);
+            if (!ofs.is_open())
+                return;
+            ofs << payload.dump(2);
+        }
+
+        std::error_code ec;
+        std::filesystem::rename(tempPath, syncPath, ec);
+        if (ec)
+        {
+            std::filesystem::copy_file(tempPath, syncPath,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::remove(tempPath, ec);
+        }
+        if (ec)
+            return;
+
+        mSharedSyncVersionSeen = nextVersion;
+        mSharedSyncVersionSeenInitialized = true;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "[Plugin] TouchSharedSyncState failed: " << e.what() << std::endl;
+    }
+}
+
 void PluginController::SaveAppSettings() const
 {
     const auto settingsPath = mFileSystem.ResolveSettingsFile();
     if (settingsPath.empty()) return;
 
+    bool wrote = false;
     try
     {
         [[maybe_unused]] const auto ensuredSettingsParent = mFileSystem.EnsureDirectory(settingsPath.parent_path());
@@ -11883,11 +12104,17 @@ void PluginController::SaveAppSettings() const
                                        std::filesystem::copy_options::overwrite_existing, ec);
             std::filesystem::remove(tempPath, ec);
         }
+        wrote = !ec;
     }
     catch (const std::exception& e)
     {
         std::cerr << "[Plugin] SaveAppSettings failed: " << e.what() << std::endl;
     }
+
+    if (wrote)
+        TouchSharedSyncState({"appSettings"});
+}
+
 }
 
 void PluginController::LoadAppSettings()
@@ -12507,6 +12734,9 @@ void PluginController::SaveBlendLibrary() const
         }
     }
     catch (const std::exception&) {}
+
+    if (wrote)
+        TouchSharedSyncState({"blends"});
 }
 
 void PluginController::SaveCustomEffectLibrary() const
@@ -12972,14 +13202,35 @@ void PluginController::SaveUiStorageJson(const std::string& filename, const nloh
     if (path.empty())
         return;
 
+    bool wrote = false;
     try
     {
         [[maybe_unused]] const auto ensuredUiStorageParent = mFileSystem.EnsureDirectory(path.parent_path());
         std::ofstream ofs(path);
         if (ofs.is_open())
+        {
             ofs << payload.dump(2);
+            wrote = true;
+        }
     }
     catch (const std::exception&) {}
+
+    if (!wrote)
+        return;
+
+    std::vector<std::string> domains;
+    if (filename == "automation.json")
+        domains.push_back("automation");
+    else if (filename == "setlists.json")
+        domains.push_back("setlists");
+    else if (filename == "preset-folders.json"
+             || filename == "preset-favorites.json"
+             || filename == "preset-ratings.json")
+        domains.push_back("presetMetadata");
+    else
+        domains.push_back("uiStorage");
+
+    TouchSharedSyncState(domains);
 }
 
 std::filesystem::path PluginController::ResolveRiffLibraryPath() const
@@ -13089,7 +13340,10 @@ bool PluginController::SaveRiffLibraryIndex(const nlohmann::json& payload) const
         if (!output)
             return false;
         output << normalizedPayload.dump(2);
-        return static_cast<bool>(output);
+        const bool ok = static_cast<bool>(output);
+        if (ok)
+            TouchSharedSyncState({"riffLibrary"});
+        return ok;
     }
     catch (...)
     {

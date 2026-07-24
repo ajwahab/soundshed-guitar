@@ -30,6 +30,11 @@ bool MessageDispatcher::DispatchStateAndLists(PluginController& c,
         c.HandleGetAppInfoRequest();
         return true;
     }
+    if (type == "getSharedSyncState")
+    {
+        c.HandleGetSharedSyncStateRequest();
+        return true;
+    }
     if (type == "getGlobalChain")
     {
         c.HandleGetGlobalChainRequest();
