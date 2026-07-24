@@ -155,6 +155,10 @@ function getResourceLibraryFacets(resources: LibraryResource[]): { tags: string[
 const RESOURCE_FAVORITES_SETTING = "resources.favorites";
 const FOLDER_ROOTS_SETTING = "resources.folderBrowser.roots";
 const FOLDER_ACTIVE_ROOT_SETTING = "resources.folderBrowser.activeRootId";
+const FOLDER_VIRTUAL_GAP = 6;
+const FOLDER_VIRTUAL_OVERSCAN = 6;
+const FOLDER_VIRTUAL_ESTIMATED_DIR_HEIGHT = 44;
+const FOLDER_VIRTUAL_ESTIMATED_FILE_HEIGHT = 62;
 
 type ResourceType = "nam" | "ir";
 type ResourceBrowserTab = "library" | "folder" | "tone3000";
@@ -189,6 +193,10 @@ interface FolderListing {
   files: FolderListingFile[];
   truncated?: boolean;
 }
+
+type FolderVirtualEntry =
+  | { key: string; kind: "dir"; dir: FolderListingDir }
+  | { key: string; kind: "file"; file: FolderListingFile };
 
 interface PersistedResourceBrowserState {
   activeTab: ResourceBrowserTab;
@@ -309,6 +317,12 @@ export class ResourceBrowserModal {
   private folderTagFilters: Set<string> = new Set();
   private folderListing: FolderListing | null = null;
   private folderLoading = false;
+  private folderRenderQueued = false;
+  private folderVirtualEntries: FolderVirtualEntry[] = [];
+  private folderVirtualOffsets: number[] = [];
+  private folderVirtualHeights = new Map<string, number>();
+  private folderVirtualWindowQueued = false;
+  private folderVirtualMeasureQueued = false;
   private expandedFolderItemPath: string | null = null;
   private libraryNavigationState: ResourceNavigationState | null = null;
   // Per-type cache so preloads for different resource types don't clobber each other.
@@ -529,9 +543,11 @@ export class ResourceBrowserModal {
       files: Array.isArray(listing.files) ? listing.files : [],
       truncated: Boolean(listing.truncated),
     };
+    this.folderVirtualHeights.clear();
+    this.folderList?.scrollTo({ top: 0 });
     this.folderCurrentPath = listing.path;
     this.renderFolderPath();
-    this.renderFolderList();
+    this.renderFolderList(true);
   };
 
   private handleFolderMetadataEvent = (event: Event): void => {
@@ -563,9 +579,20 @@ export class ResourceBrowserModal {
       changed = true;
     }
     if (changed) {
-      this.renderFolderList();
+      this.queueFolderListRender();
     }
   };
+
+  private queueFolderListRender(): void {
+    if (this.folderRenderQueued) {
+      return;
+    }
+    this.folderRenderQueued = true;
+    requestAnimationFrame(() => {
+      this.folderRenderQueued = false;
+      this.renderFolderList();
+    });
+  }
 
   private handleFolderListingFailedEvent = (event: Event): void => {
     const detail = (event as CustomEvent<{ path?: string; message?: string }>).detail;
@@ -762,7 +789,7 @@ export class ResourceBrowserModal {
     this.folderRemoveBtn?.addEventListener("click", () => this.removeActiveFolderRoot());
     this.folderRootSelect?.addEventListener("change", () => this.onFolderRootChanged());
     this.folderUpBtn?.addEventListener("click", () => this.navigateFolderUp());
-    this.folderSearch?.addEventListener("input", () => this.renderFolderList());
+    this.folderSearch?.addEventListener("input", () => this.renderFolderList(true));
     this.folderTagFilterBar?.addEventListener("click", (event) => {
       const target = event.target as HTMLElement | null;
       const chip = target?.closest(".preset-tag-filter-chip") as HTMLButtonElement | null;
@@ -777,9 +804,10 @@ export class ResourceBrowserModal {
       } else {
         this.folderTagFilters.add(tag);
       }
-      this.renderFolderList();
+      this.renderFolderList(true);
     });
     this.folderList?.addEventListener("click", (event) => this.handleFolderClick(event));
+    this.folderList?.addEventListener("scroll", () => this.queueFolderVirtualWindowRender(), { passive: true });
     
     // Tone3000 search
     this.tone3000Search?.addEventListener("keydown", (event) => {
@@ -3150,7 +3178,7 @@ export class ResourceBrowserModal {
     this.folderTagFilterBar.classList.add("is-active");
   }
 
-  private renderFolderList(): void {
+  private renderFolderList(resetVirtualScroll = false): void {
     if (!this.folderList) return;
     if (this.folderLoading) return;
 
@@ -3191,6 +3219,14 @@ export class ResourceBrowserModal {
         return Array.from(this.folderTagFilters).every((tag) => tags.includes(tag));
       })
       : filesByQuery;
+    this.folderVirtualEntries = [
+      ...dirs.map((dir): FolderVirtualEntry => ({ key: `dir:${dir.path}`, kind: "dir", dir })),
+      ...files.map((file): FolderVirtualEntry => ({ key: `file:${file.path}`, kind: "file", file })),
+    ];
+    this.rebuildFolderVirtualOffsets();
+    if (resetVirtualScroll && this.folderList) {
+      this.folderList.scrollTop = 0;
+    }
 
     this.folderNavigationState = {
       resourceType: this.options?.resourceType ?? "nam",
@@ -3221,23 +3257,109 @@ export class ResourceBrowserModal {
       this.folderStatus.innerHTML = parts.join("");
     }
 
-    const dirHtml = dirs.map((dir) => `
-      <div class="resource-browser-folder-entry" data-kind="dir" data-path="${escapeHtml(dir.path)}">
-        <div class="results-item resource-browser-item resource-browser-folder-dir-row">
-          <div class="results-item-main resource-browser-item-info">
-            <div class="results-item-title resource-browser-item-title">\uD83D\uDCC1 ${escapeHtml(dir.name)}</div>
-          </div>
-        </div>
-      </div>
-    `).join("");
-
-    const fileHtml = files.map((file) => this.renderFolderFileRow(file)).join("");
-
-    if (!dirHtml && !fileHtml) {
+    if (!this.folderVirtualEntries.length) {
+      this.folderList.classList.remove("is-virtualized");
       this.folderList.innerHTML = `<div class="resource-browser-empty">No matching items in this folder.</div>`;
       return;
     }
-    this.folderList.innerHTML = dirHtml + fileHtml;
+    this.renderFolderVirtualWindow();
+  }
+
+  private getFolderVirtualEntryHeight(entry: FolderVirtualEntry): number {
+    const measured = this.folderVirtualHeights.get(entry.key);
+    if (measured) return measured;
+    if (entry.kind === "dir") return FOLDER_VIRTUAL_ESTIMATED_DIR_HEIGHT;
+    return FOLDER_VIRTUAL_ESTIMATED_FILE_HEIGHT + (this.expandedFolderItemPath === entry.file.path ? 140 : 0);
+  }
+
+  private rebuildFolderVirtualOffsets(): void {
+    this.folderVirtualOffsets = new Array(this.folderVirtualEntries.length);
+    let offset = 0;
+    this.folderVirtualEntries.forEach((entry, index) => {
+      this.folderVirtualOffsets[index] = offset;
+      offset += this.getFolderVirtualEntryHeight(entry) + FOLDER_VIRTUAL_GAP;
+    });
+  }
+
+  private getFolderVirtualTotalHeight(): number {
+    if (!this.folderVirtualEntries.length) return 0;
+    const lastIndex = this.folderVirtualEntries.length - 1;
+    return this.folderVirtualOffsets[lastIndex] + this.getFolderVirtualEntryHeight(this.folderVirtualEntries[lastIndex]);
+  }
+
+  private findFolderVirtualIndex(offset: number): number {
+    let low = 0;
+    let high = this.folderVirtualOffsets.length - 1;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.folderVirtualOffsets[middle] <= offset) low = middle + 1;
+      else high = middle - 1;
+    }
+    return Math.max(0, high);
+  }
+
+  private renderFolderVirtualWindow(): void {
+    if (!this.folderList || !this.folderVirtualEntries.length) return;
+    const scrollTop = this.folderList.scrollTop;
+    const viewportBottom = scrollTop + Math.max(this.folderList.clientHeight, 1);
+    const firstVisible = this.findFolderVirtualIndex(scrollTop);
+    const lastVisible = this.findFolderVirtualIndex(viewportBottom);
+    const start = Math.max(0, firstVisible - FOLDER_VIRTUAL_OVERSCAN);
+    const end = Math.min(this.folderVirtualEntries.length, lastVisible + FOLDER_VIRTUAL_OVERSCAN + 1);
+    const rows = this.folderVirtualEntries.slice(start, end).map((entry, relativeIndex) => {
+      const index = start + relativeIndex;
+      return `<div class="resource-browser-virtual-entry" data-virtual-index="${index}" style="transform:translateY(${this.folderVirtualOffsets[index]}px)">${this.renderFolderVirtualEntry(entry)}</div>`;
+    }).join("");
+
+    this.folderList.classList.add("is-virtualized");
+    this.folderList.innerHTML = `<div class="resource-browser-virtual-spacer" style="height:${this.getFolderVirtualTotalHeight()}px">${rows}</div>`;
+    this.queueFolderVirtualMeasurement();
+  }
+
+  private renderFolderVirtualEntry(entry: FolderVirtualEntry): string {
+    if (entry.kind === "file") return this.renderFolderFileRow(entry.file);
+    return `
+      <div class="resource-browser-folder-entry" data-kind="dir" data-path="${escapeHtml(entry.dir.path)}">
+        <div class="results-item resource-browser-item resource-browser-folder-dir-row">
+          <div class="results-item-main resource-browser-item-info">
+            <div class="results-item-title resource-browser-item-title">\uD83D\uDCC1 ${escapeHtml(entry.dir.name)}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private queueFolderVirtualWindowRender(): void {
+    if (this.folderVirtualWindowQueued) return;
+    this.folderVirtualWindowQueued = true;
+    requestAnimationFrame(() => {
+      this.folderVirtualWindowQueued = false;
+      this.renderFolderVirtualWindow();
+    });
+  }
+
+  private queueFolderVirtualMeasurement(): void {
+    if (this.folderVirtualMeasureQueued) return;
+    this.folderVirtualMeasureQueued = true;
+    requestAnimationFrame(() => {
+      this.folderVirtualMeasureQueued = false;
+      if (!this.folderList) return;
+      let layoutChanged = false;
+      this.folderList.querySelectorAll<HTMLElement>(".resource-browser-virtual-entry[data-virtual-index]").forEach((element) => {
+        const index = Number(element.dataset.virtualIndex);
+        const entry = this.folderVirtualEntries[index];
+        if (!entry) return;
+        const measuredHeight = Math.ceil(element.offsetHeight);
+        if (measuredHeight > 0 && this.folderVirtualHeights.get(entry.key) !== measuredHeight) {
+          this.folderVirtualHeights.set(entry.key, measuredHeight);
+          layoutChanged = true;
+        }
+      });
+      if (layoutChanged) {
+        this.rebuildFolderVirtualOffsets();
+        this.renderFolderVirtualWindow();
+      }
+    });
   }
 
   private renderFolderFileRow(file: FolderListingFile): string {

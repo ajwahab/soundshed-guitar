@@ -1116,6 +1116,23 @@
   max-height: 400px;
 }
 
+.resource-browser-folder-list.is-virtualized {
+  display: block;
+  position: relative;
+}
+
+.resource-browser-virtual-spacer {
+  position: relative;
+  min-height: 100%;
+}
+
+.resource-browser-virtual-entry {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
 .resource-browser-empty,
 .resource-browser-modal .results-empty {
   padding: 20px;
