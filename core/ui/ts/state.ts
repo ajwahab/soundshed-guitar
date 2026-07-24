@@ -182,6 +182,7 @@ export const uiState: UiState = {
   setlists: [],
   activeSetlistId: null,
   setlistCursorIndex: 0,
+  presetArchiveSession: null,
   parameters: {
     values: [],
   },

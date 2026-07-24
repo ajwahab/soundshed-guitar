@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include "dsp/effects/NAMSampleRate.h"
 #include "presets/PresetStorage.h"
 #include "presets/PresetTypes.h"
+#include "util/Base64.h"
 
 namespace fs = std::filesystem;
 
@@ -1154,6 +1156,92 @@ bool TestLoadAppSettingsAppliesUserInputCalibrationProfile()
     return true;
 }
 
+bool TestLoadAppSettingsPrunesUnusedLegacyKeys()
+{
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "app-settings-cleanup";
+    std::error_code ec;
+    fs::remove_all(sandbox, ec);
+    fs::create_directories(sandbox, ec);
+    SetSettingsEnvRoot(sandbox);
+
+    const fs::path settingsPath = sandbox / "Soundshed Guitar" / "data" / "v1" / "settings" / "app.json";
+    fs::create_directories(settingsPath.parent_path(), ec);
+    {
+        nlohmann::json settings = nlohmann::json::object();
+        settings["appSettings"] = nlohmann::json::object({{"legacy", true}});
+        settings["audioSettings"] = nlohmann::json::object({{"autoLevelInput", true}});
+        settings["lastPresetJson"] = "{}";
+        settings["parameters"] = nlohmann::json::array({0, 1, 2});
+        settings["metronomeEnabled"] = false;
+        settings["performancePads.open"] = false;
+        settings["toneSharing.apiBase"] = "https://api-guitar.soundshed.com/v1";
+        settings["ui.experimentalFeaturesEnabled"] = true;
+        settings["audio.processing.namMonoOnly"] = false;
+        settings["app.lastUpdateCheck"] = 1234;
+        settings["globalFx.settings"] = guitarfx::GlobalSignalChainConfig{};
+        settings["globalSignalChain"] = guitarfx::GlobalSignalChainConfig{};
+        settings["metronome.bpm"] = 120.0;
+        settings["metronomeBpm"] = 140.0;
+        settings["theme"] = "dark";
+
+        std::ofstream output(settingsPath);
+        output << settings.dump(2);
+    }
+
+    TestHost host(sandbox, {}, true);
+    guitarfx::PluginController controller(host);
+    controller.Initialize();
+
+    const auto& appSettings = controller.GetAppSettings();
+    const std::array<const char*, 12> removedKeys = {
+        "appSettings",
+        "audioSettings",
+        "lastPresetJson",
+        "parameters",
+        "metronomeEnabled",
+        "performancePads.open",
+        "toneSharing.apiBase",
+        "ui.experimentalFeaturesEnabled",
+        "audio.processing.namMonoOnly",
+        "app.lastUpdateCheck",
+        "globalSignalChain",
+        "metronomeBpm"
+    };
+    for (const auto* key : removedKeys)
+    {
+        if (appSettings.contains(key))
+        {
+            std::cerr << "Legacy key should be removed from in-memory app settings: " << key << "\n";
+            return false;
+        }
+    }
+
+    if (!appSettings.contains("globalFx.settings") || !appSettings.contains("theme"))
+    {
+        std::cerr << "Cleanup removed active app settings unexpectedly\n";
+        return false;
+    }
+
+    std::ifstream input(settingsPath);
+    const auto persisted = nlohmann::json::parse(input, nullptr, false);
+    if (persisted.is_discarded())
+    {
+        std::cerr << "Failed to reload cleaned app settings JSON\n";
+        return false;
+    }
+
+    for (const auto* key : removedKeys)
+    {
+        if (persisted.contains(key))
+        {
+            std::cerr << "Legacy key should be removed from persisted app settings: " << key << "\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool TestUserInputCalibrationTrainingBypassesActiveProfileWithoutPersistingSelection()
 {
     const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "user-input-calibration-training";
@@ -1479,6 +1567,160 @@ bool TestSaveAsCreatesNewPresetId()
     }
 
     return true;
+}
+
+bool TestPresetArchiveSessionMode()
+{
+    try
+    {
+        const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "preset-archive-session";
+        std::error_code ec;
+        fs::remove_all(sandbox, ec);
+        fs::create_directories(sandbox, ec);
+        SetSettingsEnvRoot(sandbox);
+
+        const fs::path userPresetDir = sandbox / "Soundshed Guitar" / "data" / "v1" / "presets" / "user";
+        fs::create_directories(userPresetDir, ec);
+
+        const auto normalPreset = BuildPreset("saved-preset", "Saved Preset");
+        if (!guitarfx::PresetStorage::SaveToFile(normalPreset, userPresetDir / "saved-preset.json"))
+        {
+            std::cerr << "Failed to write normal preset fixture\n";
+            return false;
+        }
+
+        nlohmann::json settings = nlohmann::json::object();
+        settings["lastPresetId"] = "saved-preset";
+        const fs::path settingsPath = sandbox / "Soundshed Guitar" / "data" / "v1" / "settings" / "app.json";
+        fs::create_directories(settingsPath.parent_path(), ec);
+        {
+            std::ofstream output(settingsPath);
+            output << settings.dump(2);
+        }
+
+        auto archivePreset = BuildPreset("archive-preset", "Archive Preset");
+        archivePreset.category = "Archive";
+        nlohmann::json archive = nlohmann::json::object();
+        archive["formatVersion"] = 1;
+        archive["preset"] = nlohmann::json::parse(guitarfx::PresetStorage::SerializeToJson(archivePreset));
+        archive["resources"] = nlohmann::json::array();
+
+        const auto archiveText = archive.dump(2);
+        const auto archiveBytes = BuildStoredZip({
+            {"preset.json", std::vector<std::uint8_t>(archiveText.begin(), archiveText.end())}
+        });
+
+        TestHost host(sandbox, {}, true);
+        guitarfx::PluginController controller(host);
+        controller.Initialize();
+
+        if (!controller.GetActivePreset() || controller.GetActivePreset()->id != "saved-preset")
+        {
+            std::cerr << "Normal preset was not restored before archive session start\n";
+            return false;
+        }
+
+        nlohmann::json startMessage = nlohmann::json::object();
+        startMessage["type"] = "startPresetArchiveSession";
+        startMessage["fileName"] = "session-pack.soundshed.presets";
+        startMessage["data"] = guitarfx::util::EncodeBase64(archiveBytes);
+        controller.HandleUIMessage(startMessage.dump());
+
+        const auto& sessionPreset = controller.GetActivePreset();
+        if (!sessionPreset || sessionPreset->name != "Archive Preset")
+        {
+            std::cerr << "Archive session did not activate the archive preset\n";
+            return false;
+        }
+        if (sessionPreset->id == "archive-preset")
+        {
+            std::cerr << "Archive session preset id was not session-scoped\n";
+            return false;
+        }
+
+        nlohmann::json getList = nlohmann::json::object();
+        getList["type"] = "getPresetList";
+        controller.HandleUIMessage(getList.dump());
+        const auto sessionPresetListMsg = FindLatestMessageOfType(host.sentMessages, "presetList");
+        if (!sessionPresetListMsg)
+        {
+            std::cerr << "presetList missing during archive session\n";
+            return false;
+        }
+        const auto sessionPresets = sessionPresetListMsg->value("presets", nlohmann::json::array());
+        if (!sessionPresets.is_array() || sessionPresets.size() != 1
+            || sessionPresets[0].value("source", "") != "session"
+            || sessionPresets[0].value("name", "") != "Archive Preset")
+        {
+            std::cerr << "Archive session preset list was not isolated to the archive presets\n";
+            return false;
+        }
+
+        nlohmann::json saveMessage = nlohmann::json::object();
+        saveMessage["type"] = "savePreset";
+        saveMessage["presetId"] = sessionPreset->id;
+        saveMessage["name"] = "Archive Preset Edited";
+        saveMessage["category"] = sessionPreset->category;
+        saveMessage["description"] = sessionPreset->description;
+        saveMessage["preset"] = nlohmann::json::parse(guitarfx::PresetStorage::SerializeToJson(*sessionPreset));
+        controller.HandleUIMessage(saveMessage.dump());
+
+        const fs::path normalPresetPath = userPresetDir / "saved-preset.json";
+        const auto normalPresetAfterSave = guitarfx::PresetStorage::LoadFromFile(normalPresetPath);
+        if (!normalPresetAfterSave || normalPresetAfterSave->name != "Saved Preset")
+        {
+            std::cerr << "Archive session save mutated the normal preset library\n";
+            return false;
+        }
+
+        const auto savedSessionPreset = controller.GetActivePreset();
+        if (!savedSessionPreset || savedSessionPreset->name != "Archive Preset Edited")
+        {
+            std::cerr << "Archive session save did not update the session preset\n";
+            return false;
+        }
+
+        nlohmann::json endMessage = nlohmann::json::object();
+        endMessage["type"] = "endPresetArchiveSession";
+        controller.HandleUIMessage(endMessage.dump());
+
+        const auto& restoredPreset = controller.GetActivePreset();
+        if (!restoredPreset || restoredPreset->id != "saved-preset")
+        {
+            std::cerr << "Ending the archive session did not restore the normal preset\n";
+            return false;
+        }
+
+        controller.HandleUIMessage(getList.dump());
+        const auto restoredPresetListMsg = FindLatestMessageOfType(host.sentMessages, "presetList");
+        if (!restoredPresetListMsg)
+        {
+            std::cerr << "presetList missing after archive session end\n";
+            return false;
+        }
+        const auto restoredPresets = restoredPresetListMsg->value("presets", nlohmann::json::array());
+        bool restoredNormalPreset = false;
+        for (const auto& item : restoredPresets)
+        {
+            if (item.is_object() && item.value("id", "") == "saved-preset")
+            {
+                restoredNormalPreset = true;
+                break;
+            }
+        }
+        if (!restoredNormalPreset)
+        {
+            std::cerr << "Normal preset library did not return after archive session end\n";
+            return false;
+        }
+
+        return true;
+    }
+    catch (const std::exception& ex)
+    {
+        std::cerr << "Exception in TestPresetArchiveSessionMode: " << ex.what() << "\n";
+        return false;
+    }
 }
 
 bool TestFactoryPresetArchiveStartupImport()
@@ -1859,11 +2101,13 @@ int main()
     run("Load preset retires NAM input auto-leveling", TestLoadPresetRetiresNamInputAutoLeveling());
     run("Load preset preserves disabled NAM calibration toggle", TestLoadPresetPreservesDisabledNamCalibrationToggle());
     run("Load app settings applies user input calibration", TestLoadAppSettingsAppliesUserInputCalibrationProfile());
+    run("Load app settings prunes unused legacy keys", TestLoadAppSettingsPrunesUnusedLegacyKeys());
     run("User input calibration training bypasses active profile", TestUserInputCalibrationTrainingBypassesActiveProfileWithoutPersistingSelection());
     run("Save preset does not persist global FX settings", TestSavePresetDoesNotPersistGlobalFxSettings());
     run("Save/Get/Delete preset workflow", TestSaveGetDeletePresetWorkflow());
     run("Save As creates new preset id", TestSaveAsCreatesNewPresetId());
     run("Factory preset archive startup import", TestFactoryPresetArchiveStartupImport());
+    run("Preset archive session mode", TestPresetArchiveSessionMode());
     run("Standalone ignores embedded host snapshot", TestStandaloneDeserializeStateIgnoresEmbeddedPresetSnapshot());
     run("Standalone startup keeps selected input channel", TestStandaloneStartupInputModeOverridesRestoredPreset());
     run("Riff library path normalization", TestRiffLibraryPathNormalization());

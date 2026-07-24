@@ -1,5 +1,5 @@
 import { uiState, clonePreset, getActivePresetForRender, setActivePresetDraft, setActivePresetIsNew, setActivePresetSnapshot, setPresetDirty } from "./state.js";
-import { renderActivePreset, applyPresetFromLibrary, populatePresetDropdown, updatePresetDropdownSelection, cachePresetInMemory, updatePresetActionButtons, applyPresetFoldersFromBackend, applyPresetFavoritesFromBackend, applyPresetRecentsFromAppSettings, applyPresetRatingsFromBackend, applySetlistsFromBackend, applySetlistCursorFromBackend, handlePresetDataMessage, recordRecentPreset, refreshSavePresetModalPeakInfoIfOpen, rejectPendingPresetRequest } from "./presets.js";
+import { renderActivePreset, applyPresetFromLibrary, populatePresetDropdown, updatePresetDropdownSelection, cachePresetInMemory, updatePresetActionButtons, applyPresetFoldersFromBackend, applyPresetFavoritesFromBackend, applyPresetRecentsFromAppSettings, applyPresetRatingsFromBackend, applySetlistsFromBackend, applySetlistCursorFromBackend, handlePresetDataMessage, recordRecentPreset, refreshSavePresetModalPeakInfoIfOpen, rejectPendingPresetRequest, applyPresetArchiveSessionState, refreshPresetCacheEntryFromBackend } from "./presets.js";
 import { syncControlsFromState, handleInputModeChanged, handleAmpCabStateChanged, syncAutoLevelControlsFromState, applyStoredInputChannel } from "./controls.js";
 import { showNotification } from "./notifications.js";
 import { appendLog } from "./logging.js";
@@ -171,6 +171,7 @@ let telemetryUiLastFlushMs = 0;
 let telemetryUiPendingDsp = false;
 let telemetryUiPendingSignalDiagnostics = false;
 let sharedSyncRefreshTimer: number | null = null;
+let pendingSharedPresetHydration = false;
 
 function flushTelemetryUiUpdates(): void {
   if (telemetryUiPendingDsp) {
@@ -589,6 +590,7 @@ export function handleIncomingMessage(message: string): void {
         applyPerformancePadAppSettings(appSettings as import("./types.js").AppSettings);
         triggerUpdateCheck();
       }
+      applyPresetArchiveSessionState((payload as { presetArchiveSession?: import("./types.js").PresetArchiveSessionState | null }).presetArchiveSession ?? null);
       const globalSignalChain = (payload as { globalSignalChain?: GlobalSignalChainConfig }).globalSignalChain;
       if (globalSignalChain) {
         uiState.globalSignalChain = normalizeGlobalSignalChain(globalSignalChain) ?? uiState.globalSignalChain;
@@ -1169,22 +1171,62 @@ export function handleIncomingMessage(message: string): void {
       showNotification("Preset saved", (payload as { path?: string }).path ?? savedPreset?.name ?? "");
       break;
     }
+    case "presetArchiveSessionStarted": {
+      const sessionPayload = payload as { active?: boolean; archiveName?: string; archiveKey?: string; presetCount?: number };
+      applyPresetArchiveSessionState({
+        active: Boolean(sessionPayload.active),
+        archiveName: sessionPayload.archiveName,
+        archiveKey: sessionPayload.archiveKey,
+        presetCount: sessionPayload.presetCount,
+      });
+      renderActivePreset();
+      updatePresetActionButtons();
+      showNotification("Preset archive session started", sessionPayload.archiveName ?? "");
+      break;
+    }
+    case "presetArchiveSessionEnded": {
+      applyPresetArchiveSessionState({ active: false });
+      renderActivePreset();
+      updatePresetActionButtons();
+      showNotification("Preset archive session ended");
+      break;
+    }
+    case "presetArchiveSessionFailed": {
+      showNotification("Preset archive session failed", (payload as { message?: string }).message ?? "");
+      break;
+    }
     case "presetList": {
       const presetListPayload = payload as { presets?: Array<{ id: string; name: string; category?: string; source?: string }> };
       if (Array.isArray(presetListPayload.presets)) {
         appendLog(`preset list received ← ${presetListPayload.presets.length} presets`);
+        const cachedBeforeUpdate = new Set(uiState.presetCache.keys());
+        const nextPresets: Preset[] = [];
         for (const p of presetListPayload.presets) {
-          if (!uiState.presetCache.has(p.id)) {
-            const stub: Preset = { id: p.id, name: p.name, category: p.category ?? "Factory" } as Preset;
-            uiState.presetCache.set(p.id, stub);
-            if (!uiState.presets.some((existing) => existing.id === p.id)) {
-              uiState.presets.push(stub);
-            }
-          }
+          const incomingCategory = p.category ?? "Factory";
+          const existingCached = uiState.presetCache.get(p.id);
+          const nextPreset: Preset = existingCached
+            ? {
+                ...existingCached,
+                name: p.name,
+                category: incomingCategory,
+              }
+            : { id: p.id, name: p.name, category: incomingCategory } as Preset;
+          uiState.presetCache.set(p.id, nextPreset);
+          nextPresets.push(nextPreset);
         }
-        uiState.filteredPresets = uiState.presets.slice();
+        uiState.presets = nextPresets;
+        uiState.filteredPresets = nextPresets.slice();
         populatePresetDropdown();
         renderActivePreset();
+
+        if (pendingSharedPresetHydration) {
+          pendingSharedPresetHydration = false;
+          presetListPayload.presets.forEach((presetSummary) => {
+            if (cachedBeforeUpdate.has(presetSummary.id)) {
+              refreshPresetCacheEntryFromBackend(presetSummary.id);
+            }
+          });
+        }
       }
       break;
     }
@@ -1200,16 +1242,19 @@ export function handleIncomingMessage(message: string): void {
       break;
     }
     case "sharedSyncUpdated": {
+      pendingSharedPresetHydration = true;
       scheduleSharedSyncRefresh();
       break;
     }
     case "sharedSyncState": {
+      pendingSharedPresetHydration = true;
       const sharedPayload = payload as {
         appSettings?: Record<string, unknown>;
         uiSettings?: UiSettings;
         resourceLibrary?: Record<string, unknown[]>;
         blendLibrary?: unknown[];
         customEffectLibrary?: unknown[];
+        presetArchiveSession?: import("./types.js").PresetArchiveSessionState | null;
       };
 
       if (sharedPayload.appSettings) {
@@ -1222,6 +1267,7 @@ export function handleIncomingMessage(message: string): void {
         triggerUpdateCheck();
         applyStoredInputChannel();
       }
+      applyPresetArchiveSessionState(sharedPayload.presetArchiveSession ?? null);
 
       if (sharedPayload.uiSettings) {
         uiState.uiSettings = sharedPayload.uiSettings;

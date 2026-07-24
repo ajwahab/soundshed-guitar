@@ -23,6 +23,16 @@ bool MessageDispatcher::DispatchPresetsAndResources(PluginController& c,
         c.HandleDeletePresetRequest(msg);
         return true;
     }
+    if (type == "startPresetArchiveSession")
+    {
+        c.HandleStartPresetArchiveSessionRequest(msg);
+        return true;
+    }
+    if (type == "endPresetArchiveSession")
+    {
+        c.HandleEndPresetArchiveSessionRequest();
+        return true;
+    }
     if (type == "loadModel")
     {
         c.HandleLoadModelRequest(msg);

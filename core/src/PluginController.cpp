@@ -45,6 +45,7 @@
 #include <numeric>
 #include <sstream>
 #include <cctype>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <unordered_set>
@@ -87,6 +88,8 @@ namespace
     constexpr const char* kFactoryArchiveStateFileName = "factory-archive-state.json";
     constexpr int kFactoryArchiveStateSchemaVersion = 1;
     constexpr const char* kFactoryArchiveLoadingEnabledSettingKey = "factoryPresets.archiveLoadingEnabled";
+    constexpr const char* kPresetArchiveSessionRootFolder = "sessions/preset-archive";
+    constexpr const char* kPresetArchiveSessionResourceProvider = "preset-archive-session";
 
     constexpr double kMinLinear = 1e-6;
 
@@ -154,6 +157,8 @@ namespace
     constexpr const char* kLegacyInterfaceCalibrationReferenceDbuSettingKey = "audio.interfaceCalibration.referenceDbu";
     constexpr const char* kSessionLogFileName = "logs/session-log.txt";
     constexpr const char* kDebugSnapshotFileName = "logs/debug-state.json";
+    constexpr const char* kSharedSyncStateFileName = "settings/shared-sync-state.json";
+    constexpr auto kSharedSyncPollInterval = std::chrono::milliseconds(2000);
 
     bool IsSensitiveDebugKey(std::string_view key)
     {
@@ -201,6 +206,11 @@ namespace
     std::filesystem::path ResolveDebugSnapshotPath(const guitarfx::FileSystem& fileSystem)
     {
         return fileSystem.ResolveSettingsDirectory() / kDebugSnapshotFileName;
+    }
+
+    std::filesystem::path ResolveSharedSyncStatePath(const guitarfx::FileSystem& fileSystem)
+    {
+        return fileSystem.ResolveSettingsDirectory() / kSharedSyncStateFileName;
     }
 
     double ToDbFS(double linear)
@@ -520,6 +530,14 @@ namespace
         if (sanitizedRaw.empty())
             sanitizedRaw = "item";
         return archiveKey + "__" + sanitizedRaw;
+    }
+
+    std::string BuildScopedPresetArchiveSessionId(const std::string& archiveKey, const std::string& rawId)
+    {
+        auto sanitizedRaw = guitarfx::util::SanitizePathSegment(rawId, true);
+        if (sanitizedRaw.empty())
+            sanitizedRaw = "item";
+        return std::string{"preset-archive-session__"} + archiveKey + "__" + sanitizedRaw;
     }
 
     bool IsFactoryArchiveExtension(const std::filesystem::path& path)
@@ -1036,6 +1054,16 @@ namespace
         return "factory-archive-folder::" + archiveKey + "::" + sanitized;
     }
 
+    std::string BuildPresetArchiveSessionFolderId(const std::string& archiveKey, const std::string& folderPath)
+    {
+        const auto sanitizedPath = guitarfx::util::SanitizeSubfolderPath(folderPath);
+        std::string sanitized = sanitizedPath.generic_string<char>();
+        std::replace(sanitized.begin(), sanitized.end(), '/', '_');
+        if (sanitized.empty())
+            sanitized = "folder";
+        return "preset-archive-session-folder::" + archiveKey + "::" + sanitized;
+    }
+
     nlohmann::json BuildFactoryArchiveFolders(const std::string& archiveKey,
                                               const nlohmann::json& archivePresetFolders,
                                               const std::unordered_map<std::string, std::string>& presetIdMapping)
@@ -1127,6 +1155,54 @@ namespace
         payload["folders"] = std::move(filteredFolders);
 
         SaveJsonFile(fileSystem, ResolvePresetFoldersPath(fileSystem), payload);
+    }
+
+    nlohmann::json BuildPresetArchiveSessionFolders(const std::string& archiveKey,
+                                                    const nlohmann::json& archivePresetFolders,
+                                                    const std::unordered_map<std::string, std::string>& presetIdMapping)
+    {
+        std::function<nlohmann::json(const nlohmann::json&, const std::string&)> buildFolders;
+        buildFolders = [&](const nlohmann::json& sourceFolders, const std::string& parentPath) -> nlohmann::json
+        {
+            nlohmann::json result = nlohmann::json::array();
+            if (!sourceFolders.is_array())
+                return result;
+
+            for (const auto& sourceFolder : sourceFolders)
+            {
+                if (!sourceFolder.is_object())
+                    continue;
+
+                const std::string name = sourceFolder.value("name", "");
+                if (name.empty())
+                    continue;
+
+                const std::string folderPath = parentPath.empty() ? name : (parentPath + "/" + name);
+                nlohmann::json folder = MakePresetFolderEntry(
+                    BuildPresetArchiveSessionFolderId(archiveKey, folderPath),
+                    name);
+
+                if (sourceFolder.contains("presetIds") && sourceFolder["presetIds"].is_array())
+                {
+                    for (const auto& presetIdValue : sourceFolder["presetIds"])
+                    {
+                        if (!presetIdValue.is_string())
+                            continue;
+                        const auto mappedIt = presetIdMapping.find(presetIdValue.get<std::string>());
+                        if (mappedIt == presetIdMapping.end())
+                            continue;
+                        folder["presetIds"].push_back(mappedIt->second);
+                    }
+                }
+
+                folder["children"] = buildFolders(sourceFolder.value("children", nlohmann::json::array()), folderPath);
+                result.push_back(std::move(folder));
+            }
+
+            return result;
+        };
+
+        return buildFolders(archivePresetFolders, std::string{});
     }
 
     std::optional<std::vector<std::uint8_t>> ExtractZipEntry(const std::vector<std::uint8_t>& zipBytes,
@@ -2208,6 +2284,12 @@ PluginController::PluginController(IPluginHost& host)
 
 PluginController::~PluginController()
 {
+    if (mPresetArchiveSession)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(mPresetArchiveSession->rootPath, ec);
+    }
+
     // Supersede any in-flight folder scans so detached workers bail out
     // promptly, then wait until every outstanding worker has finished before
     // our members are destroyed (workers call SendMessageToUI through mHost and
@@ -2249,8 +2331,10 @@ void PluginController::Initialize()
     ApplyNamInterfaceCalibrationFromAppSettings();
     ApplyUserInputCalibrationSettingsFromAppSettings();
     ApplyUiSettingsFromAppSettings();
-    LoadResourceLibraries();
-    LoadBlendLibrary();
+    if (!IsPresetArchiveSessionActive())
+        LoadResourceLibraries();
+    if (!IsPresetArchiveSessionActive())
+        LoadBlendLibrary();
     LoadCustomEffectLibrary();
     LoadFactoryPresetArchives();
     LoadCompositeLibrary();
@@ -2355,6 +2439,8 @@ void PluginController::Initialize()
     const auto setlistsData = LoadUiStorageJson("setlists.json", nlohmann::json::object());
     mSetlistBankSize = setlistsData.value("bankSize", 8);
     mSetlistCursorIndex = setlistsData.value("cursorIndex", 0);
+
+    mNextSharedSyncPollAt = std::chrono::steady_clock::now();
 }
 
 void PluginController::Prepare(double sampleRate, int blockSize)
@@ -3393,6 +3479,269 @@ bool PluginController::IsFactoryPresetArchiveLoadingEnabled() const
     return it->get<bool>();
 }
 
+bool PluginController::IsPresetArchiveSessionActive() const
+{
+    return mPresetArchiveSession.has_value();
+}
+
+std::filesystem::path PluginController::GetEffectiveUserPresetDirectory() const
+{
+    if (mPresetArchiveSession)
+        return mPresetArchiveSession->presetDir;
+    return mUserPresetsPath;
+}
+
+std::filesystem::path PluginController::GetEffectiveSettingsDirectory() const
+{
+    if (mPresetArchiveSession)
+        return mPresetArchiveSession->rootPath;
+    return mFileSystem.ResolveSettingsDirectory();
+}
+
+std::filesystem::path PluginController::ResolveResourceLibraryIndexPath() const
+{
+    return GetEffectiveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+}
+
+void PluginController::RefreshPresetLibraryViews()
+{
+    HandleGetPresetListRequest();
+    HandleGetPresetFoldersRequest();
+    HandleGetPresetFavoritesRequest();
+    HandleGetPresetRatingsRequest();
+    HandleGetSetlistsRequest();
+}
+
+void PluginController::ClearActivePresetMixerState()
+{
+    const auto activePresetIds = mPresetMixer.GetActivePresetIds();
+    for (const auto& presetId : activePresetIds)
+        mPresetMixer.RemoveActivePreset(presetId);
+    mMixerPresetJsonCache.clear();
+}
+
+void PluginController::SendPresetArchiveSessionStateToUI(const char* messageType,
+                                                         const std::string& detail)
+{
+    nlohmann::json message;
+    message["type"] = messageType == nullptr ? "presetArchiveSessionState" : messageType;
+    message["active"] = IsPresetArchiveSessionActive();
+    if (mPresetArchiveSession)
+    {
+        message["archiveName"] = mPresetArchiveSession->archiveName;
+        message["archiveKey"] = mPresetArchiveSession->archiveKey;
+        message["presetCount"] = mPresetArchiveSession->presetCount;
+    }
+    if (!detail.empty())
+        message["detail"] = detail;
+    SendMessageToUI(message.dump());
+}
+
+void PluginController::StartPresetArchiveSession(const std::string& archiveFileName,
+                                                 const std::vector<std::uint8_t>& archiveBytes)
+{
+    std::string parseError;
+    auto parsedOpt = ParseFactoryPresetArchive(std::filesystem::path(archiveFileName), archiveBytes, parseError);
+    if (!parsedOpt)
+        throw std::runtime_error(parseError.empty() ? "Failed to parse preset archive" : parseError);
+
+    auto parsed = std::move(*parsedOpt);
+    if (parsed.presets.empty())
+        throw std::runtime_error("Archive contains no presets");
+    if (parsed.tone3000ResourceCount > 0)
+        throw std::runtime_error("Archive session mode does not support Tone3000-linked resources yet");
+
+    if (IsPresetArchiveSessionActive())
+        EndPresetArchiveSession(false);
+
+    const auto settingsDir = mFileSystem.ResolveSettingsDirectory();
+    const std::string archiveKeyBase = BuildFactoryArchiveKey(std::filesystem::path(archiveFileName));
+    const std::string sessionStamp = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    const std::string archiveKey = archiveKeyBase + "-" + sessionStamp;
+    const auto sessionRoot = settingsDir / kPresetArchiveSessionRootFolder / archiveKey;
+    const auto presetDir = sessionRoot / "presets" / "user";
+    const auto resourceContentDir = sessionRoot / "resources" / "content" / kPresetArchiveSessionResourceProvider / archiveKey;
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionRoot, ec);
+    [[maybe_unused]] const auto ensuredPresetDir = mFileSystem.EnsureDirectory(presetDir);
+    [[maybe_unused]] const auto ensuredResourceDir = mFileSystem.EnsureDirectory(resourceContentDir);
+
+    std::unordered_map<std::string, std::string> resourceIdMap;
+    for (const auto& resource : parsed.resources)
+    {
+        const std::string scopedResourceId = BuildScopedPresetArchiveSessionId(archiveKey, resource.id);
+        std::string resolvedName = resource.fileName.empty() ? resource.id : resource.fileName;
+        resolvedName = util::SanitizeFilename(resolvedName);
+        if (resolvedName.empty())
+            resolvedName = scopedResourceId + (resource.type == "ir" ? ".wav" : ".nam");
+
+        const auto targetPath = resourceContentDir / resolvedName;
+        if (!WriteFile(targetPath, resource.bytes))
+            throw std::runtime_error("Failed to extract archive resource: " + resolvedName);
+
+        resourceIdMap[resource.id] = scopedResourceId;
+
+        LibraryResource libraryResource;
+        libraryResource.type = resource.type;
+        libraryResource.id = scopedResourceId;
+        libraryResource.name = resource.name.empty() ? resource.id : resource.name;
+        libraryResource.category = resource.category;
+        libraryResource.description = "Session-only preset archive resource";
+        libraryResource.filePath = targetPath;
+        libraryResource.hash = resource.hash;
+        libraryResource.metadata["provider"] = kPresetArchiveSessionResourceProvider;
+        libraryResource.metadata["archiveName"] = archiveFileName;
+        libraryResource.metadata["archiveKey"] = archiveKey;
+        libraryResource.metadata["originalId"] = resource.id;
+        if (resource.type == "nam")
+            EnrichNamResourceMetadata(libraryResource, targetPath);
+        libraryResource.category = ResolveResourceLibraryCategory(libraryResource, libraryResource.category);
+        mResourceLibrary.AddResource(libraryResource);
+    }
+
+    std::unordered_map<std::string, std::string> blendIdMap;
+    if (!mBlendLibrary.is_array())
+        mBlendLibrary = nlohmann::json::array();
+    for (auto blend : parsed.blends)
+    {
+        const std::string originalBlendId = blend.value("id", "");
+        if (originalBlendId.empty())
+            continue;
+
+        const std::string scopedBlendId = BuildScopedPresetArchiveSessionId(archiveKey, originalBlendId);
+        blendIdMap[originalBlendId] = scopedBlendId;
+        blend["id"] = scopedBlendId;
+
+        if (blend.contains("models") && blend["models"].is_array())
+        {
+            for (auto& modelId : blend["models"])
+            {
+                if (!modelId.is_string())
+                    continue;
+                const auto mapped = resourceIdMap.find(modelId.get<std::string>());
+                if (mapped != resourceIdMap.end())
+                    modelId = mapped->second;
+            }
+        }
+
+        if (blend.contains("modelMappings") && blend["modelMappings"].is_array())
+        {
+            for (auto& mapping : blend["modelMappings"])
+            {
+                if (!mapping.is_object())
+                    continue;
+                const auto mapped = resourceIdMap.find(mapping.value("id", ""));
+                if (mapped != resourceIdMap.end())
+                    mapping["id"] = mapped->second;
+            }
+        }
+
+        bool replaced = false;
+        for (auto& existing : mBlendLibrary)
+        {
+            if (existing.is_object() && existing.value("id", "") == scopedBlendId)
+            {
+                existing = blend;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            mBlendLibrary.push_back(blend);
+    }
+
+    std::unordered_map<std::string, std::string> presetIdMap;
+    std::optional<Preset> firstPreset;
+    for (auto preset : parsed.presets)
+    {
+        RemapPresetArchiveReferences(preset, resourceIdMap, blendIdMap);
+        NormalizePresetScenes(preset);
+
+        const std::string sourcePresetId = preset.id.empty()
+            ? (preset.name.empty() ? "preset" : preset.name)
+            : preset.id;
+        const std::string scopedPresetId = BuildScopedPresetArchiveSessionId(archiveKey, sourcePresetId);
+        presetIdMap[sourcePresetId] = scopedPresetId;
+
+        preset.id = scopedPresetId;
+        if (preset.category.empty())
+            preset.category = "Imported";
+
+        const auto presetPath = presetDir / (preset.id + ".json");
+        if (!PresetStorage::SaveToFile(preset, presetPath))
+            throw std::runtime_error("Failed to write session preset: " + preset.name);
+
+        if (!firstPreset.has_value())
+            firstPreset = preset;
+    }
+
+    nlohmann::json presetFoldersPayload = nlohmann::json::object();
+    presetFoldersPayload["folders"] = BuildPresetArchiveSessionFolders(archiveKey, parsed.presetFolders, presetIdMap);
+    presetFoldersPayload["activeFolderId"] = "__all__";
+
+    mPresetArchiveSession = PresetArchiveSessionState{
+        archiveKey,
+        std::filesystem::path(archiveFileName).filename().string(),
+        sessionRoot,
+        presetDir,
+        presetIdMap.size(),
+    };
+
+    SaveUiStorageJson("preset-folders.json", presetFoldersPayload);
+
+    ClearActivePresetMixerState();
+    mActivePreset.reset();
+    mActivePresetId.clear();
+    mActivePresetJson.clear();
+    mActiveSceneId.clear();
+
+    if (firstPreset)
+    {
+        ApplyBlendDefinitions(*firstPreset);
+        if (!SetPresetActiveScene(*firstPreset, "", &mActiveSceneId))
+            mActiveSceneId = GetDefaultPresetSceneId(*firstPreset);
+        mActivePresetId = firstPreset->id;
+        ApplyPreset(*firstPreset);
+    }
+
+    InvalidateResourceUsageIndex();
+    mPendingStateBroadcast = true;
+    BroadcastState();
+    RefreshPresetLibraryViews();
+    SendPresetArchiveSessionStateToUI("presetArchiveSessionStarted");
+}
+
+void PluginController::EndPresetArchiveSession(bool notifyUi)
+{
+    if (!mPresetArchiveSession)
+        return;
+
+    const auto sessionRoot = mPresetArchiveSession->rootPath;
+    mPresetArchiveSession.reset();
+
+    std::error_code ec;
+    std::filesystem::remove_all(sessionRoot, ec);
+
+    LoadResourceLibraries();
+    LoadBlendLibrary();
+    LoadFactoryPresetArchives();
+    InvalidateResourceUsageIndex();
+
+    ClearActivePresetMixerState();
+    mActivePreset.reset();
+    mActivePresetId.clear();
+    mActivePresetJson.clear();
+    mActiveSceneId.clear();
+    LoadLastSessionState();
+    mPendingStateBroadcast = true;
+    BroadcastState();
+    RefreshPresetLibraryViews();
+    if (notifyUi)
+        SendPresetArchiveSessionStateToUI("presetArchiveSessionEnded");
+}
+
 // ════════════════════════════════════════════════════════════════════
 // State serialization
 // ════════════════════════════════════════════════════════════════════
@@ -3625,6 +3974,8 @@ void PluginController::HandleUIMessage(const std::string& jsonMessage)
 
 void PluginController::OnIdle()
 {
+    PollSharedSyncState();
+
     // MIDI learn capture polling
     if (mAutomationSlots.IsMidiLearnArmed())
     {
@@ -4378,9 +4729,11 @@ void PluginController::HandlePresetLoadRequest(const nlohmann::json& payload)
             SendMessageToUI(loaded.dump());
         }
 
-        // Persist last loaded preset
-        mAppSettings["lastPresetId"] = mActivePresetId;
-        SaveAppSettings();
+        if (!IsPresetArchiveSessionActive())
+        {
+            mAppSettings["lastPresetId"] = mActivePresetId;
+            SaveAppSettings();
+        }
     }
     catch (const std::exception& e)
     {
@@ -4443,11 +4796,9 @@ std::optional<Preset> PluginController::TryLoadStoredPresetById(const std::strin
     if (!IsFactoryPresetArchiveLoadingEnabled() && mTrackedFactoryArchivePresetIds.contains(resolvedPresetId))
         return std::nullopt;
 
-    if (mUserPresetsPath.empty())
-        mUserPresetsPath = mFileSystem.ResolvePresetDirectory() / "user";
-
-    const auto userPath = mUserPresetsPath / (resolvedPresetId + ".json");
-    if (std::filesystem::exists(userPath))
+    const auto presetDirectory = GetEffectiveUserPresetDirectory();
+    const auto userPath = presetDirectory / (resolvedPresetId + ".json");
+    if (!presetDirectory.empty() && std::filesystem::exists(userPath))
     {
         if (auto presetOpt = PresetStorage::LoadFromFile(userPath))
         {
@@ -4456,6 +4807,9 @@ std::optional<Preset> PluginController::TryLoadStoredPresetById(const std::strin
             return presetOpt;
         }
     }
+
+    if (IsPresetArchiveSessionActive())
+        return std::nullopt;
 
     const auto factoryPath = ResolveFactoryPresetDirectory(mHost, mResourceRoot) / (resolvedPresetId + ".json");
     if (std::filesystem::exists(factoryPath))
@@ -4998,9 +5352,8 @@ void PluginController::HandleSavePresetRequest(const nlohmann::json& payload)
         if (!SetPresetActiveScene(newPreset, requestedSceneId, &mActiveSceneId))
             mActiveSceneId = GetDefaultPresetSceneId(newPreset);
 
-        if (mUserPresetsPath.empty())
-            mUserPresetsPath = mFileSystem.ResolvePresetDirectory() / "user";
-        [[maybe_unused]] const auto ensuredUserPresetPath = mFileSystem.EnsureDirectory(mUserPresetsPath);
+        const auto presetDirectory = GetEffectiveUserPresetDirectory();
+        [[maybe_unused]] const auto ensuredUserPresetPath = mFileSystem.EnsureDirectory(presetDirectory);
 
         AppendSessionLog("Hosted plugin preset save begin presetId=" + newPreset.id
             + ", sourcePresetId=" + (sourcePresetId.empty() ? std::string{"<none>"} : sourcePresetId)
@@ -5011,7 +5364,7 @@ void PluginController::HandleSavePresetRequest(const nlohmann::json& payload)
         AppendSessionLog("Hosted plugin preset save captured presetId=" + newPreset.id
             + ", afterCapture=" + SummarizeHostedPluginState(newPreset));
 
-        const auto presetPath = mUserPresetsPath / (newPreset.id + ".json");
+        const auto presetPath = presetDirectory / (newPreset.id + ".json");
         if (!PresetStorage::SaveToFile(newPreset, presetPath))
         {
             ReportErrorToUI("Failed to save preset", "Could not write preset file");
@@ -5025,7 +5378,9 @@ void PluginController::HandleSavePresetRequest(const nlohmann::json& payload)
         mActivePresetId = newPreset.id;
         mActivePresetJson = PresetStorage::SerializeToJson(newPreset);
         mPendingStateBroadcast = true;
-        SaveAppSettings();
+        if (!IsPresetArchiveSessionActive())
+            SaveAppSettings();
+        TouchSharedSyncState({"presetLibrary"});
         InvalidateResourceUsageIndex();
 
         nlohmann::json reply;
@@ -5046,10 +5401,8 @@ void PluginController::HandleDeletePresetRequest(const nlohmann::json& payload)
     if (presetId.empty())
         return;
 
-    if (mUserPresetsPath.empty())
-        mUserPresetsPath = mFileSystem.ResolvePresetDirectory() / "user";
-
-    const auto presetPath = mUserPresetsPath / (presetId + ".json");
+    const auto presetDirectory = GetEffectiveUserPresetDirectory();
+    const auto presetPath = presetDirectory / (presetId + ".json");
     if (!std::filesystem::exists(presetPath))
     {
         ReportErrorToUI("Preset not found", presetId);
@@ -5065,7 +5418,50 @@ void PluginController::HandleDeletePresetRequest(const nlohmann::json& payload)
     else
     {
         InvalidateResourceUsageIndex();
+        TouchSharedSyncState({"presetLibrary"});
     }
+}
+
+void PluginController::HandleStartPresetArchiveSessionRequest(const nlohmann::json& payload)
+{
+    const std::string dataEncoded = payload.value("data", "");
+    const std::string archiveFileName = payload.value("fileName", "preset-archive.soundshed.presets");
+    if (dataEncoded.empty())
+    {
+        SendMessageToUI(nlohmann::json{
+            {"type", "presetArchiveSessionFailed"},
+            {"message", "Missing archive data"}
+        }.dump());
+        return;
+    }
+
+    const auto archiveBytes = util::DecodeBase64(dataEncoded);
+    if (archiveBytes.empty())
+    {
+        SendMessageToUI(nlohmann::json{
+            {"type", "presetArchiveSessionFailed"},
+            {"message", "Invalid archive payload"}
+        }.dump());
+        return;
+    }
+
+    try
+    {
+        StartPresetArchiveSession(archiveFileName, archiveBytes);
+    }
+    catch (const std::exception& e)
+    {
+        ReportErrorToUI("Preset archive session failed", e.what());
+        SendMessageToUI(nlohmann::json{
+            {"type", "presetArchiveSessionFailed"},
+            {"message", e.what()}
+        }.dump());
+    }
+}
+
+void PluginController::HandleEndPresetArchiveSessionRequest()
+{
+    EndPresetArchiveSession(true);
 }
 
 void PluginController::HandleGetPresetByIdRequest(const nlohmann::json& payload)
@@ -6164,7 +6560,7 @@ std::optional<LibraryResource> PluginController::SaveLocalLibraryResource(const 
             return std::nullopt;
         }
 
-        auto targetDir = mFileSystem.ResolveSettingsDirectory() / "resources" / "content" / kLocalResourceStorageFolder;
+        auto targetDir = GetEffectiveSettingsDirectory() / "resources" / "content" / kLocalResourceStorageFolder;
         if (!subfolder.empty())
         {
             std::filesystem::path sanitizedSubfolder;
@@ -6430,6 +6826,7 @@ void PluginController::HandleSaveLocalLibraryResourceRequest(const nlohmann::jso
     }
 
     BroadcastState();
+    TouchSharedSyncState({"resourceLibrary"});
     nlohmann::json msg;
     msg["type"] = "resourceImported";
     msg["resourceType"] = saved->type;
@@ -6475,6 +6872,7 @@ void PluginController::HandleRemoveLocalLibraryResourceRequest(const nlohmann::j
 
     RemoveUserLibraryResource(resourceType, resourceId);
     BroadcastState();
+    TouchSharedSyncState({"resourceLibrary"});
 
     SendMessageToUI(nlohmann::json{
         {"type", "resourceRemoved"},
@@ -6522,7 +6920,7 @@ void PluginController::HandleDeleteLibraryResourceRequest(const nlohmann::json& 
         return;
     }
 
-    const auto settingsResourcesDir = mFileSystem.ResolveSettingsDirectory() / "resources" / "content";
+    const auto settingsResourcesDir = GetEffectiveSettingsDirectory() / "resources" / "content";
     const auto isUnderDirectory = [](const std::filesystem::path& candidate, const std::filesystem::path& base) {
         std::error_code ec;
         auto nc = std::filesystem::weakly_canonical(candidate, ec); if (ec) return false;
@@ -6551,6 +6949,7 @@ void PluginController::HandleDeleteLibraryResourceRequest(const nlohmann::json& 
 
     RemoveUserLibraryResource(resourceType, resourceId);
     BroadcastState();
+    TouchSharedSyncState({"resourceLibrary"});
 
     SendMessageToUI(nlohmann::json{
         {"type", "resourceRemoved"},
@@ -6720,7 +7119,7 @@ void PluginController::HandleUpdateLibraryResourceRequest(const nlohmann::json& 
     LibraryResource updated = *existing;
     const std::string fileNameValue = payload.value("fileName", "");
     const std::string inlineData = payload.value("data", "");
-    const auto settingsResourcesDir = mFileSystem.ResolveSettingsDirectory() / "resources" / "content";
+    const auto settingsResourcesDir = GetEffectiveSettingsDirectory() / "resources" / "content";
     const auto isUnderDirectory = [](const std::filesystem::path& candidate, const std::filesystem::path& base) {
         std::error_code ec;
         auto nc = std::filesystem::weakly_canonical(candidate, ec); if (ec) return false;
@@ -6840,6 +7239,7 @@ void PluginController::HandleUpdateLibraryResourceRequest(const nlohmann::json& 
     mResourceLibrary.UpdateResource(resourceType, resourceId, updated);
     AppendUserLibraryResource(updated);
     BroadcastState();
+    TouchSharedSyncState({"resourceLibrary"});
     SendMessageToUI(nlohmann::json{{"type", "resourceImported"}, {"resourceType", updated.type}, {"id", updated.id}, {"name", updated.name}, {"filePath", updated.filePath.string()}}.dump());
 }
 
@@ -8839,6 +9239,7 @@ void PluginController::HandleCleanupResourceLibraryRequest(const nlohmann::json&
         [[maybe_unused]] const auto ensuredLibraryDir = mFileSystem.EnsureDirectory(libraryDir);
         std::ofstream output(libraryFile);
         if (output) output << updated.dump(2);
+        TouchSharedSyncState({"resourceLibrary"});
     }
 
     BroadcastState();
@@ -8884,6 +9285,7 @@ void PluginController::HandleDeleteCompositeDefinitionRequest(const nlohmann::js
 
     const auto userDir = mFileSystem.ResolveSettingsDirectory() / "composites" / "user";
     mCompositeLibrary.DeleteDefinition(id, userDir);
+    TouchSharedSyncState({"composites"});
 
     nlohmann::json response;
     response["type"] = "compositeDefinitionRemoved";
@@ -8924,6 +9326,7 @@ void PluginController::HandleExitCompositeEditModeRequest(const nlohmann::json& 
         if (mCompositeLibrary.SaveDefinition(*mEditingComposite, userDir))
         {
             mCompositeLibrary.AddDefinition(*mEditingComposite);
+            TouchSharedSyncState({"composites"});
 
             nlohmann::json response;
             response["type"] = "compositeDefinitionAdded";
@@ -10040,7 +10443,7 @@ void PluginController::HandleGetPresetFoldersRequest()
     nlohmann::json folders = payload.value("folders", nlohmann::json::array());
     std::string activeFolderId = payload.value("activeFolderId", "__all__");
 
-    if (!IsFactoryPresetArchiveLoadingEnabled() && folders.is_array())
+    if (!IsPresetArchiveSessionActive() && !IsFactoryPresetArchiveLoadingEnabled() && folders.is_array())
     {
         nlohmann::json filtered = nlohmann::json::array();
         for (const auto& folder : folders)
@@ -10761,6 +11164,16 @@ void PluginController::BroadcastState()
     // App settings — UI reads "appSettings"
     state["appSettings"] = mAppSettings;
 
+    state["presetArchiveSession"] = {
+        {"active", IsPresetArchiveSessionActive()}
+    };
+    if (mPresetArchiveSession)
+    {
+        state["presetArchiveSession"]["archiveName"] = mPresetArchiveSession->archiveName;
+        state["presetArchiveSession"]["archiveKey"] = mPresetArchiveSession->archiveKey;
+        state["presetArchiveSession"]["presetCount"] = mPresetArchiveSession->presetCount;
+    }
+
     // UI settings — UI reads "uiSettings"
     state["uiSettings"] = mUiSettings;
 
@@ -11016,7 +11429,7 @@ void PluginController::DiscardFailedHostedPluginResourceSelection(const std::str
             mResourceLibrary.RemoveResource("plugin", ref.resourceId);
             if (isLocalResource)
             {
-                const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+                const auto libraryFile = ResolveResourceLibraryIndexPath();
                 [[maybe_unused]] const auto ensuredLibraryDir = mFileSystem.EnsureDirectory(libraryFile.parent_path());
                 mResourceLibrary.SaveToFile(libraryFile);
             }
@@ -11420,7 +11833,7 @@ void PluginController::PersistHostedPluginResourceMetadata(const GraphNode& node
     }
 
     mResourceLibrary.UpdateResource("plugin", updated.id, updated);
-    const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+    const auto libraryFile = ResolveResourceLibraryIndexPath();
     [[maybe_unused]] const auto ensuredLibraryDir = mFileSystem.EnsureDirectory(libraryFile.parent_path());
     mResourceLibrary.SaveToFile(libraryFile);
 }
@@ -11917,7 +12330,7 @@ void PluginController::AppendUserLibraryResource(const LibraryResource& resource
 {
     mResourceLibrary.AddResource(resource);
 
-    const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+    const auto libraryFile = ResolveResourceLibraryIndexPath();
     [[maybe_unused]] const auto ensuredLibraryDir = mFileSystem.EnsureDirectory(libraryFile.parent_path());
     mResourceLibrary.SaveToFile(libraryFile);
 }
@@ -11926,7 +12339,7 @@ void PluginController::RemoveUserLibraryResource(const std::string& type, const 
 {
     mResourceLibrary.RemoveResource(type, id);
 
-    const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+    const auto libraryFile = ResolveResourceLibraryIndexPath();
     [[maybe_unused]] const auto ensuredLibraryDir = mFileSystem.EnsureDirectory(libraryFile.parent_path());
     mResourceLibrary.SaveToFile(libraryFile);
 }
@@ -12115,6 +12528,45 @@ void PluginController::SaveAppSettings() const
         TouchSharedSyncState({"appSettings"});
 }
 
+bool PluginController::CleanupLegacyAppSettingsOnLoad()
+{
+    if (!mAppSettings.is_object())
+        return false;
+
+    bool settingsChanged = false;
+    const auto eraseKeyIfPresent = [&](const char* key)
+    {
+        if (mAppSettings.erase(key) > 0)
+            settingsChanged = true;
+    };
+
+    // Legacy/dead keys no longer read by startup/runtime paths.
+    eraseKeyIfPresent("appSettings");
+    eraseKeyIfPresent("audioSettings");
+    eraseKeyIfPresent("lastPresetJson");
+    eraseKeyIfPresent("parameters");
+    eraseKeyIfPresent("metronomeEnabled");
+    eraseKeyIfPresent("performancePads.open");
+    eraseKeyIfPresent("toneSharing.apiBase");
+    eraseKeyIfPresent("ui.experimentalFeaturesEnabled");
+    eraseKeyIfPresent("audio.processing.namMonoOnly");
+    eraseKeyIfPresent("app.lastUpdateCheck");
+
+    // Legacy global chain app setting was superseded by globalFx.settings.
+    if (mAppSettings.contains(kGlobalFxSettingsKey))
+        eraseKeyIfPresent("globalSignalChain");
+
+    // Prune legacy metronome aliases after canonical keys are present.
+    if (mAppSettings.contains(kMetronomeBpmSettingKey))
+        eraseKeyIfPresent(kMetronomeLegacyBpmKey);
+    if (mAppSettings.contains(kMetronomeVolumeDbSettingKey))
+        eraseKeyIfPresent(kMetronomeLegacyVolumeDbKey);
+    if (mAppSettings.contains(kMetronomePanSettingKey))
+        eraseKeyIfPresent(kMetronomeLegacyPanKey);
+    if (mAppSettings.contains(kMetronomeClickTypeSettingKey))
+        eraseKeyIfPresent(kMetronomeLegacyClickTypeKey);
+
+    return settingsChanged;
 }
 
 void PluginController::LoadAppSettings()
@@ -12154,6 +12606,9 @@ void PluginController::LoadAppSettings()
             std::cout << "[Plugin] Loaded app settings from " << settingsPath.string() << std::endl;
         }
         applyBundledDefaults();
+
+        if (CleanupLegacyAppSettingsOnLoad())
+            SaveAppSettings();
     }
     catch (const std::exception& e)
     {
@@ -12176,6 +12631,14 @@ void PluginController::LoadLastSessionState()
     if (mAppSettings.contains("lastPresetId") && mAppSettings["lastPresetId"].is_string())
     {
         lastPresetId = mAppSettings["lastPresetId"].get<std::string>();
+    }
+
+    if (!lastPresetId.empty())
+    {
+        if (lastPresetId.rfind("preset-archive-session__", 0) == 0)
+        {
+            lastPresetId.clear();
+        }
     }
 
     if (!lastPresetId.empty())
@@ -12255,11 +12718,14 @@ std::optional<Preset> PluginController::LoadPresetById(const std::string& preset
         return std::nullopt;
 
     std::optional<Preset> presetOpt;
-    if (!mUserPresetsPath.empty())
+    const auto presetDirectory = GetEffectiveUserPresetDirectory();
+    if (!presetDirectory.empty())
     {
-        const auto userPath = mUserPresetsPath / (resolvedPresetId + ".json");
+        const auto userPath = presetDirectory / (resolvedPresetId + ".json");
         presetOpt = PresetStorage::LoadFromFile(userPath);
     }
+    if (IsPresetArchiveSessionActive())
+        return presetOpt;
     if (!presetOpt)
     {
         const auto factoryPath = ResolveFactoryPresetDirectory(mHost, mResourceRoot) / (resolvedPresetId + ".json");
@@ -12287,9 +12753,10 @@ std::optional<std::string> PluginController::FindPresetIdByTitle(const std::stri
         return NormalizePresetTitle(preset.name) == normalizedTitle;
     };
 
-    if (!mUserPresetsPath.empty() && std::filesystem::exists(mUserPresetsPath))
+    const auto presetDirectory = GetEffectiveUserPresetDirectory();
+    if (!presetDirectory.empty() && std::filesystem::exists(presetDirectory))
     {
-        for (const auto& entry : std::filesystem::directory_iterator(mUserPresetsPath))
+        for (const auto& entry : std::filesystem::directory_iterator(presetDirectory))
         {
             if (entry.path().extension() != ".json")
                 continue;
@@ -12300,6 +12767,9 @@ std::optional<std::string> PluginController::FindPresetIdByTitle(const std::stri
                 return presetOpt->id;
         }
     }
+
+    if (IsPresetArchiveSessionActive())
+        return std::nullopt;
 
     const auto factoryPath = ResolveFactoryPresetDirectory(mHost, mResourceRoot);
     if (std::filesystem::exists(factoryPath))
@@ -12356,7 +12826,7 @@ bool PluginController::TryLoadConfiguredDefaultPreset()
 
 void PluginController::LoadResourceLibraries()
 {
-    const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+    const auto libraryFile = ResolveResourceLibraryIndexPath();
     mResourceLibrary.Clear();
     if (!std::filesystem::exists(libraryFile))
     {
@@ -12371,7 +12841,7 @@ void PluginController::LoadResourceLibraries()
 
 void PluginController::CleanupResourceLibraryCategoriesOnStartup()
 {
-    const auto libraryFile = mFileSystem.ResolveSettingsDirectory() / "resources" / "indexes" / "resources-index.json";
+    const auto libraryFile = ResolveResourceLibraryIndexPath();
     auto allResources = mResourceLibrary.GetAllResources();
     std::size_t updatedCount = 0;
 
@@ -12713,6 +13183,7 @@ void PluginController::LoadCustomEffectLibrary()
 void PluginController::SaveBlendLibrary() const
 {
     const auto blendPath = mFileSystem.ResolveSettingsDirectory() / "blends" / "library.json";
+    bool wrote = false;
     try
     {
         [[maybe_unused]] const auto ensuredBlendParent = mFileSystem.EnsureDirectory(blendPath.parent_path());
@@ -12731,6 +13202,7 @@ void PluginController::SaveBlendLibrary() const
                 }
             }
             ofs << persisted.dump(2);
+            wrote = true;
         }
     }
     catch (const std::exception&) {}
@@ -12742,6 +13214,7 @@ void PluginController::SaveBlendLibrary() const
 void PluginController::SaveCustomEffectLibrary() const
 {
     mCustomEffectLibrary.SaveToFile(ResolveCustomEffectLibraryPath(mFileSystem));
+    TouchSharedSyncState({"customEffects"});
 }
 
 void PluginController::LoadCompositeLibrary()
@@ -13165,7 +13638,7 @@ void PluginController::SaveLayoutToFile(const std::string& layoutId, const nlohm
 
 std::filesystem::path PluginController::ResolveUiStoragePath(const std::string& filename) const
 {
-    const auto settingsDir = mFileSystem.ResolveSettingsDirectory();
+    const auto settingsDir = GetEffectiveSettingsDirectory();
 
     if (filename == "preset-folders.json" || filename == "preset-ratings.json")
     {
@@ -13604,9 +14077,10 @@ void PluginController::SendPresetListToUI()
     msg["type"] = "presetList";
     nlohmann::json presets = nlohmann::json::array();
     const bool factoryArchiveLoadingEnabled = IsFactoryPresetArchiveLoadingEnabled();
+    const bool archiveSessionActive = IsPresetArchiveSessionActive();
 
     auto factoryPath = ResolveFactoryPresetDirectory(mHost, mResourceRoot);
-    auto userPath = mUserPresetsPath;
+    auto userPath = GetEffectiveUserPresetDirectory();
 
     auto scanDir = [&](const std::filesystem::path& dir, const std::string& source)
     {
@@ -13634,7 +14108,8 @@ void PluginController::SendPresetListToUI()
         }
     };
 
-    scanDir(factoryPath, "factory");
+    if (!archiveSessionActive)
+        scanDir(factoryPath, "factory");
     scanDir(userPath, "user");
 
     std::unordered_set<std::string> seenPresetIds;
@@ -13645,7 +14120,7 @@ void PluginController::SendPresetListToUI()
     }
     for (const auto& [presetId, preset] : mFactoryArchivePresets)
     {
-        if (!factoryArchiveLoadingEnabled)
+        if (archiveSessionActive || !factoryArchiveLoadingEnabled)
             continue;
         if (seenPresetIds.contains(presetId))
             continue;
@@ -13655,6 +14130,12 @@ void PluginController::SendPresetListToUI()
         p["category"] = preset.category;
         p["source"] = "factory";
         presets.push_back(p);
+    }
+
+    if (archiveSessionActive)
+    {
+        for (auto& preset : presets)
+            preset["source"] = "session";
     }
 
     msg["presets"] = presets;

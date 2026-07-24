@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -210,6 +211,8 @@ private:
     void HandleLoadIRRequest(const nlohmann::json& payload);
     void HandleSavePresetRequest(const nlohmann::json& payload);
     void HandleDeletePresetRequest(const nlohmann::json& payload);
+    void HandleStartPresetArchiveSessionRequest(const nlohmann::json& payload);
+    void HandleEndPresetArchiveSessionRequest();
     void HandleGetPresetByIdRequest(const nlohmann::json& payload);
     void HandleBrowseModelRequest();
     void HandleBrowseIRRequest();
@@ -314,6 +317,7 @@ private:
     void HandleCancelMidiLearnRequest();
     void HandleGetThemeRequest();
     void HandleSetThemeRequest(const nlohmann::json& payload);
+    void HandleGetSharedSyncStateRequest();
 
     [[nodiscard]] std::optional<LibraryResource> SaveLocalLibraryResource(const nlohmann::json& payload,
                                                                           std::string& error,
@@ -365,6 +369,17 @@ private:
     void ApplyUserInputCalibrationSettingsFromAppSettings();
     void ApplyUiSettingsFromAppSettings();
     [[nodiscard]] bool IsFactoryPresetArchiveLoadingEnabled() const;
+    [[nodiscard]] bool IsPresetArchiveSessionActive() const;
+    [[nodiscard]] std::filesystem::path GetEffectiveUserPresetDirectory() const;
+    [[nodiscard]] std::filesystem::path GetEffectiveSettingsDirectory() const;
+    [[nodiscard]] std::filesystem::path ResolveResourceLibraryIndexPath() const;
+    void RefreshPresetLibraryViews();
+    void ClearActivePresetMixerState();
+    void StartPresetArchiveSession(const std::string& archiveFileName,
+                                   const std::vector<std::uint8_t>& archiveBytes);
+    void EndPresetArchiveSession(bool notifyUi = true);
+    void SendPresetArchiveSessionStateToUI(const char* messageType = nullptr,
+                                           const std::string& detail = {});
     void SendMessageToUI(const std::string& jsonMessage);
     void ReportErrorToUI(const std::string& message, const std::string& detail = {});
     void SendGlobalChainStateToUI();
@@ -415,6 +430,7 @@ private:
 
     // Settings persistence
     void SaveAppSettings() const;
+    bool CleanupLegacyAppSettingsOnLoad();
     void LoadAppSettings();
     void LoadLastSessionState();
     [[nodiscard]] std::optional<Preset> LoadPresetById(const std::string& presetId) const;
@@ -436,6 +452,9 @@ private:
     [[nodiscard]] std::filesystem::path ResolveUiStoragePath(const std::string& filename) const;
     [[nodiscard]] nlohmann::json LoadUiStorageJson(const std::string& filename, const nlohmann::json& fallback) const;
     void SaveUiStorageJson(const std::string& filename, const nlohmann::json& payload) const;
+    void TouchSharedSyncState(const std::vector<std::string>& domains) const;
+    void ReloadSharedSyncSourcesFromDisk();
+    void PollSharedSyncState();
     [[nodiscard]] std::filesystem::path ResolveRiffLibraryPath() const;
     [[nodiscard]] std::filesystem::path ResolveRiffLibraryIndexPath() const;
     [[nodiscard]] nlohmann::json LoadRiffLibraryIndex() const;
@@ -478,6 +497,16 @@ private:
     std::filesystem::path mResourceRoot;
     std::filesystem::path mUserPresetsPath;
     std::map<std::string, Preset> mFactoryArchivePresets;
+
+    struct PresetArchiveSessionState
+    {
+        std::string archiveKey;
+        std::string archiveName;
+        std::filesystem::path rootPath;
+        std::filesystem::path presetDir;
+        std::size_t presetCount = 0;
+    };
+    std::optional<PresetArchiveSessionState> mPresetArchiveSession;
 
     // Cached index of which disk/archive presets reference each library resource.
     // Maps "resourceType:resourceId" -> first preset display name (user > factory > archive).
@@ -710,6 +739,9 @@ private:
 
     // UI state
     bool mUIReady = false;
+    mutable std::uint64_t mSharedSyncVersionSeen = 0;
+    mutable bool mSharedSyncVersionSeenInitialized = false;
+    std::chrono::steady_clock::time_point mNextSharedSyncPollAt{};
 
     // Layout library cache
     nlohmann::json mLayoutLibrary = nlohmann::json::object();

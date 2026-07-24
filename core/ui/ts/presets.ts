@@ -5,7 +5,7 @@ import { clonePreset, uiState, DEFAULT_GLOBAL_SIGNAL_CHAIN, getActivePresetForRe
 import { buildAttachments, buildAttachmentsFromPreset, getDefaultPresets, initializeDataLibraries, REMOTE_BASE_URL } from "./dataLibraries.js";
 import { arrayBufferToBase64, isRemoteUrl, resolveAttachmentUrl, sha256HexFromBase64, findResourceById } from "./utils.js";
 import { buildArchiveFileNameWithHash, generateResourceId, requestResourceData, sanitizeFilename } from "./archiveUtils.js";
-import type { Preset, Attachment, BlendDefinition, ResourceRef, LibraryResource, PresetFolder, Setlist, GraphNode, SignalGraph, ToneSharingOriginMetadata } from "./types.js";
+import type { Preset, Attachment, BlendDefinition, ResourceRef, LibraryResource, PresetFolder, Setlist, GraphNode, SignalGraph, ToneSharingOriginMetadata, PresetArchiveSessionState } from "./types.js";
 import { createEmptyPresetV2, generateUserPresetId, migratePresetNodeTypes } from "./presetV2.js";
 import { bindDemoAudioControls } from "./demoAudio.js";
 import { postMessage, setAppSetting } from "./bridge.js";
@@ -58,6 +58,8 @@ const setlistEditorHeader = document.getElementById("setlist-editor-header");
 const setlistCollapsible = document.getElementById("setlist-collapsible");
 const setlistToggle = document.getElementById("setlist-toggle");
 const setlistPanel = document.getElementById("setlist-panel");
+const presetExportSessionButton = document.getElementById("preset-export-session-btn") as HTMLButtonElement | null;
+const presetExitSessionButton = document.getElementById("preset-exit-session-btn") as HTMLButtonElement | null;
 
 function syncPresetHeaderPopoverLayer(): void {
   const hasOpenPopover = Boolean(
@@ -84,6 +86,23 @@ const pendingPresetRequests = new Map<string, {
   reject: (error: Error) => void;
   timeoutId: number;
 }>();
+
+function getPresetArchiveSessionState(): PresetArchiveSessionState | null {
+  return uiState.presetArchiveSession?.active ? uiState.presetArchiveSession : null;
+}
+
+export function applyPresetArchiveSessionState(state: PresetArchiveSessionState | null): void {
+  if (state?.active) {
+    uiState.presetArchiveSession = {
+      active: true,
+      archiveName: state.archiveName ?? uiState.presetArchiveSession?.archiveName,
+      archiveKey: state.archiveKey ?? uiState.presetArchiveSession?.archiveKey,
+      presetCount: typeof state.presetCount === "number" ? state.presetCount : uiState.presetArchiveSession?.presetCount,
+    };
+  } else {
+    uiState.presetArchiveSession = null;
+  }
+}
 
 function normalizeFolderName(name: string): string {
   return name.trim().toLowerCase();
@@ -1871,6 +1890,17 @@ function requestPresetFromBackend(presetId: string): Promise<Preset> {
   });
 }
 
+export function refreshPresetCacheEntryFromBackend(presetId: string): void {
+  const id = presetId.trim();
+  if (!id) {
+    return;
+  }
+
+  void requestPresetFromBackend(id).catch((error) => {
+    console.warn("Preset sync refresh failed", id, error);
+  });
+}
+
 export function handlePresetDataMessage(preset: Preset, requestId?: string): void {
   if (!preset?.id) return;
   const requestPending = requestId ? pendingPresetRequests.get(requestId) : null;
@@ -2866,6 +2896,10 @@ type ImportPackSummary = {
   packId?: string;
 };
 
+type ImportPackWithConfirmationOptions = {
+  skipConfirmation?: boolean;
+};
+
 function buildImportSummaryMessage(summary: ImportPackSummary): string {
   const proxyModeEnabled = isTone3000ProxyModeEnabled();
   const lines = [
@@ -2980,11 +3014,21 @@ function toInstalledPackSource(source: ImportPackSource, format: ImportPackSumma
 }
 
 export async function importPackWithConfirmation(file: File, context: ImportPackContext = { source: "zipImport" }): Promise<void> {
+  await importPackWithConfirmationOptions(file, context, {});
+}
+
+async function importPackWithConfirmationOptions(
+  file: File,
+  context: ImportPackContext,
+  options: ImportPackWithConfirmationOptions,
+): Promise<void> {
   try {
     const summary = await inspectImportPack(file, context);
-    const confirmed = await showConfirm(buildImportSummaryMessage(summary), "Import Pack");
-    if (!confirmed) {
-      return;
+    if (!options.skipConfirmation) {
+      const confirmed = await showConfirm(buildImportSummaryMessage(summary), "Import Pack");
+      if (!confirmed) {
+        return;
+      }
     }
 
     const installedSource = toInstalledPackSource(context.source, summary.format);
@@ -3007,6 +3051,100 @@ export async function importPackWithConfirmation(file: File, context: ImportPack
   } catch (error) {
     showNotification("Import failed", error instanceof Error ? error.message : String(error));
   }
+}
+
+function findDroppedPresetPackCandidate(files: File[]): File | null {
+  return files.find((file) => {
+    const lowerName = file.name.trim().toLowerCase();
+    return lowerName.endsWith(".soundshed.preset")
+      || lowerName.endsWith(".soundshed.presets")
+      || lowerName.endsWith(".zip")
+      || file.type === "application/zip";
+  }) ?? null;
+}
+
+async function isPresetArchiveDropCandidate(file: File): Promise<boolean> {
+  const lowerName = file.name.trim().toLowerCase();
+  if (lowerName.endsWith(".soundshed.preset") || lowerName.endsWith(".soundshed.presets")) {
+    return true;
+  }
+  if (!lowerName.endsWith(".zip")) {
+    return false;
+  }
+
+  const zipLib = window.JSZip;
+  if (!zipLib) {
+    return false;
+  }
+
+  try {
+    const zip = await zipLib.loadAsync(await file.arrayBuffer());
+    if (zip.file("pack-manifest.json")) {
+      return false;
+    }
+    return Boolean(zip.file("preset.json") || zip.file("presets.json"));
+  } catch {
+    return false;
+  }
+}
+
+export async function startPresetArchiveSessionFromFile(file: File): Promise<boolean> {
+  if (!(await isPresetArchiveDropCandidate(file))) {
+    return false;
+  }
+
+  showNotification("Loading preset archive session", file.name);
+  const data = arrayBufferToBase64(await file.arrayBuffer());
+  postMessage({
+    type: "startPresetArchiveSession",
+    fileName: file.name,
+    data,
+  });
+  return true;
+}
+
+export async function handleDroppedPresetPack(files: File[]): Promise<boolean> {
+  const file = findDroppedPresetPackCandidate(files);
+  if (!file) {
+    return false;
+  }
+
+  let summary: ImportPackSummary;
+  try {
+    summary = await inspectImportPack(file, { source: "zipImport" });
+  } catch {
+    return false;
+  }
+
+  const canUseArchiveSession = summary.format === "presetArchive" && await isPresetArchiveDropCandidate(file);
+  if (!canUseArchiveSession) {
+    const confirmed = await showConfirm(
+      `Import pack "${summary.title}" into your local library?\n\nTemporary session-only editing is available for preset archive packs.`,
+      "Preset Pack Drop",
+    );
+    if (confirmed) {
+      await importPackWithConfirmationOptions(file, { source: "zipImport" }, { skipConfirmation: true });
+    }
+    return true;
+  }
+
+  const shouldImport = await showConfirm(
+    `Import pack "${summary.title}" into your local library?\n\nSelect Cancel to choose temporary session mode instead.`,
+    "Preset Pack Drop",
+  );
+  if (shouldImport) {
+    await importPackWithConfirmationOptions(file, { source: "zipImport" }, { skipConfirmation: true });
+    return true;
+  }
+
+  const useTemporarySession = await showConfirm(
+    `Switch to temporary session mode with only presets from "${summary.title}"?\n\nYour normal library stays unchanged and returns after restart.`,
+    "Use Temporary Session",
+  );
+  if (useTemporarySession) {
+    await startPresetArchiveSessionFromFile(file);
+  }
+  return true;
 }
 
 function getLibraryResource(resourceType: string, resourceId: string): LibraryResource | undefined {
@@ -3339,6 +3477,19 @@ async function exportActivePresetFolderArchive(): Promise<void> {
 async function exportAllPresetsArchive(): Promise<void> {
   const presets = uiState.presets.slice();
   await exportPresetCollectionArchive(presets, "All-Presets", PRESET_FOLDER_ALL_ID);
+}
+
+async function exportPresetArchiveSession(): Promise<void> {
+  const session = getPresetArchiveSessionState();
+  if (!session) {
+    showNotification("No archive session", "Drop a preset archive to start a session.");
+    return;
+  }
+  await exportPresetCollectionArchive(
+    uiState.presets.slice(),
+    session.archiveName?.replace(/\.[^./\\]+$/g, "") || "Preset-Archive-Session",
+    PRESET_FOLDER_ALL_ID,
+  );
 }
 
 async function exportSelectedPresetCollectionArchive(): Promise<void> {
@@ -4349,6 +4500,9 @@ export function isUserPreset(presetId: string | null): boolean {
 
 // Check if preset can be modified (user preset OR factory preset editing enabled)
 function canModifyPreset(presetId: string | null): boolean {
+  if (getPresetArchiveSessionState()) {
+    return Boolean(presetId);
+  }
   if (isUserPreset(presetId)) {
     return true;
   }
@@ -4533,6 +4687,7 @@ export function updatePresetActionButtons(): void {
   const toneSharingOrigin = getToneSharingOriginMetadata(activePreset);
   const hasActivePreset = Boolean(activePreset);
   const isNewPresetDraft = Boolean(hasActivePreset && isActivePresetNewDraft());
+  const archiveSession = getPresetArchiveSessionState();
 
   if (editBtn) {
     editBtn.hidden = isNewPresetDraft;
@@ -4566,6 +4721,21 @@ export function updatePresetActionButtons(): void {
     importBtn.disabled = false;
     importBtn.title = "Import a preset file";
   }
+  if (presetExportSessionButton) {
+    const exportTitle = archiveSession
+      ? `Export archive session (${uiState.presets.length} presets)`
+      : "No preset archive session active";
+    presetExportSessionButton.hidden = !archiveSession;
+    presetExportSessionButton.disabled = !archiveSession || uiState.presets.length === 0;
+    presetExportSessionButton.title = exportTitle;
+  }
+  if (presetExitSessionButton) {
+    presetExitSessionButton.hidden = !archiveSession;
+    presetExitSessionButton.disabled = !archiveSession;
+    presetExitSessionButton.title = archiveSession
+      ? "Exit archive session and restore the normal preset library"
+      : "No preset archive session active";
+  }
   if (publishBtn) {
     publishBtn.disabled = !hasActivePreset;
     publishBtn.title = !hasActivePreset
@@ -4586,7 +4756,10 @@ export function updatePresetActionButtons(): void {
     presetSelectorStatus.classList.remove("is-warning", "is-dirty");
 
     if (activePreset) {
-      if (toneSharingOrigin?.republishBlocked) {
+      if (archiveSession) {
+        status = "Archive";
+        statusTitle = `Session-only preset archive: ${archiveSession.archiveName ?? "Preset archive"}. Restart or exit the session to restore the normal preset library.`;
+      } else if (toneSharingOrigin?.republishBlocked) {
         status = "Imported";
         statusTitle = "Imported from Tone Sharing. Use Save As to publish.";
         presetSelectorStatus.classList.add("is-warning");
@@ -4627,8 +4800,13 @@ function updatePresetFolderExportButtons(): void {
   if (presetExportFolderButton) {
     const isAll = activeFolderId === PRESET_FOLDER_ALL_ID;
     const count = isAll ? uiState.presets.length : folderPresets.length;
+    const archiveSession = getPresetArchiveSessionState();
     const title = count
-      ? (isAll ? `Export all presets (${count})` : `Export ${folderName} (${count})`)
+      ? (archiveSession && isAll
+        ? `Export archive session (${count})`
+        : isAll
+          ? `Export all presets (${count})`
+          : `Export ${folderName} (${count})`)
       : (isAll ? "No presets to export" : `No presets in ${folderName}`);
     presetExportFolderButton.toggleAttribute("disabled", count === 0);
     presetExportFolderButton.title = title;
@@ -4651,6 +4829,8 @@ export function initializePresetActionButtons(): void {
   const extraActionsBtn = document.getElementById("preset-extra-actions-btn") as HTMLButtonElement | null;
   const extraActionsMenu = document.getElementById("preset-extra-actions-menu");
   const exportBtn = document.getElementById("preset-export-btn");
+  const exportSessionBtn = document.getElementById("preset-export-session-btn");
+  const exitSessionBtn = document.getElementById("preset-exit-session-btn");
   const importBtn = document.getElementById("preset-import-btn");
   const importInput = document.getElementById("preset-import-input") as HTMLInputElement | null;
 
@@ -4720,6 +4900,22 @@ export function initializePresetActionButtons(): void {
       event.stopPropagation();
       closePresetExtraActionsMenu();
       importInput?.click();
+    });
+  }
+
+  if (exportSessionBtn) {
+    exportSessionBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closePresetExtraActionsMenu();
+      void exportPresetArchiveSession();
+    });
+  }
+
+  if (exitSessionBtn) {
+    exitSessionBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closePresetExtraActionsMenu();
+      postMessage({ type: "endPresetArchiveSession" });
     });
   }
 

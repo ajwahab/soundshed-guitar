@@ -2,7 +2,6 @@ import { armRiffCapture, deleteRiff, getRiffLibrary, importRiffWav, loadRiffTake
 import { showConfirm } from "./dialogs.js";
 import { appendLog } from "./logging.js";
 import { showNotification } from "./notifications.js";
-import { importPackWithConfirmation } from "./presets.js";
 import { uiState } from "./state.js";
 import type { RiffCaptureState, RiffLibrary } from "./types.js";
 import { arrayBufferToBase64, parseWavMetadata } from "./utils.js";
@@ -121,11 +120,6 @@ function closeRiffCaptureModal(): void {
     renderRiffCaptureStatus();
   }
   modal.style.display = "none";
-}
-
-function hasFilePayload(event: DragEvent): boolean {
-  const types = Array.from(event.dataTransfer?.types ?? []);
-  return types.includes("Files");
 }
 
 function splitCsv(value: string): string[] {
@@ -775,6 +769,23 @@ async function importDroppedRiffAudio(file: File): Promise<void> {
   showNotification("Importing audio into current take", file.name);
 }
 
+export async function handleDroppedRiffAudioFiles(files: File[]): Promise<boolean> {
+  const audioFile = files.find((file) => {
+    const lower = file.name.toLowerCase();
+    return lower.endsWith(".wav") || lower.endsWith(".aif") || lower.endsWith(".aiff")
+      || lower.endsWith(".mp3")
+      || file.type === "audio/wav" || file.type === "audio/x-wav"
+      || file.type === "audio/aiff" || file.type === "audio/x-aiff"
+      || file.type === "audio/mpeg" || file.type === "audio/mp3";
+  });
+  if (!audioFile) {
+    return false;
+  }
+
+  await importDroppedRiffAudio(audioFile);
+  return true;
+}
+
 function renderRiffCaptureStatus(): void {
   const status = document.getElementById("riff-capture-status");
   if (!status) {
@@ -1129,79 +1140,6 @@ function bindRiffLibraryActions(): void {
         savingFromCapture = false;
       }
       appendLog(`riff save requested → ${title}`);
-    });
-  }
-
-  const appRoot = document.getElementById("app");
-  if (appRoot && appRoot.dataset.riffDropBound !== "true") {
-    appRoot.dataset.riffDropBound = "true";
-
-    const setActive = (active: boolean) => {
-      appRoot.classList.toggle("riff-drop-active", active);
-    };
-
-    document.addEventListener("dragenter", (event) => {
-      if (!hasFilePayload(event)) {
-        return;
-      }
-      event.preventDefault();
-      setActive(true);
-    });
-
-    document.addEventListener("dragover", (event) => {
-      if (!hasFilePayload(event)) {
-        return;
-      }
-      event.preventDefault();
-      setActive(true);
-    });
-
-    document.addEventListener("dragleave", (event) => {
-      const related = event.relatedTarget as Node | null;
-      if (!related || !appRoot.contains(related)) {
-        setActive(false);
-      }
-    });
-
-    document.addEventListener("dragend", () => {
-      setActive(false);
-    });
-
-    document.addEventListener("drop", async (event) => {
-      if (!hasFilePayload(event)) {
-        return;
-      }
-      event.preventDefault();
-      setActive(false);
-
-      const files = Array.from(event.dataTransfer?.files ?? []);
-      if (!files.length) {
-        return;
-      }
-
-      // Route ZIP files to the pack/preset importer.
-      const zipFile = files.find((file) =>
-        file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip"
-      );
-      if (zipFile) {
-        await importPackWithConfirmation(zipFile, { source: "zipImport" });
-        return;
-      }
-
-      const audioFile = files.find((file) => {
-        const lower = file.name.toLowerCase();
-        return lower.endsWith(".wav") || lower.endsWith(".aif") || lower.endsWith(".aiff")
-          || lower.endsWith(".mp3")
-          || file.type === "audio/wav" || file.type === "audio/x-wav"
-          || file.type === "audio/aiff" || file.type === "audio/x-aiff"
-          || file.type === "audio/mpeg" || file.type === "audio/mp3";
-      });
-      if (!audioFile) {
-        showNotification("Only WAV, AIFF, and MP3 files are supported for riff import");
-        return;
-      }
-
-      await importDroppedRiffAudio(audioFile);
     });
   }
 

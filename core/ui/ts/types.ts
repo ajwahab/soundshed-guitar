@@ -102,6 +102,13 @@ export interface Setlist {
   slots: SetlistSlot[];
 }
 
+export interface PresetArchiveSessionState {
+  active: boolean;
+  archiveName?: string;
+  archiveKey?: string;
+  presetCount?: number;
+}
+
 // V2 Preset Format Types
 export interface GlobalSettings {
   inputTrim: number;
@@ -567,6 +574,7 @@ export interface UiState {
   setlists?: Setlist[];
   activeSetlistId?: string | null;
   setlistCursorIndex?: number;
+  presetArchiveSession?: PresetArchiveSessionState | null;
   parameters: ParametersState;
   signalTest: SignalTestResult | null;
   demoAudioSelectedId: string | null;

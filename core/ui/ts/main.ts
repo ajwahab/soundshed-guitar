@@ -6,6 +6,7 @@ import {
   initializeSavePresetModal,
   initializePresetActionButtons,
   initializePresetTagFilterBar,
+  handleDroppedPresetPack,
   renderActivePreset,
 } from "./presets.js";
 import { installFetchLogger, renderLogEntries } from "./logging.js";
@@ -25,7 +26,8 @@ import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar }
 import { initializeCustomEffectDesignerModal } from "./customEffectDesigner.js";
 import { initializeDialogModals } from "./dialogs.js";
 import { activateTab, initializeControlBarTabs, initializeIconBarTabs, initializePlayFooterPadsToggle, initializeTabButtons, switchMainPanel, initControlBarCollapse, initSignalPathCollapse } from "./navigation.js";
-import { initializeRiffLibraryPanel } from "./riffLibrary.js";
+import { handleDroppedRiffAudioFiles, initializeRiffLibraryPanel } from "./riffLibrary.js";
+import { initializeGlobalFileDrop, registerGlobalFileDropHandler } from "./fileDrop.js";
 import { initMultiRigTab } from "./multiPresetMixer.js";
 import { applyBuildFlags } from "./buildFlags.js";
 import { hideSplashScreen, initSplashScreen } from "./splash.js";
@@ -211,6 +213,17 @@ async function bootstrap(): Promise<void> {
   initializeMetronome();
   initializeAutomationPanel();
   initializeRiffLibraryPanel();
+  registerGlobalFileDropHandler({
+    id: "preset-pack-drop",
+    priority: 200,
+    handle: (files) => handleDroppedPresetPack(files),
+  });
+  registerGlobalFileDropHandler({
+    id: "riff-audio-drop",
+    priority: 100,
+    handle: (files) => handleDroppedRiffAudioFiles(files),
+  });
+  initializeGlobalFileDrop();
   initMultiRigTab();
   initializeCustomEffectDesignerModal();
   if (eqModalCloseBtn) {
