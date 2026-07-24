@@ -11,6 +11,7 @@ import {
 } from "./presets.js";
 import { clonePreset, getActivePresetForRender, uiState } from "./state.js";
 import { EffectTypeRegistry } from "./presetV2.js";
+import { FEATURE_FLAGS_CHANGED_EVENT, Features, isFeatureEnabled } from "./featureFlags.js";
 import type { AppSettingValue, GraphNode, Preset, Setlist } from "./types.js";
 import { escapeHtml } from "./utils.js";
 import {
@@ -153,7 +154,14 @@ function buildDefaultSetlistName(bank: number): string {
   return `Bank ${bank}`;
 }
 
+function areEffectsPerformancePadsEnabled(): boolean {
+  return isFeatureEnabled(Features.EffectsPerformancePads);
+}
+
 function setMode(nextMode: PerformancePadMode): void {
+  if (nextMode === "effects" && !areEffectsPerformancePadsEnabled()) {
+    nextMode = "setlist";
+  }
   if (mode === nextMode) {
     return;
   }
@@ -404,6 +412,9 @@ function getAssignedNode(preset: Preset, assignment: PerformancePadAssignment): 
 }
 
 function toggleEffectPad(padIndex: number): void {
+  if (!areEffectsPerformancePadsEnabled()) {
+    return;
+  }
   const preset = getActivePresetForRender();
   if (!preset?.id) {
     showNotification("No active preset", "Load a preset before using effect pads.");
@@ -429,6 +440,9 @@ function toggleEffectPad(padIndex: number): void {
 }
 
 function assignDraftPad(): void {
+  if (!areEffectsPerformancePadsEnabled()) {
+    return;
+  }
   const preset = getActivePresetForRender();
   if (!preset?.id) {
     showNotification("No active preset", "Load a preset before assigning effect pads.");
@@ -459,6 +473,9 @@ function assignDraftPad(): void {
 }
 
 function clearDraftPad(): void {
+  if (!areEffectsPerformancePadsEnabled()) {
+    return;
+  }
   const preset = getActivePresetForRender();
   if (!preset?.id) {
     return;
@@ -508,7 +525,7 @@ function renderHeader(): string {
       <div class="performance-pad-controls" aria-label="Performance pad controls">
         <div class="performance-mode-switch" role="group" aria-label="Pad mode">
           ${renderModeButton("setlist", "Setlist")}
-          ${renderModeButton("effects", "Effects")}
+          ${areEffectsPerformancePadsEnabled() ? renderModeButton("effects", "Effects") : ""}
         </div>
         <label class="performance-pad-count">
           <span>Pads</span>
@@ -900,7 +917,9 @@ function handlePerformancePadsKeydown(event: KeyboardEvent): void {
 
 export function applyPerformancePadAppSettings(settings = uiState.appSettings): void {
   const storedMode = settings?.[SETTINGS.mode];
-  mode = isPerformancePadMode(storedMode) ? storedMode : "setlist";
+  mode = isPerformancePadMode(storedMode) && (storedMode !== "effects" || areEffectsPerformancePadsEnabled())
+    ? storedMode
+    : "setlist";
   padCount = normalizePadCount(settings?.[SETTINGS.padCount]);
   assignments = normalizeAssignments(settings?.[SETTINGS.assignments]);
   editingSetlistId = null;
@@ -931,6 +950,13 @@ export function initializePerformancePads(): void {
   rootElement.addEventListener("pointerup", handleAssignPointerUp);
   rootElement.addEventListener("pointercancel", cancelLongPress);
   document.addEventListener("keydown", handlePerformancePadsKeydown);
+  document.addEventListener(FEATURE_FLAGS_CHANGED_EVENT, () => {
+    if (!areEffectsPerformancePadsEnabled() && mode === "effects") {
+      setMode("setlist");
+      return;
+    }
+    renderPerformancePads();
+  });
 
   applyPerformancePadAppSettings();
 }

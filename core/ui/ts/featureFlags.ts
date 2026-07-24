@@ -18,6 +18,7 @@ export const Features = {
   ResourceCleanup: "resourceCleanup",
   FactoryPresetArchives: "factoryPresetArchives",
   DebugStateCapture: "debugStateCapture",
+  EffectsPerformancePads: "effectsPerformancePads",
 } as const;
 
 export type FeatureId = typeof Features[keyof typeof Features];
@@ -155,6 +156,14 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultEnabled: false,
     legacyAdvanced: true,
   },
+  {
+    id: Features.EffectsPerformancePads,
+    key: "features.effectsPerformancePads.enabled",
+    label: "Effects Performance Pads",
+    description: "Enables experimental Performance Pad assignments for toggling individual effects. These controls may change or be removed over time.",
+    defaultEnabled: false,
+    legacyAdvanced: true,
+  },
 ];
 
 export const FEATURE_GROUPS: FeatureGroupDefinition[] = [
@@ -168,7 +177,7 @@ export const FEATURE_GROUPS: FeatureGroupDefinition[] = [
     id: "power",
     title: "Power Features",
     description: "These features are optional and may be under development or designed for advanced users.",
-    featureIds: [Features.AiToneSearch, Features.ExperimentalEffects, Features.CustomEffects, Features.MultiRig, Features.CompositeEffects, Features.BlendTools, Features.EffectLayout, Features.ResourceCleanup, Features.FactoryPresetArchives, Features.DebugStateCapture],
+    featureIds: [Features.AiToneSearch, Features.ExperimentalEffects, Features.CustomEffects, Features.MultiRig, Features.CompositeEffects, Features.BlendTools, Features.EffectLayout, Features.ResourceCleanup, Features.FactoryPresetArchives, Features.DebugStateCapture, Features.EffectsPerformancePads],
   },
 ];
 
