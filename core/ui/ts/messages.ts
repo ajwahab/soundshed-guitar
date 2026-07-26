@@ -10,7 +10,7 @@ import { updateDSPPerformancePlot, updateSignalDiagnosticsView } from "./views.j
 import { refreshSettingsView, handleUserInputCalibrationDiagnosticsUpdate } from "./settings.js";
 import { applyRiffCaptureProgress, applyRiffCaptureState, applyRiffLibraryState, handleCapturedPreviewComplete, handleRiffPreviewPlayback, handleSavedRiffPreviewComplete, renderRiffLibraryPanel } from "./riffLibrary.js";
 import { getRiffLibrary, postMessage } from "./bridge.js";
-import { handleHostedPluginResourceLoadFailed, handleHostedPluginResourceLoadCompleted, handleNodeResourceBrowseCancelled, refreshSelectedNodeParams, renderSignalPathBar, updateSelectedNodeAnalyzerPanel, updateSelectedNodeDspStatus, updateSelectedNodePeakMeter } from "./signalPath.js";
+import { applySpatialPositionUpdate, handleHostedPluginResourceLoadFailed, handleHostedPluginResourceLoadCompleted, handleNodeResourceBrowseCancelled, refreshSelectedNodeParams, renderSignalPathBar, updateSelectedNodeAnalyzerPanel, updateSelectedNodeDspStatus, updateSelectedNodePeakMeter } from "./signalPath.js";
 import { refreshFxSelector } from "./fxSelector.js";
 import { applyEnvironmentState, applyMetronomeState } from "./metronome.js";
 import { applyAutomationState, handleMidiLogEntry, handleMidiLearnCapture } from "./automationPanel.js";
@@ -159,7 +159,7 @@ function shouldIgnoreStatePreset(incoming: Preset): boolean {
   return stillValid;
 }
 
-const DEBUG_SNAPSHOT_SKIP_TYPES = new Set(["dspPerformance", "signalLevelDiagnostics", "captureDebugSnapshot", "debugSnapshotWritten"]);
+const DEBUG_SNAPSHOT_SKIP_TYPES = new Set(["dspPerformance", "signalLevelDiagnostics", "spatialPosition", "captureDebugSnapshot", "debugSnapshotWritten"]);
 let debugSnapshotTimer: number | null = null;
 
 const TELEMETRY_UI_FPS = 30;
@@ -525,7 +525,7 @@ export function handleIncomingMessage(message: string): void {
   const payload = JSON.parse(message) as Record<string, unknown>;
   const type = typeof payload.type === "string" ? payload.type : "";
   // Frequent diagnostics messages; avoid spamming console.
-  if (type !== "dspPerformance" && type !== "signalLevelDiagnostics") {
+  if (type !== "dspPerformance" && type !== "signalLevelDiagnostics" && type !== "spatialPosition") {
     console.log("[JS] handleIncomingMessage received:", message.substring(0, 200));
     console.log("[JS] Parsed message type:", type);
   }
@@ -1511,6 +1511,16 @@ export function handleIncomingMessage(message: string): void {
       if (diagnostics && diagnostics.input && diagnostics.output) {
         uiState.signalDiagnostics = diagnostics;
         queueTelemetryUiUpdate("signalDiagnostics");
+      }
+      break;
+    }
+    case "spatialPosition": {
+      // Live source position from the spatialiser's motion engine, so the on-screen
+      // puck matches what is being heard. Purely cosmetic: if it never arrives, the
+      // widget just shows the anchor position instead.
+      const nodes = payload.nodes;
+      if (Array.isArray(nodes)) {
+        applySpatialPositionUpdate(nodes as never);
       }
       break;
     }

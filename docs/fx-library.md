@@ -80,6 +80,7 @@ All UUID constants are defined in `core/src/dsp/EffectGuids.h`. The table below 
 | `kPhaser` | `3aa9dc81-31c2-40d5-9b1b-b0b9d1295e9b` | `phaser` |
 | `kTremolo` | `c9debb02-d7e7-43e3-8330-b387be46dcf4` | `tremolo` |
 | `kAutoWah` | `b06c6d84-01b3-4d0a-ad98-40eecb64438e` | `auto_wah` |
+| `kSpatial3D` | `a3196960-a89b-4388-829e-cbf8d8dd91c3` | `spatial_3d` |
 | `kPitchShift` | `0c15f065-8335-4932-9d2f-366d436ec30a` | `pitch_shift` |
 | `kTranspose` | `9b89cc46-e05b-4f06-981e-1d74d1f628cf` | `transpose` |
 | `kTransposeStft` | `66b3a43a-72eb-4c7a-9c47-50e9ab24b718` | `transpose_stft` |
@@ -363,6 +364,84 @@ Creates stereo width by mixing a delayed copy of the signal.
 |-----------|-------|---------|------|
 | `time` | 0–100 | 6.0 | ms |
 | `mix` | 0.0–1.0 | 0.3 | — |
+
+### 3D Spatial (`spatial_3d`)
+
+Positions the signal as a point source anywhere around the listener — left/right,
+front/behind, above/below and near/far — and can animate that position.
+
+**What it actually is.** `EffectProcessor::Process` is a two-channel interface, and the
+graph is stereo throughout. There is no surround bus to pan into, so this is a
+*binaural* renderer: it synthesises the cues a real head would produce and delivers them
+over two channels.
+
+**Under what conditions it works:**
+
+| Listening on | Result |
+|---|---|
+| Headphones | All axes. This is what it is designed for. |
+| Loudspeakers | Left/right and distance work. Front/back and height largely collapse — set `listenMode` to Speakers, which reduces the cues that are not surviving. |
+| Mono fold-down | Speakers mode removes the interaural delay entirely, so folding down does not comb-filter. |
+| Any listener | Height and front/back come from a generic pinna model, not the listener's own ears. Most people get a clear effect; some get very little. This is inherent to non-personalised binaural rendering. |
+
+**Cue synthesis**
+
+| Cue | Method | Axis |
+|---|---|---|
+| Interaural time difference | Woodworth `(r/c)(θ + sin θ)`, r = 8.75 cm, max ±0.66 ms, on a fractional delay line. The head-shadow filter's own group delay is subtracted so the ITD matches the model. | left/right |
+| Interaural level difference | Split 35% boost to the near ear / 65% cut to the far ear, so a source does not swell in loudness as it passes the sides. | left/right |
+| Head shadow | One-pole lowpass crossfaded into the far ear, 20 kHz → 1.5 kHz. | left/right |
+| Front/back | High shelf (+2 dB front, −8 dB behind) plus a 0.7 ms rear reflection. Deliberately *not* level-compensated: shadowing is a treble phenomenon, so the bass is left alone and a source behind is slightly quieter, as in life. | front/behind |
+| Elevation | Pinna notch sweeping 6 kHz (below) → 11 kHz (above) at −9 dB, plus a ±3 dB shelf tilt. | up/down |
+| Distance | Inverse-distance gain (reference 1.5 m), air-absorption lowpass past 1.5 m, and a rising early-reflection send so the direct/reflected ratio carries distance too. | near/far |
+
+**Parameters**
+
+| Parameter | Range | Default | Unit |
+|-----------|-------|---------|------|
+| `azimuth` | −180…180 | 0 | ° (0 front, +90 right) |
+| `elevation` | −90…90 | 0 | ° |
+| `distance` | 0.2…10 | 1.5 | m |
+| `mix` | 0…1 | 1.0 | — |
+| `roomAmount` | 0…1 | 0.25 | — |
+| `listenMode` | 0–1 | 0 | Headphones / Speakers |
+| `delayMode` | 0–1 | 0 | Smooth / Doppler |
+| `outputTrim` | −12…12 | 0 | dB |
+| `motionMode` | 0–6 | 0 | Off, Orbit, Arc, Figure 8, Spiral, Drift, Pendulum |
+| `motionRate` | 0.01…4 | 0.06 | Hz |
+| `syncMode` / `syncDivision` | — | Free | tempo sync |
+| `motionDepth` | 0…1 | 0.6 | azimuth swing |
+| `motionElevDepth` | 0…1 | 0.3 | elevation swing |
+| `motionDistDepth` | 0…1 | 0.2 | distance breathing |
+| `motionDirection` | −1/+1 | +1 | — |
+| `motionPhase` | 0…360 | 0 | ° |
+| `motionSmooth` | 0…1 | 0.4 | trajectory inertia |
+| `motionSeed` | 0…999 | 1 | Drift reproducibility |
+
+Read-only feedback: `currentAzimuth`, `currentElevation`, `currentDistance`,
+`currentItdUs`, `currentIldDb`, `effectiveRate`. These drive the `spatialPosition`
+message and hence the on-screen puck.
+
+**Factory presets** (per-effect, `isFactory`): Static · Centre, Gentle Orbit, Slow
+Carousel, Wide Sway, Overhead Arc, Figure of Eight, Fly-By, Ambient Drift, Rising
+Spiral, Tempo Orbit · 1 Bar, Speaker Safe Sway. Each specifies the complete parameter
+set, because effect presets are copied wholesale into a graph node rather than merged.
+
+**Behaviour worth knowing about**
+
+- `azimuth`/`elevation`/`distance` are the *anchor* the motion orbits around, not an
+  override — you can reposition a running orbit.
+- Orbit and Spiral always complete a full 360° circle; `motionDepth` does not shorten
+  their sweep. Use Figure 8 or Pendulum for a partial sweep. Arc ignores `motionDepth`.
+- Positioning with a delay line means moving the source changes phase over time, which
+  *is* a frequency shift. At factory preset rates it stays under one cent (verified by
+  test). `delayMode = Doppler` additionally tracks the propagation delay to the source,
+  which bends pitch audibly on approach and adds up to ~29 ms of variable delay to the
+  wet path — intended for `mix = 1`.
+- `mix = 0` is not bit-exact passthrough; it is the input delayed by exactly
+  `GetLatencySamples()`, so the dry path cannot comb against the wet one. Latency is a
+  constant and never changes with parameters.
+- Drift mode is deterministic: the same `motionSeed` always replays the same trajectory.
 
 ### Pitch Shift (`pitch_shift`)
 Pitch shift effect using Signalsmith Stretch with stepped or free-form control.

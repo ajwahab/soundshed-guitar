@@ -99,6 +99,10 @@ namespace
     constexpr int kDspPerformanceStatsRateHz = 5;
     constexpr int kSignalDiagnosticsRateHz = 20;
 
+    /// How often the spatialiser's live source position is pushed to the UI. Fast
+    /// enough that a moving puck looks continuous, slow enough to be negligible.
+    constexpr int kSpatialPositionRateHz = 20;
+
     // ── Metronome constants ─────────────────────────────────────────
 
     constexpr const char* kMetronomeEnabledSettingKey = "metronome.enabled";
@@ -4191,6 +4195,17 @@ void PluginController::OnIdle()
     }
 
     TrySendPendingSignalDiagnosticsToUI();
+
+    // The spatial panner's on-screen puck has to match what is being heard: on a
+    // 30 second orbit a visual phase drift is glaringly obvious. This is sent on its
+    // own schedule rather than piggybacking on the diagnostics feed, which the user
+    // has to opt into, and it costs nothing when no spatialiser is in the chain.
+    mSpatialPositionUpdateCounter++;
+    if (mSpatialPositionUpdateCounter >= 60 / kSpatialPositionRateHz)
+    {
+        mSpatialPositionUpdateCounter = 0;
+        SendSpatialPositionsToUI();
+    }
 
     if (mDemoPreview)
         mDemoPreview->OnIdle();

@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.5.0 (July 25, 2026)
+
+### Performance, Presets & Settings
+* Added a dedicated Setlist performance pads view in the Play tab, with configurable 4, 6, or 8-pad layouts.
+* Update setlist management with named banks and per-pad preset assignments for faster live preset switching.
+* Standalone app global effects now reliably retain their state, and settings synchronize across multiple plugin instances.
+
+### DSP & MIDI
+* Added a Graphic EQ effect with 5- and 10-band Bass, Guitar, and General Purpose profiles.
+* Improved MIDI automation for effect bypasses, including reliable Note On/Note Off toggle behavior and effect-type bypass automation.
+* Fixed the selected input audio channel being restored incorrectly at startup.
+
+### Library & Tone Sharing
+* Resource folder browsing now remains responsive with large folders.
+* Tone Sharing now displays download counts and handles expired sign-in sessions more gracefully.
+
+### UI & Workflow
+* Reworked the signal-chain interaction with a more compact layout, clearer parallel-routing controls, and node bypass buttons.
+* Added collapsible signal-chain and app control areas.
+* Improved responsive layouts, including the control bar and footer, and reduced the minimum window size to 640 x 400.
+* Added DSP stats to individual effect visualization
+* Refined light and classic themes, knob styling, UI scaling, and overall visual consistency.
+
+### Platform Reliability
+* macOS fixed app entitlements
+* Improved macOS hosted-plugin loading error reporting.
+* Improved Linux WebKit view discovery for more reliable standalone startup.
+
 ## 1.4.0 (July 03, 2026)
 
 ### MIDI & Automation

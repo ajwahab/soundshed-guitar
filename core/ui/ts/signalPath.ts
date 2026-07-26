@@ -44,6 +44,11 @@ import {
   clampGraphicEqFrequency,
   graphicEqFrequencyBounds,
 } from "./eqCurve.js";
+import {
+  SpatialPannerInteraction,
+  type SpatialLiveState,
+  type SpatialPosition,
+} from "./spatialPanner.js";
 import { resourceBrowserModal } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
 import { hasCustomLayout, getCustomLayout, renderCustomLayout, renderCustomLayoutBackdrop, formatParamValue, type LayoutResourceControlDef } from "./layoutRenderer.js";
@@ -83,6 +88,8 @@ const signalPathAddSceneButton = document.getElementById("signal-path-add-scene"
 /** Whether the Mix tab is currently active in the multi-preset tab bar. */
 let mixTabActive = false;
 let signalPathEqInteraction: EqCurveInteraction | null = null;
+let signalPathSpatialInteraction: SpatialPannerInteraction | null = null;
+let signalPathSpatialNodeId: string | null = null;
 /** Knob instances for the current node params panel, keyed by param key. */
 const nodeParamKnobs = new Map<string, GenericKnob>();
 const effectVisualizationElement = document.getElementById("effect-visualization");
@@ -3227,6 +3234,11 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     signalPathEqInteraction.destroy();
     signalPathEqInteraction = null;
   }
+  if (signalPathSpatialInteraction) {
+    signalPathSpatialInteraction.destroy();
+    signalPathSpatialInteraction = null;
+    signalPathSpatialNodeId = null;
+  }
   nodeParamKnobs.clear();
 
   // Ensure node.params exists
@@ -3410,6 +3422,20 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         <span class="eq-visualizer-range">±18 dB</span>
       </div>
       <canvas class="eq-curve-canvas" data-node-id="${node.id}"></canvas>
+    </div>
+  ` : "";
+  const isSpatialNode = EffectTypeRegistry.resolve(node.type) === EffectGuids.kSpatial3D;
+  const spatialSpeakerMode = (node.params?.listenMode ?? 0) >= 0.5;
+  const spatialVisualizer = isSpatialNode ? `
+    <div class="spatial-visualizer" data-node-id="${node.id}">
+      <div class="spatial-visualizer-header">
+        <span>Source Position</span>
+        <span class="spatial-visualizer-hint">${spatialSpeakerMode
+          ? "Speaker mode &mdash; height and behind are reduced"
+          : "Best on headphones"}</span>
+      </div>
+      <canvas class="spatial-panner-canvas" data-node-id="${node.id}" tabindex="0"></canvas>
+      <p class="spatial-visualizer-help">Drag the radar to pan and set distance, drag the arc for height. Shift for fine, double-click to reset.</p>
     </div>
   ` : "";
   const graphicEqControls = isGraphicEqNode ? `
@@ -4022,6 +4048,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     ${customEffectActions}
     ${analyzerSection}
     ${eqVisualizer}
+    ${spatialVisualizer}
     ${graphicEqControls}
     ${mixerInputControls}
     <div class="default-effect-section default-effect-section-controls default-effect-section-custom-layout">
@@ -4068,6 +4095,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       ${customEffectActions}
       ${analyzerSection}
       ${eqVisualizer}
+      ${spatialVisualizer}
       ${graphicEqControls}
       ${mixerInputControls}
       <div class="default-effect-section default-effect-section-controls">
@@ -4130,6 +4158,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
 
   if (isEqNode) {
     updateEqVisualization(node);
+  }
+  if (isSpatialNode) {
+    updateSpatialVisualization(node);
   }
 
   // Bind controls
@@ -4636,6 +4667,7 @@ function bindNodeParamControls(node: GraphNode, preset: Preset): void {
           }
         }
         updateEqVisualization(node);
+        updateSpatialVisualization(node);
 
         if (isBlendParam && blendState) {
           updateBlendParamIndicators(nodeParamsPanelElement, node, blendState);
@@ -4721,8 +4753,99 @@ function updateEqVisualization(node: GraphNode): void {
   }
 }
 
-function bindGraphicEqControls(node: GraphNode, preset: Preset): void {
-  if (EffectTypeRegistry.resolve(node.type) !== EffectGuids.kEqGraphic) {
+const SPATIAL_PARAM_KEYS: ReadonlyArray<keyof SpatialPosition> = ["azimuth", "elevation", "distance"];
+
+function readSpatialPosition(node: GraphNode): SpatialPosition {
+  const params = node.params ?? {};
+  return {
+    azimuth: typeof params.azimuth === "number" ? params.azimuth : 0,
+    elevation: typeof params.elevation === "number" ? params.elevation : 0,
+    distance: typeof params.distance === "number" ? params.distance : 1.5,
+  };
+}
+
+function updateSpatialVisualization(node: GraphNode): void {
+  if (EffectTypeRegistry.resolve(node.type) !== EffectGuids.kSpatial3D) {
+    return;
+  }
+  const canvas = nodeParamsPanelElement?.querySelector(".spatial-panner-canvas") as HTMLCanvasElement | null;
+  if (!canvas) {
+    return;
+  }
+
+  const position = readSpatialPosition(node);
+  const speakerMode = (node.params?.listenMode ?? 0) >= 0.5;
+
+  if (signalPathSpatialInteraction && signalPathSpatialNodeId === node.id && canvas.isConnected) {
+    signalPathSpatialInteraction.updatePosition(position);
+    signalPathSpatialInteraction.setSpeakerMode(speakerMode);
+    return;
+  }
+
+  // Either a different node or a rebuilt panel: the old canvas is gone, so the old
+  // interaction's listeners point at a detached element and must be torn down.
+  if (signalPathSpatialInteraction) {
+    signalPathSpatialInteraction.destroy();
+    signalPathSpatialInteraction = null;
+  }
+
+  const apply = (next: SpatialPosition, rebuildPanel: boolean): void => {
+    for (const key of SPATIAL_PARAM_KEYS) {
+      const value = next[key];
+      if (node.params[key] === value) continue;
+      node.params[key] = value;
+      sendSignalPathNodeParamUpdate(node.id, key, value);
+      const knob = nodeParamKnobs.get(key);
+      if (knob) knob.setValue(value);
+    }
+    if (rebuildPanel) {
+      const preset = getActivePresetForRender();
+      if (preset) showNodeParamsPanel(node, preset);
+    }
+  };
+
+  signalPathSpatialInteraction = new SpatialPannerInteraction(
+    canvas,
+    position,
+    (next) => apply(next, false),
+    // Committing does not rebuild the panel: the knobs are already synced above, and
+    // a rebuild would replace the canvas mid-gesture and drop pointer capture.
+    (next) => apply(next, false)
+  );
+  signalPathSpatialInteraction.setSpeakerMode(speakerMode);
+  signalPathSpatialNodeId = node.id;
+}
+
+/**
+ * Live source positions pushed by the DSP. Only the node currently on screen is of
+ * interest; everything else is discarded so a chain full of spatialisers costs nothing.
+ */
+export function applySpatialPositionUpdate(
+  nodes: Array<{ nodeId?: unknown } & Partial<SpatialLiveState>>
+): void {
+  if (!signalPathSpatialInteraction || !signalPathSpatialNodeId) {
+    return;
+  }
+  const match = Array.isArray(nodes)
+    ? nodes.find((entry) => entry && entry.nodeId === signalPathSpatialNodeId)
+    : undefined;
+  if (!match) {
+    signalPathSpatialInteraction.setLiveState(null);
+    return;
+  }
+  const num = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  signalPathSpatialInteraction.setLiveState({
+    azimuth: num(match.azimuth, 0),
+    elevation: num(match.elevation, 0),
+    distance: num(match.distance, 1.5),
+    itdUs: num(match.itdUs, 0),
+    ildDb: num(match.ildDb, 0),
+    moving: match.moving === true,
+  });
+}
+
+function bindGraphicEqControls(node: GraphNode, preset: Preset): void {  if (EffectTypeRegistry.resolve(node.type) !== EffectGuids.kEqGraphic) {
     return;
   }
 

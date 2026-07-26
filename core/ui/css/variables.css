@@ -232,6 +232,17 @@
   --eq-curve-tooltip-bg: rgba(0, 0, 0, 0.8);
   --eq-curve-tooltip-text: #ffffff;
 
+  --spatial-grid: rgba(255, 255, 255, 0.10);
+  --spatial-head: rgba(255, 255, 255, 0.32);
+  --spatial-label: rgba(255, 255, 255, 0.62);
+  --spatial-label-muted: rgba(255, 255, 255, 0.28);
+  --spatial-anchor: rgba(255, 255, 255, 0.38);
+  --spatial-source: rgba(72, 168, 224, 0.95);
+  --spatial-source-behind: rgba(150, 122, 208, 0.85);
+  --spatial-trail: rgba(72, 168, 224, 0.30);
+  --spatial-shadow: rgba(0, 0, 0, 0.35);
+  --spatial-focus: rgba(120, 200, 255, 0.9);
+
   --performance-plot-line: rgba(104, 184, 104, 0.95);
   --performance-plot-fill: rgba(104, 184, 104, 0.18);
   --performance-plot-grid: rgba(255, 255, 255, 0.14);

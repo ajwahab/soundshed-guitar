@@ -2730,11 +2730,59 @@ body.signal-path-resizing * {
   background: rgba(16, 18, 24, 0.8);
 }
 
+.spatial-visualizer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid #4a4a58;
+  border-radius: 6px;
+}
+
+.spatial-visualizer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #9aa0b5;
+}
+
+.spatial-visualizer-hint {
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  color: #7d8398;
+}
+
+.spatial-panner-canvas {
+  width: 100%;
+  height: 190px;
+  border-radius: 4px;
+  background: rgba(16, 18, 24, 0.8);
+  cursor: default;
+  touch-action: none;
+}
+
+.spatial-panner-canvas:focus-visible {
+  outline: none;
+}
+
+.spatial-visualizer-help {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #7d8398;
+}
+
 .graphic-eq-controls {
   position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: column;  gap: 12px;
   padding: 16px;
   overflow: hidden;
 }

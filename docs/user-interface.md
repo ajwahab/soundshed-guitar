@@ -80,6 +80,7 @@ The UI is a web-based single-page application (SPA) hosted in a native WebView. 
 | `effectCatalog` | `{effects: [...]}` | Available effect types |
 | `dspPerformance` | `{...}` | DSP performance statistics |
 | `signalLevelDiagnostics` | `{rawInput, input, output, nodes}` | Signal level diagnostics and per-node meters |
+| `spatialPosition` | `{nodes: [{scope, presetId?, nodeId, azimuth, elevation, distance, itdUs, ildDb, rateHz, moving}]}` | Live source position for every 3D Spatial node, ~20 Hz. Purely cosmetic: it keeps the spatial panner's puck in sync with what is being heard, and the widget falls back to the anchor position if it never arrives. Only sent while at least one such node exists. |
 | `metronomeState` | `{bpm, enabled, ...}` | Metronome state |
 | `layoutSaved` | `{...}` | Effect layout saved |
 | `layoutLibraryLoaded` | `{layoutLibrary}` | Layout library loaded |
@@ -264,6 +265,30 @@ Two advanced settings affect runtime level behavior immediately:
 ## Signal Chain Editor Notes
 
 - To create parallel paths, add the **Splitter** effect from the Utility category. The join **Mixer** node is inserted automatically and is not user-addable.
+
+### Spatial panner (`core/ui/ts/spatialPanner.ts`)
+
+The **3D Spatial** effect gets a bespoke widget in its parameter panel, mounted the same
+way the EQ curve is (see `updateSpatialVisualization` in `signalPath.ts`).
+
+- **Top-down radar** — azimuth and distance. The listener is at the centre facing up the
+  screen; distance rings are logarithmic so the near field, where the cues change
+  fastest, is actually draggable. The source puck shrinks with distance and shifts
+  colour when it passes behind.
+- **Elevation arc** — height, linked back to ear level by a dashed drop line so the two
+  views read as one object rather than two unrelated controls.
+- **Motion** — while the motion engine is running, the dashed ring is the anchor you
+  dragged and the filled puck is what you are actually hearing, driven by the
+  `spatialPosition` message. A fading trail shows the trajectory.
+- **Honesty** — with `listenMode = Speakers` the elevation pane is dimmed and the rear
+  half of the radar is shaded, because the DSP is no longer delivering those cues. The
+  header hint switches from "Best on headphones" to say so.
+- **Interaction** — pointer and touch drag, Shift for fine adjustment, double-click to
+  reset just the axis you clicked, and full keyboard control: arrows pan and tilt,
+  Alt+Up/Down changes distance, Home re-centres. The canvas is focusable with a live
+  `aria-label` describing the position in words.
+- Redraws are coalesced through a single `requestAnimationFrame`; there is no free-running
+  animation loop.
 
 ## Performance Targets
 

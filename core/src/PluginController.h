@@ -394,6 +394,7 @@ private:
     void RequestPerformanceStatsToUI();
     void TrySendPendingPerformanceStatsToUI();
     void SendPerformanceStatsToUI();
+    void SendSpatialPositionsToUI();
     void SendMetronomeStateToUI();
     void SendRiffLibraryStateToUI();
 
@@ -732,6 +733,8 @@ private:
     std::atomic<bool> mSignalDiagnosticsEnabled{true};
     int mDSPPerformanceUpdateCounter = 0;
     int mSignalDiagnosticsUpdateCounter = 0;
+    int mSpatialPositionUpdateCounter = 0;
+    bool mSpatialPositionsWereSent = false;
     bool mPendingSignalDiagnosticsUpdate = false;
     std::chrono::steady_clock::time_point mLastSignalDiagnosticsUpdateSentAt{};
     bool mPendingPerformanceStatsUpdate = false;

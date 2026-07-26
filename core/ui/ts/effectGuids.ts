@@ -54,6 +54,7 @@ export const EffectGuids = {
   kTremolo:              "c9debb02-d7e7-43e3-8330-b387be46dcf4",
   kAutoWah:              "b06c6d84-01b3-4d0a-ad98-40eecb64438e",
   kAutoArp:              "e4a7c9d0-3b52-4f16-8a9e-2c7f1d0e5b83",
+  kSpatial3D:            "a3196960-a89b-4388-829e-cbf8d8dd91c3",
 
   // Pitch
   kPitchShift:           "0c15f065-8335-4932-9d2f-366d436ec30a",
@@ -111,6 +112,7 @@ export const EFFECT_ALIAS_MAP: Record<string, string> = {
   tremolo:               EffectGuids.kTremolo,
   auto_wah:              EffectGuids.kAutoWah,
   arp_auto:              EffectGuids.kAutoArp,
+  spatial_3d:            EffectGuids.kSpatial3D,
   pitch_shift:           EffectGuids.kPitchShift,
   transpose:             EffectGuids.kTranspose,
   transpose_stft:        EffectGuids.kTransposeStft,

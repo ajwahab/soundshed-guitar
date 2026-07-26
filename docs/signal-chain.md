@@ -120,6 +120,14 @@ Nodes execute in dependency order via Kahn's algorithm. The executor validates a
 ### Bypass Semantics
 Disabled nodes skip processing; their buffer becomes a pass-through of gathered inputs. The signal path remains connected.
 
+### Stereo Preservation
+`NodeMayProduceStereo()` matches only the categories `mod`, `delay` and `reverb`, but effects
+register the category `modulation`, so that branch does not fire for them. The mechanism that
+actually keeps a stereo image alive downstream is `EffectProcessor::ProducesStereoOutput()`
+returning `true` (checked in `SignalGraphExecutor.cpp`). Any effect that creates stereo from a
+mono source — the 3D Spatial panner in particular — must return `true` there, or the image is
+collapsed by a later node.
+
 ### Implicit I/O Nodes
 If edges reference `__input__` or `__output__` but those nodes are missing, the executor inserts implicit input/output nodes during `SetGraph()`.
 

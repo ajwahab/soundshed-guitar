@@ -21,6 +21,7 @@ set(TEST_SOURCES
     SignalChainMutationStressTest.cpp
     SignalChainThreadingBenchmark.cpp
     SignalGraphExecutorTests.cpp
+    Spatial3DEffectTests.cpp
     StereoProcessingTests.cpp
     SynthSawEffectTests.cpp
     TestWavLoad.cpp

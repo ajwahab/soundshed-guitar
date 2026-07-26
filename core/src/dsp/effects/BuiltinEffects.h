@@ -26,6 +26,7 @@
 #include "dsp/effects/PhaserEffect.h"
 #include "dsp/effects/TremoloEffect.h"
 #include "dsp/effects/AutoWahEffect.h"
+#include "dsp/effects/Spatial3DEffect.h"
 #include "dsp/effects/OctaveEffect.h"
 #include "dsp/effects/SynthSawEffect.h"
 #include "dsp/effects/AutoArpEffect.h"
@@ -133,6 +134,7 @@ namespace guitarfx
     RegisterPhaserEffect();
     RegisterTremoloEffect();
     RegisterAutoWahEffect();
+    RegisterSpatial3DEffect();
     RegisterOctaveEffect();
     RegisterAutoArpEffect();
 
