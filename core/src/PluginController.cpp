@@ -6299,53 +6299,86 @@ void PluginController::HandleReorderSignalPathNodeRequest(const nlohmann::json& 
     if (!node) { ReportErrorToUI("Reorder node failed", "Node not found"); return; }
     if (node->type == "splitter" || node->type == "mixer" || node->type == EffectGuids::kSplitter || node->type == EffectGuids::kMixer) { ReportErrorToUI("Reorder node failed", "Cannot move splitter/mixer nodes"); return; }
 
-    auto& edges = targetGraph->edges;
+    // Everything is validated and resolved before the graph is touched: an early
+    // return after a partial splice would leave the node disconnected, which then
+    // makes every later reorder of that node fail with a missing-edge error.
+    const auto& currentEdges = targetGraph->edges;
+    const std::size_t edgeCount = currentEdges.size();
 
-    auto incomingEdgeIt = std::find_if(edges.begin(), edges.end(), [&](const GraphEdge& e) { return e.to == nodeId; });
-    auto outgoingEdgeIt = std::find_if(edges.begin(), edges.end(), [&](const GraphEdge& e) { return e.from == nodeId; });
-    if (incomingEdgeIt == edges.end() || outgoingEdgeIt == edges.end()) { ReportErrorToUI("Reorder node failed", "Missing edges"); return; }
+    std::size_t incomingIndex = edgeCount;
+    std::size_t outgoingIndex = edgeCount;
+    std::size_t incomingCount = 0;
+    std::size_t outgoingCount = 0;
+    for (std::size_t i = 0; i < edgeCount; ++i)
+    {
+        if (currentEdges[i].to == nodeId && incomingCount++ == 0) incomingIndex = i;
+        if (currentEdges[i].from == nodeId && outgoingCount++ == 0) outgoingIndex = i;
+    }
 
-    const std::string nextNodeId = outgoingEdgeIt->to;
-    const int preservedToPort = outgoingEdgeIt->toPort;
-    const double preservedGain = outgoingEdgeIt->gain;
+    if (incomingCount == 0 || outgoingCount == 0)
+    { ReportErrorToUI("Reorder node failed", "Node is not fully connected (missing input or output connection)"); return; }
+    if (incomingCount > 1 || outgoingCount > 1)
+    { ReportErrorToUI("Reorder node failed", "Node has multiple connections. Remove branch effects first."); return; }
 
-    incomingEdgeIt->to = nextNodeId;
-    incomingEdgeIt->toPort = preservedToPort;
-    incomingEdgeIt->gain = preservedGain;
-    edges.erase(outgoingEdgeIt);
-
+    std::size_t targetEdgeIndex = edgeCount;
     if (!edgeFrom.empty() && !edgeTo.empty())
     {
-        if (edgeFrom == nodeId || edgeTo == nodeId) { ReportErrorToUI("Reorder node failed", "Cannot move node onto itself"); return; }
+        // Dropping a node back onto one of its own connections is a no-op, not an error.
+        if (edgeFrom == nodeId || edgeTo == nodeId) return;
 
-        auto tgt = std::find_if(edges.begin(), edges.end(),
-            [&](const GraphEdge& e) { return e.from == edgeFrom && e.to == edgeTo && e.fromPort == edgeFromPort && e.toPort == edgeToPort; });
-        if (tgt == edges.end()) { ReportErrorToUI("Reorder node failed", "Cannot find target edge"); return; }
-
-        const std::string tNextId = tgt->to;
-        const int tPort = tgt->toPort;
-        const double tGain = tgt->gain;
-        tgt->to = nodeId; tgt->toPort = 0; tgt->gain = 1.0;
-
-        GraphEdge ne; ne.from = nodeId; ne.to = tNextId; ne.fromPort = 0; ne.toPort = tPort; ne.gain = tGain;
-        edges.push_back(ne);
+        for (std::size_t i = 0; i < edgeCount; ++i)
+        {
+            const auto& e = currentEdges[i];
+            if (e.from == edgeFrom && e.to == edgeTo && e.fromPort == edgeFromPort && e.toPort == edgeToPort)
+            { targetEdgeIndex = i; break; }
+        }
+        if (targetEdgeIndex == edgeCount) { ReportErrorToUI("Reorder node failed", "Cannot find target edge"); return; }
     }
     else
     {
-        const GraphNode* tNode = targetGraph->FindNode(targetNodeId);
-        if (!tNode) { ReportErrorToUI("Reorder node failed", "Target node not found"); return; }
+        if (targetNodeId == nodeId) return;
+        if (!targetGraph->FindNode(targetNodeId)) { ReportErrorToUI("Reorder node failed", "Target node not found"); return; }
 
-        auto tOut = std::find_if(edges.begin(), edges.end(), [&](const GraphEdge& e) { return e.from == targetNodeId; });
-        if (tOut == edges.end()) { ReportErrorToUI("Reorder node failed", "Cannot find target position"); return; }
+        for (std::size_t i = 0; i < edgeCount; ++i)
+        {
+            if (currentEdges[i].from == targetNodeId) { targetEdgeIndex = i; break; }
+        }
+        if (targetEdgeIndex == edgeCount) { ReportErrorToUI("Reorder node failed", "Cannot find target position"); return; }
 
-        const std::string afterId = tOut->to;
-        const int tPort = tOut->toPort;
-        const double tGain = tOut->gain;
-        tOut->to = nodeId; tOut->toPort = 0; tOut->gain = 1.0;
-
-        GraphEdge ne; ne.from = nodeId; ne.to = afterId; ne.fromPort = 0; ne.toPort = tPort; ne.gain = tGain;
-        edges.push_back(ne);
+        // The node already sits directly after the target node.
+        if (currentEdges[targetEdgeIndex].to == nodeId) return;
     }
+
+    // Commit-on-success: mutate a copy so a failure can never corrupt the graph.
+    auto edges = currentEdges;
+
+    const std::string bypassNextId = edges[outgoingIndex].to;
+    const int bypassToPort = edges[outgoingIndex].toPort;
+    const double bypassGain = edges[outgoingIndex].gain;
+
+    const std::string reinsertNextId = edges[targetEdgeIndex].to;
+    const int reinsertToPort = edges[targetEdgeIndex].toPort;
+    const double reinsertGain = edges[targetEdgeIndex].gain;
+
+    edges[incomingIndex].to = bypassNextId;
+    edges[incomingIndex].toPort = bypassToPort;
+    edges[incomingIndex].gain = bypassGain;
+
+    edges[targetEdgeIndex].to = nodeId;
+    edges[targetEdgeIndex].toPort = 0;
+    edges[targetEdgeIndex].gain = 1.0;
+
+    edges.erase(edges.begin() + static_cast<std::ptrdiff_t>(outgoingIndex));
+
+    GraphEdge reinserted;
+    reinserted.from = nodeId;
+    reinserted.to = reinsertNextId;
+    reinserted.fromPort = 0;
+    reinserted.toPort = reinsertToPort;
+    reinserted.gain = reinsertGain;
+    edges.push_back(reinserted);
+
+    targetGraph->edges = std::move(edges);
 
     if (IsCompositeEditMode()) BroadcastCompositeEditState();
     else if (mActivePreset) { SyncActivePresetSceneGraph(); ApplyPreset(*mActivePreset); BroadcastState(); }
@@ -14326,6 +14359,54 @@ void PluginController::SendPerformanceStatsToUI()
     msg["stats"] = statsJson;
     msg["sampleRate"] = mHost.GetSampleRate();
     msg["blockSize"] = mHost.GetBlockSize();
+    SendMessageToUI(msg.dump());
+}
+
+void PluginController::SendSpatialPositionsToUI()
+{
+    static const std::vector<std::string> kSpatialReadoutParams = {
+        "currentAzimuth", "currentElevation", "currentDistance",
+        "currentItdUs", "currentIldDb", "effectiveRate", "motionMode"
+    };
+
+    const auto readouts = mPresetMixer.ReadNodeParamsForType(EffectGuids::kSpatial3D, kSpatialReadoutParams);
+
+    if (readouts.empty())
+    {
+        // Send one final empty update so a UI that was tracking a node it can no
+        // longer see stops animating, then go quiet until a spatialiser reappears.
+        if (!mSpatialPositionsWereSent)
+            return;
+        mSpatialPositionsWereSent = false;
+    }
+    else
+    {
+        mSpatialPositionsWereSent = true;
+    }
+
+    nlohmann::json nodes = nlohmann::json::array();
+    for (const auto& readout : readouts)
+    {
+        nlohmann::json node{
+            {"scope", readout.scope},
+            {"nodeId", readout.nodeId},
+            {"azimuth", readout.values[0]},
+            {"elevation", readout.values[1]},
+            {"distance", readout.values[2]},
+            {"itdUs", readout.values[3]},
+            {"ildDb", readout.values[4]},
+            {"rateHz", readout.values[5]},
+            {"moving", readout.values[6] > 0.5}
+        };
+        if (!readout.presetId.empty())
+            node["presetId"] = readout.presetId;
+        nodes.push_back(std::move(node));
+    }
+
+    nlohmann::json msg{
+        {"type", "spatialPosition"},
+        {"nodes", std::move(nodes)}
+    };
     SendMessageToUI(msg.dump());
 }
 

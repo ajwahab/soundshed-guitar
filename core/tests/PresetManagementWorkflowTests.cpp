@@ -2080,6 +2080,165 @@ bool TestStandaloneStartupInputModeOverridesRestoredPreset()
     return true;
 }
 
+guitarfx::Preset BuildChainPreset(const std::string& id)
+{
+    using namespace guitarfx;
+
+    Preset preset;
+    preset.id = id;
+    preset.name = "Chain";
+    preset.version = 2;
+    preset.category = "Test";
+
+    GraphNode in;
+    in.id = "__input__";
+    in.type = kNodeTypeInput;
+
+    GraphNode out;
+    out.id = "__output__";
+    out.type = kNodeTypeOutput;
+
+    preset.graph.nodes = {in, out};
+    for (const char* fxId : {"fx1", "fx2", "fx3"})
+    {
+        GraphNode fx;
+        fx.id = fxId;
+        fx.type = "gain";
+        fx.category = "utility";
+        fx.enabled = true;
+        fx.params["gainDb"] = 0.0;
+        preset.graph.nodes.push_back(fx);
+    }
+
+    preset.graph.edges = {
+        {"__input__", "fx1", 0, 0, 1.0},
+        {"fx1", "fx2", 0, 0, 1.0},
+        {"fx2", "fx3", 0, 0, 1.0},
+        {"fx3", "__output__", 0, 0, 1.0},
+    };
+
+    return preset;
+}
+
+std::vector<std::string> ChainOrder(const guitarfx::SignalGraph& graph)
+{
+    std::vector<std::string> order;
+    std::string current = "__input__";
+    for (std::size_t guard = 0; guard <= graph.nodes.size(); ++guard)
+    {
+        order.push_back(current);
+        if (current == "__output__")
+            break;
+
+        std::string next;
+        for (const auto& edge : graph.edges)
+        {
+            if (edge.from == current)
+            {
+                next = edge.to;
+                break;
+            }
+        }
+        if (next.empty())
+            break;
+        current = next;
+    }
+    return order;
+}
+
+const guitarfx::SignalGraph& ActiveEditGraph(const guitarfx::Preset& preset)
+{
+    if (!preset.scenes.empty())
+        return preset.scenes.front().graph;
+    return preset.graph;
+}
+
+bool ExpectChainOrder(const guitarfx::SignalGraph& graph,
+                      const std::vector<std::string>& expected,
+                      const std::string& context)
+{
+    const auto actual = ChainOrder(graph);
+    if (actual != expected)
+    {
+        std::cerr << context << ": unexpected chain order:";
+        for (const auto& id : actual)
+            std::cerr << " " << id;
+        std::cerr << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool TestReorderSignalPathNodeFailuresDoNotCorruptGraph()
+{
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "reorder-node";
+    std::error_code ec;
+    fs::remove_all(sandbox, ec);
+    fs::create_directories(sandbox, ec);
+    SetSettingsEnvRoot(sandbox);
+
+    TestHost host(sandbox);
+    guitarfx::PluginController controller(host);
+    controller.Initialize();
+
+    const auto preset = BuildChainPreset("p-reorder");
+    nlohmann::json loadMessage;
+    loadMessage["type"] = "loadPreset";
+    loadMessage["preset"] = nlohmann::json::parse(guitarfx::PresetStorage::SerializeToJson(preset));
+    loadMessage["presetId"] = preset.id;
+    controller.HandleUIMessage(loadMessage.dump());
+
+    if (!controller.GetActivePreset())
+    {
+        std::cerr << "No active preset after loadPreset\n";
+        return false;
+    }
+
+    const std::vector<std::string> initialOrder = {"__input__", "fx1", "fx2", "fx3", "__output__"};
+    if (!ExpectChainOrder(ActiveEditGraph(*controller.GetActivePreset()), initialOrder, "initial"))
+        return false;
+
+    // A drop onto an edge that no longer exists must be rejected without mutating the graph.
+    nlohmann::json staleEdgeMove;
+    staleEdgeMove["type"] = "reorderSignalPathNode";
+    staleEdgeMove["nodeId"] = "fx2";
+    staleEdgeMove["edge"] = {{"from", "ghost-a"}, {"to", "ghost-b"}, {"fromPort", 0}, {"toPort", 0}};
+    controller.HandleUIMessage(staleEdgeMove.dump());
+    if (!ExpectChainOrder(ActiveEditGraph(*controller.GetActivePreset()), initialOrder, "after stale edge move"))
+        return false;
+
+    // Dropping a node back onto its own outgoing connection is a no-op.
+    nlohmann::json selfMove;
+    selfMove["type"] = "reorderSignalPathNode";
+    selfMove["nodeId"] = "fx2";
+    selfMove["edge"] = {{"from", "fx2"}, {"to", "fx3"}, {"fromPort", 0}, {"toPort", 0}};
+    controller.HandleUIMessage(selfMove.dump());
+    if (!ExpectChainOrder(ActiveEditGraph(*controller.GetActivePreset()), initialOrder, "after self move"))
+        return false;
+
+    // A valid reorder must still work after the rejected attempts.
+    nlohmann::json validMove;
+    validMove["type"] = "reorderSignalPathNode";
+    validMove["nodeId"] = "fx1";
+    validMove["targetNodeId"] = "fx3";
+    controller.HandleUIMessage(validMove.dump());
+    if (!ExpectChainOrder(ActiveEditGraph(*controller.GetActivePreset()),
+                          {"__input__", "fx2", "fx3", "fx1", "__output__"},
+                          "after valid reorder"))
+        return false;
+
+    // Moving onto an explicit edge reference must splice the node into that edge.
+    nlohmann::json edgeMove;
+    edgeMove["type"] = "reorderSignalPathNode";
+    edgeMove["nodeId"] = "fx1";
+    edgeMove["edge"] = {{"from", "__input__"}, {"to", "fx2"}, {"fromPort", 0}, {"toPort", 0}};
+    controller.HandleUIMessage(edgeMove.dump());
+    if (!ExpectChainOrder(ActiveEditGraph(*controller.GetActivePreset()), initialOrder, "after edge move"))
+        return false;
+
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -2112,6 +2271,7 @@ int main()
     run("Standalone startup keeps selected input channel", TestStandaloneStartupInputModeOverridesRestoredPreset());
     run("Riff library path normalization", TestRiffLibraryPathNormalization());
     run("Optimized NAM metadata alias parsing", TestOptimizedNamMetadataAliasParsing());
+    run("Reorder signal path node failures do not corrupt graph", TestReorderSignalPathNodeFailuresDoNotCorruptGraph());
 
     std::cout << "\nPreset management workflow tests: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

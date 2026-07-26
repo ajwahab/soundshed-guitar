@@ -846,6 +846,40 @@ namespace guitarfx
     return std::nullopt;
   }
 
+  std::vector<MultiPresetMixer::NodeReadout>
+  MultiPresetMixer::ReadNodeParamsForType(const std::string &effectType,
+                                          const std::vector<std::string> &paramIds) const
+  {
+    std::vector<NodeReadout> readouts;
+    if (effectType.empty() || paramIds.empty())
+      return readouts;
+
+    auto collect = [&](const SignalGraphExecutor &executor, const char *scope, const std::string &presetId)
+    {
+      for (const auto &nodeId : executor.FindNodesOfType(effectType, true))
+      {
+        const auto *processor = executor.GetNodeProcessor(nodeId);
+        if (!processor)
+          continue;
+        NodeReadout readout;
+        readout.scope = scope;
+        readout.presetId = presetId;
+        readout.nodeId = nodeId;
+        readout.values.reserve(paramIds.size());
+        for (const auto &paramId : paramIds)
+          readout.values.push_back(processor->GetParam(paramId));
+        readouts.push_back(std::move(readout));
+      }
+    };
+
+    collect(mPreChainExecutor, "pre", std::string{});
+    for (const auto &inst : mInstances)
+      collect(inst.executor, "preset", inst.cfg.id);
+    collect(mPostChainExecutor, "post", std::string{});
+
+    return readouts;
+  }
+
   bool MultiPresetMixer::SetNodeEnabledByType(const std::string &effectType, bool enabled)
   {
     bool updated = false;

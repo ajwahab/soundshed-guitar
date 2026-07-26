@@ -230,6 +230,24 @@ namespace guitarfx
     /// Returns (presetId, nodeId) or empty optional if not found.
     [[nodiscard]] std::optional<std::pair<std::string, std::string>> FindFirstEnabledNodeOfType(const std::string &effectType) const;
 
+    /// A node's identity plus a snapshot of some of its parameters.
+    struct NodeReadout
+    {
+      std::string scope;   ///< "pre", "preset" or "post"
+      std::string presetId; ///< empty for the pre and post global chains
+      std::string nodeId;
+      std::vector<double> values; ///< one entry per requested parameter id, in order
+    };
+
+    /// Read a fixed set of parameters from every node of the given effect type, across the
+    /// pre-chain, all preset instances and the post-chain.
+    ///
+    /// Intended for periodic UI telemetry: it returns values rather than processor pointers so
+    /// callers cannot accidentally hold a reference across a graph rebuild. Parameters an effect
+    /// does not implement read back as 0.
+    [[nodiscard]] std::vector<NodeReadout> ReadNodeParamsForType(const std::string &effectType,
+                                                                 const std::vector<std::string> &paramIds) const;
+
     /// Apply a parameter to the first enabled node of the given effect type across all active presets.
     /// Returns true if a matching node was found and updated.
     bool SetNodeParamByType(const std::string &effectType, const std::string &paramId, double value);
