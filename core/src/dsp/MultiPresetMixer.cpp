@@ -253,8 +253,16 @@ namespace guitarfx
     mTunerReferenceFrequency = other.mTunerReferenceFrequency;
     mTunerCallback = std::move(other.mTunerCallback);
     mTunerBuffer = std::move(other.mTunerBuffer);
+    mTunerOrderedBuffer = std::move(other.mTunerOrderedBuffer);
+    mTunerAnalysisWriteBuffer = std::move(other.mTunerAnalysisWriteBuffer);
+    mTunerAnalysisReadBuffer = std::move(other.mTunerAnalysisReadBuffer);
     mTunerBufferWriteIndex = other.mTunerBufferWriteIndex;
     mTunerSampleCounter = other.mTunerSampleCounter;
+    mTunerWorkerQuit = other.mTunerWorkerQuit;
+    mTunerAnalysisPending = other.mTunerAnalysisPending;
+    mTunerAnalysisReferenceFrequency = other.mTunerAnalysisReferenceFrequency;
+    mTunerQueuedGeneration = other.mTunerQueuedGeneration;
+    mTunerAnalysisGeneration.store(other.mTunerAnalysisGeneration.load(std::memory_order_acquire), std::memory_order_release);
 
     mSignalDiagnosticsEnabled.store(other.mSignalDiagnosticsEnabled.load(std::memory_order_acquire), std::memory_order_release);
     mRawInputLevels.peak.store(other.mRawInputLevels.peak.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -956,7 +964,83 @@ namespace guitarfx
 
   MultiPresetMixer::~MultiPresetMixer()
   {
+    StopTunerWorker();
     StopWorkers();
+  }
+
+  void MultiPresetMixer::StartTunerWorker()
+  {
+    if (mTunerWorkerThread.joinable())
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mTunerAnalysisMutex);
+      mTunerWorkerQuit = false;
+      mTunerAnalysisPending = false;
+    }
+
+    mTunerWorkerThread = std::thread([this] { TunerWorkerLoop(); });
+  }
+
+  void MultiPresetMixer::StopTunerWorker()
+  {
+    if (!mTunerWorkerThread.joinable())
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mTunerAnalysisMutex);
+      mTunerWorkerQuit = true;
+      mTunerAnalysisPending = false;
+    }
+    mTunerAnalysisCv.notify_all();
+
+    if (mTunerWorkerThread.joinable())
+      mTunerWorkerThread.join();
+  }
+
+  void MultiPresetMixer::TunerWorkerLoop()
+  {
+    while (true)
+    {
+      double referenceFrequency = 440.0;
+      std::uint64_t queuedGeneration = 0;
+      TunerCallback callback;
+
+      {
+        std::unique_lock<std::mutex> lock(mTunerAnalysisMutex);
+        mTunerAnalysisCv.wait(lock, [&]
+        {
+          return mTunerWorkerQuit || mTunerAnalysisPending;
+        });
+
+        if (mTunerWorkerQuit)
+          return;
+
+        std::swap(mTunerAnalysisReadBuffer, mTunerAnalysisWriteBuffer);
+        referenceFrequency = mTunerAnalysisReferenceFrequency;
+        queuedGeneration = mTunerQueuedGeneration;
+        mTunerAnalysisPending = false;
+        callback = mTunerCallback;
+      }
+
+      if (!callback || mTunerAnalysisReadBuffer.empty())
+        continue;
+
+      double sumSq = 0.0;
+      for (const auto sample : mTunerAnalysisReadBuffer)
+        sumSq += sample * sample;
+      const double rms = std::sqrt(sumSq / static_cast<double>(mTunerAnalysisReadBuffer.size()));
+
+      const double frequency = DetectPitch(mTunerAnalysisReadBuffer);
+      TunerResult result = FrequencyToNote(frequency, referenceFrequency);
+      result.debugRms = rms;
+      result.debugRawFreq = frequency;
+
+      if (queuedGeneration != mTunerAnalysisGeneration.load(std::memory_order_acquire))
+        continue;
+
+      callback(result);
+    }
   }
 
   void MultiPresetMixer::StartWorkers(int count)
@@ -1040,6 +1124,9 @@ namespace guitarfx
     mPreChainOutR.resize(static_cast<size_t>(maxBlockSize), 0.0f);
     mPostChainOutL.resize(static_cast<size_t>(maxBlockSize), 0.0f);
     mPostChainOutR.resize(static_cast<size_t>(maxBlockSize), 0.0f);
+    mTunerOrderedBuffer.resize(kTunerBufferSize, 0.0);
+    mTunerAnalysisWriteBuffer.resize(kTunerBufferSize, 0.0);
+    mTunerAnalysisReadBuffer.resize(kTunerBufferSize, 0.0);
 
     // Build and prepare global signal chains based on current config
     mGlobalChainNeedsRebuild.store(true, std::memory_order_release);
@@ -1810,18 +1897,29 @@ namespace guitarfx
   void MultiPresetMixer::SetTunerEnabled(bool enabled)
   {
     mTunerEnabled = enabled;
+    const std::uint64_t generation = mTunerAnalysisGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
     if (enabled)
     {
       // Reset tuner state when enabled
+      StartTunerWorker();
       mTunerBuffer.resize(kTunerBufferSize, 0.0);
       std::fill(mTunerBuffer.begin(), mTunerBuffer.end(), 0.0);
+      mTunerOrderedBuffer.resize(kTunerBufferSize, 0.0);
+      mTunerAnalysisWriteBuffer.resize(kTunerBufferSize, 0.0);
+      mTunerAnalysisReadBuffer.resize(kTunerBufferSize, 0.0);
       mTunerBufferWriteIndex = 0;
       mTunerSampleCounter = 0;
     }
+
+    std::lock_guard<std::mutex> lock(mTunerAnalysisMutex);
+    mTunerAnalysisPending = false;
+    mTunerQueuedGeneration = generation;
+    mTunerAnalysisReferenceFrequency = mTunerReferenceFrequency;
   }
 
   void MultiPresetMixer::SetTunerCallback(TunerCallback callback)
   {
+    std::lock_guard<std::mutex> lock(mTunerAnalysisMutex);
     mTunerCallback = std::move(callback);
   }
 
@@ -1835,15 +1933,17 @@ namespace guitarfx
     // Use the main input channel setting (same as DSP processing)
     const int ch = mInputChannel;
     
-    if (!mTunerEnabled || !mTunerCallback || !inputs || !inputs[ch])
+    if (!mTunerEnabled || !inputs || !inputs[ch])
     {
       return;
     }
 
-    // Ensure buffer is allocated
-    if (mTunerBuffer.size() != kTunerBufferSize)
+    // Buffers are provisioned when the tuner is enabled; skip this update rather
+    // than allocating on the audio thread if the state is incomplete.
+    if (mTunerBuffer.size() != kTunerBufferSize
+        || mTunerOrderedBuffer.size() != kTunerBufferSize)
     {
-      mTunerBuffer.resize(kTunerBufferSize, 0.0);
+      return;
     }
 
     // Fill the tuner buffer with input samples (mono - use selected channel)
@@ -1859,27 +1959,27 @@ namespace guitarfx
     {
       mTunerSampleCounter = 0;
 
-      // Reorder buffer to be contiguous for pitch detection
-      std::vector<double> orderedBuffer(kTunerBufferSize);
+      // Reorder buffer to be contiguous for pitch detection (uses pre-allocated member, no heap alloc)
       for (std::size_t i = 0; i < kTunerBufferSize; ++i)
       {
-        orderedBuffer[i] = mTunerBuffer[(mTunerBufferWriteIndex + i) % kTunerBufferSize];
+        mTunerOrderedBuffer[i] = mTunerBuffer[(mTunerBufferWriteIndex + i) % kTunerBufferSize];
       }
 
-      // Calculate RMS for debug
-      double sumSq = 0.0;
-      for (const auto &s : orderedBuffer)
-        sumSq += s * s;
-      double rms = std::sqrt(sumSq / static_cast<double>(orderedBuffer.size()));
+      bool queuedForAnalysis = false;
+      {
+        std::unique_lock<std::mutex> lock(mTunerAnalysisMutex, std::try_to_lock);
+        if (lock.owns_lock() && mTunerAnalysisWriteBuffer.size() == kTunerBufferSize)
+        {
+          std::copy(mTunerOrderedBuffer.begin(), mTunerOrderedBuffer.end(), mTunerAnalysisWriteBuffer.begin());
+          mTunerAnalysisReferenceFrequency = mTunerReferenceFrequency;
+          mTunerQueuedGeneration = mTunerAnalysisGeneration.load(std::memory_order_acquire);
+          mTunerAnalysisPending = true;
+          queuedForAnalysis = true;
+        }
+      }
 
-      double frequency = DetectPitch(orderedBuffer);
-      TunerResult result = FrequencyToNote(frequency);
-
-      // Store debug info in result for UI logging
-      result.debugRms = rms;
-      result.debugRawFreq = frequency;
-
-      mTunerCallback(result);
+      if (queuedForAnalysis)
+        mTunerAnalysisCv.notify_one();
     }
   }
 
@@ -1997,7 +2097,7 @@ namespace guitarfx
     return mSampleRate / period;
   }
 
-  MultiPresetMixer::TunerResult MultiPresetMixer::FrequencyToNote(double frequency) const
+  MultiPresetMixer::TunerResult MultiPresetMixer::FrequencyToNote(double frequency, double referenceFrequency) const
   {
     TunerResult result;
 
@@ -2011,13 +2111,13 @@ namespace guitarfx
     result.detected = true;
 
     // Calculate the number of semitones from A4 (reference frequency, typically 440 Hz)
-    const double semitonesFromA4 = 12.0 * std::log2(frequency / mTunerReferenceFrequency);
+    const double semitonesFromA4 = 12.0 * std::log2(frequency / referenceFrequency);
 
     // Round to nearest semitone
     const int nearestSemitone = static_cast<int>(std::round(semitonesFromA4));
 
     // Calculate the exact frequency of the nearest note
-    const double nearestFrequency = mTunerReferenceFrequency * std::pow(2.0, nearestSemitone / 12.0);
+    const double nearestFrequency = referenceFrequency * std::pow(2.0, nearestSemitone / 12.0);
 
     // Calculate cents offset from the nearest note
     result.centOffset = 1200.0 * std::log2(frequency / nearestFrequency);

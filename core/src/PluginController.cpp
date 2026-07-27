@@ -4963,19 +4963,26 @@ void PluginController::HandleTunerRequest(const nlohmann::json& payload)
     const std::string action = payload.value("action", "");
     if (action == "start")
     {
-        if (payload.contains("liveMode"))
-            mPresetMixer.SetLiveTunerMode(payload.value("liveMode", true));
-
         mTunerActive.store(true, std::memory_order_release);
-        mPresetMixer.SetTunerEnabled(true);
+        double referenceFrequency = 440.0;
+        bool liveMode = true;
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            if (payload.contains("liveMode"))
+                mPresetMixer.SetLiveTunerMode(payload.value("liveMode", true));
 
-        if (payload.contains("referenceFrequency"))
-            mPresetMixer.SetTunerReferenceFrequency(payload["referenceFrequency"].get<double>());
+            if (payload.contains("referenceFrequency"))
+                mPresetMixer.SetTunerReferenceFrequency(payload["referenceFrequency"].get<double>());
+
+            mPresetMixer.SetTunerEnabled(true);
+            referenceFrequency = mPresetMixer.GetTunerReferenceFrequency();
+            liveMode = mPresetMixer.IsLiveTunerMode();
+        }
 
         nlohmann::json message;
         message["type"] = "tunerStarted";
-        message["referenceFrequency"] = mPresetMixer.GetTunerReferenceFrequency();
-        message["liveMode"] = mPresetMixer.IsLiveTunerMode();
+        message["referenceFrequency"] = referenceFrequency;
+        message["liveMode"] = liveMode;
         SendMessageToUI(message.dump());
         return;
     }
@@ -4983,7 +4990,10 @@ void PluginController::HandleTunerRequest(const nlohmann::json& payload)
     if (action == "stop")
     {
         mTunerActive.store(false, std::memory_order_release);
-        mPresetMixer.SetTunerEnabled(false);
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            mPresetMixer.SetTunerEnabled(false);
+        }
 
         nlohmann::json message;
         message["type"] = "tunerStopped";
@@ -4994,7 +5004,10 @@ void PluginController::HandleTunerRequest(const nlohmann::json& payload)
     if (action == "setLiveMode")
     {
         bool liveMode = payload.value("liveMode", true);
-        mPresetMixer.SetLiveTunerMode(liveMode);
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            mPresetMixer.SetLiveTunerMode(liveMode);
+        }
 
         nlohmann::json message;
         message["type"] = "tunerLiveModeChanged";
@@ -5006,11 +5019,16 @@ void PluginController::HandleTunerRequest(const nlohmann::json& payload)
     if (action == "setReference")
     {
         double freq = payload.value("referenceFrequency", 440.0);
-        mPresetMixer.SetTunerReferenceFrequency(freq);
+        double effectiveFrequency = 440.0;
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            mPresetMixer.SetTunerReferenceFrequency(freq);
+            effectiveFrequency = mPresetMixer.GetTunerReferenceFrequency();
+        }
 
         nlohmann::json message;
         message["type"] = "tunerReferenceChanged";
-        message["referenceFrequency"] = mPresetMixer.GetTunerReferenceFrequency();
+        message["referenceFrequency"] = effectiveFrequency;
         SendMessageToUI(message.dump());
         return;
     }
@@ -5019,12 +5037,19 @@ void PluginController::HandleTunerRequest(const nlohmann::json& payload)
     {
         bool enabled = payload.value("enabled", false);
         mTunerActive.store(enabled, std::memory_order_release);
-        mPresetMixer.SetTunerEnabled(enabled);
+        double referenceFrequency = 440.0;
+        bool liveMode = true;
+        {
+            std::lock_guard<std::mutex> lock(mDSPMutex);
+            mPresetMixer.SetTunerEnabled(enabled);
+            referenceFrequency = mPresetMixer.GetTunerReferenceFrequency();
+            liveMode = mPresetMixer.IsLiveTunerMode();
+        }
 
         nlohmann::json reply;
         reply["type"] = enabled ? "tunerStarted" : "tunerStopped";
-        reply["referenceFrequency"] = mPresetMixer.GetTunerReferenceFrequency();
-        reply["liveMode"] = mPresetMixer.IsLiveTunerMode();
+        reply["referenceFrequency"] = referenceFrequency;
+        reply["liveMode"] = liveMode;
         SendMessageToUI(reply.dump());
     }
 }

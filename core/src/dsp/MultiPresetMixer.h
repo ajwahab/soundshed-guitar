@@ -316,7 +316,10 @@ namespace guitarfx
     // Tuner processing (YIN-based pitch detection)
     void ProcessTuner(float **inputs, int numSamples);
     [[nodiscard]] double DetectPitch(const std::vector<double> &samples) const;
-    [[nodiscard]] TunerResult FrequencyToNote(double frequency) const;
+    [[nodiscard]] TunerResult FrequencyToNote(double frequency, double referenceFrequency) const;
+    void StartTunerWorker();
+    void StopTunerWorker();
+    void TunerWorkerLoop();
 
     ResourceLibrary *mResourceLibrary = nullptr;
     std::vector<PresetInstance> mInstances;
@@ -365,10 +368,21 @@ namespace guitarfx
     double mTunerReferenceFrequency = 440.0;  // A4 reference pitch
     TunerCallback mTunerCallback;
     std::vector<double> mTunerBuffer;         // Circular buffer for pitch detection
+    std::vector<double> mTunerOrderedBuffer;  // Pre-allocated scratch for linearised reads (audio thread, no alloc)
+    std::vector<double> mTunerAnalysisWriteBuffer; // Mailbox from audio thread to worker
+    std::vector<double> mTunerAnalysisReadBuffer;  // Worker-owned snapshot outside the audio thread
     std::size_t mTunerBufferWriteIndex = 0;
     std::size_t mTunerSampleCounter = 0;      // For throttling callback rate
     static constexpr std::size_t kTunerBufferSize = 4096;      // ~85ms at 48kHz for good low-frequency detection
     static constexpr std::size_t kTunerUpdateInterval = 2048;  // Update every ~42ms at 48kHz
+    std::mutex mTunerAnalysisMutex;
+    std::condition_variable mTunerAnalysisCv;
+    std::thread mTunerWorkerThread;
+    bool mTunerWorkerQuit = false;
+    bool mTunerAnalysisPending = false;
+    double mTunerAnalysisReferenceFrequency = 440.0;
+    std::uint64_t mTunerQueuedGeneration = 0;
+    std::atomic<std::uint64_t> mTunerAnalysisGeneration{0};
 
     struct AtomicLevelStats
     {
