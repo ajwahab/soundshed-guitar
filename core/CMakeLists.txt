@@ -354,7 +354,7 @@ if(GUITARFX_CORE_FETCH_DEPS AND NOT TARGET NeuralAmpModelerCore AND NOT TARGET n
     set(NAM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(NeuralAmpModelerCore
         GIT_REPOSITORY https://github.com/sdatkinson/NeuralAmpModelerCore.git
-        GIT_TAG v0.5.3
+        GIT_TAG v0.5.4
         CMAKE_ARGS -DNAM_BUILD_TOOLS=OFF -DNAM_BUILD_TESTS=OFF)
     FetchContent_MakeAvailable(NeuralAmpModelerCore)
     FetchContent_GetProperties(NeuralAmpModelerCore SOURCE_DIR NAM_SOURCE_DIR BINARY_DIR NAM_BINARY_DIR)
@@ -390,13 +390,19 @@ if(GUITARFX_CORE_FETCH_DEPS AND NOT TARGET NeuralAmpModelerCore AND NOT TARGET n
     if(DEFINED NeuralAmpModelerCore_SOURCE_DIR)
         set(_nam_eigen_dest "${NeuralAmpModelerCore_SOURCE_DIR}/Dependencies/eigen")
         if(NOT EXISTS "${_nam_eigen_dest}/Eigen")
-            FetchContent_Declare(eigen
-                GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-                GIT_TAG 3.4.0)
-            FetchContent_MakeAvailable(eigen)
-            if(EXISTS "${eigen_SOURCE_DIR}/Eigen")
+            set(_guitarfx_eigen_source "${CMAKE_CURRENT_SOURCE_DIR}/../Dependencies/eigen")
+            if(NOT EXISTS "${_guitarfx_eigen_source}/Eigen")
+                FetchContent_Declare(eigen
+                    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+                    GIT_TAG 5.0.1)
+                FetchContent_MakeAvailable(eigen)
+                set(_guitarfx_eigen_source "${eigen_SOURCE_DIR}")
+            endif()
+            if(EXISTS "${_guitarfx_eigen_source}/Eigen")
                 file(MAKE_DIRECTORY "${_nam_eigen_dest}")
-                file(COPY "${eigen_SOURCE_DIR}/Eigen" "${eigen_SOURCE_DIR}/unsupported" DESTINATION "${_nam_eigen_dest}")
+                file(COPY "${_guitarfx_eigen_source}/Eigen" "${_guitarfx_eigen_source}/unsupported" DESTINATION "${_nam_eigen_dest}")
+            else()
+                message(FATAL_ERROR "Eigen 5.0.1 is required by NeuralAmpModelerCore but could not be located.")
             endif()
         endif()
 
