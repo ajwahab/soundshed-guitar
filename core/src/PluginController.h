@@ -354,6 +354,7 @@ private:
                                                     const ResourceRef& ref,
                                                     int resourceIndex = -1);
     void UpdateHostLatency();
+    int mLastReportedLatency = -1; ///< Guards against redundant host latency notifications
     void ApplyBlendDefinitions(Preset& preset);
     void CaptureRuntimePluginStates(Preset& preset, const std::string& presetId) const;
     std::optional<Preset> TryLoadStoredPresetById(const std::string& presetId);
@@ -540,14 +541,6 @@ private:
     };
     std::mutex mPendingNodeParamMutex;
     std::vector<PendingNodeParamNotify> mPendingNodeParamNotifies;
-
-    struct PendingNodeBypassNotify
-    {
-        std::string nodeId;
-        bool bypassed = false;
-    };
-    std::mutex mPendingNodeBypassMutex;
-    std::vector<PendingNodeBypassNotify> mPendingNodeBypassNotifies;
 
     // Deferred setlist preset apply (drained in OnIdle to avoid DSP lock recursion)
     std::mutex mPendingSetlistMutex;
@@ -744,6 +737,7 @@ private:
     bool mUIReady = false;
     mutable std::uint64_t mSharedSyncVersionSeen = 0;
     mutable bool mSharedSyncVersionSeenInitialized = false;
+    std::uint64_t mSharedSyncVersionHandled = 0;
     std::chrono::steady_clock::time_point mNextSharedSyncPollAt{};
 
     // Layout library cache

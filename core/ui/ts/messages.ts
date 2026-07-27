@@ -233,7 +233,7 @@ function scheduleSharedSyncRefresh(): void {
   sharedSyncRefreshTimer = window.setTimeout(() => {
     sharedSyncRefreshTimer = null;
     postMessage({ type: "getSharedSyncState" });
-  }, 150);
+  }, 1000);
 }
 
 function isSensitiveDebugKey(key: string): boolean {

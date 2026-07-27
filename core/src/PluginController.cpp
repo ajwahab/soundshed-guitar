@@ -2399,7 +2399,6 @@ void PluginController::Initialize()
 
             const auto resolvedType = EffectRegistry::Instance().Resolve(effectType);
             bool updated = false;
-            std::vector<std::string> updatedNodeIds;
             const auto applyBypassToGraph = [&](SignalGraph& graph)
             {
                 for (auto& node : graph.nodes)
@@ -2408,7 +2407,6 @@ void PluginController::Initialize()
                         continue;
                     node.enabled = enabled;
                     updated = true;
-                    updatedNodeIds.push_back(node.id);
                 }
             };
 
@@ -2428,11 +2426,6 @@ void PluginController::Initialize()
                 mMixerPresetJsonCache[mActivePresetId] = mActivePresetJson;
             mPendingStateBroadcast = true;
 
-            {
-                std::lock_guard<std::mutex> lock(mPendingNodeBypassMutex);
-                for (const auto& nodeId : updatedNodeIds)
-                    mPendingNodeBypassNotifies.push_back({nodeId, !enabled});
-            }
         });
 
     // Load automation.json
@@ -4049,24 +4042,6 @@ void PluginController::OnIdle()
         }
     }
 
-    // Drain deferred node-bypass notifications (from automation by effect type)
-    {
-        std::vector<PendingNodeBypassNotify> notifies;
-        {
-            std::lock_guard<std::mutex> lock(mPendingNodeBypassMutex);
-            notifies = std::move(mPendingNodeBypassNotifies);
-            mPendingNodeBypassNotifies.clear();
-        }
-        for (const auto& n : notifies)
-        {
-            nlohmann::json msg;
-            msg["type"] = "signalPathNodeBypassUpdated";
-            msg["nodeId"] = n.nodeId;
-            msg["bypassed"] = n.bypassed;
-            SendMessageToUI(msg.dump());
-        }
-    }
-
     // Drain diagnostic MIDI log events (only populated while the UI log panel is
     // open). Building JSON + SendMessageToUI happens here on the idle thread, never
     // on the audio thread.
@@ -4546,6 +4521,27 @@ void PluginController::HandleStateRequest()
 
 void PluginController::HandleGetSharedSyncStateRequest()
 {
+    // Only act if the shared sync state file has a new version since we last responded.
+    const auto syncPath = ResolveSharedSyncStatePath(mFileSystem);
+    const auto filePayload = LoadJsonFile(syncPath, nlohmann::json::object());
+    std::uint64_t currentVersion = 0;
+    if (filePayload.is_object())
+    {
+        const auto it = filePayload.find("version");
+        if (it != filePayload.end() && it->is_number_unsigned())
+            currentVersion = it->get<std::uint64_t>();
+    }
+
+    if (currentVersion > 0 && currentVersion == mSharedSyncVersionHandled)
+        return;
+
+    mSharedSyncVersionHandled = currentVersion;
+    if (!mSharedSyncVersionSeenInitialized || currentVersion > mSharedSyncVersionSeen)
+    {
+        mSharedSyncVersionSeen = currentVersion;
+        mSharedSyncVersionSeenInitialized = true;
+    }
+
     ReloadSharedSyncSourcesFromDisk();
 
     nlohmann::json state;
@@ -11206,12 +11202,14 @@ void PluginController::HandleSetTunerEnabledRequest(const nlohmann::json& payloa
 {
     bool enabled = payload.value("enabled", false);
     mTunerActive.store(enabled, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(mDSPMutex);
     mPresetMixer.SetTunerEnabled(enabled);
 }
 
 void PluginController::HandleSetTunerReferenceRequest(const nlohmann::json& payload)
 {
     double freq = payload.value("frequency", 440.0);
+    std::lock_guard<std::mutex> lock(mDSPMutex);
     mPresetMixer.SetTunerReferenceFrequency(freq);
 }
 
@@ -11404,6 +11402,9 @@ void PluginController::BroadcastState()
 void PluginController::UpdateHostLatency()
 {
     const int latency = mPresetMixer.GetTotalLatencySamples();
+    if (latency == mLastReportedLatency)
+        return;
+    mLastReportedLatency = latency;
     mHost.NotifyLatencyChanged(latency);
 }
 
