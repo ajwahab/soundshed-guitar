@@ -3755,6 +3755,7 @@ std::string PluginController::SerializeState() const
         state["preset"] = nlohmann::json::parse(PresetStorage::SerializeToJson(presetWithRuntimeState));
     }
     state["presetId"] = mActivePresetId;
+    state["activeSceneId"] = GetResolvedActiveSceneId();
     state["appSettings"] = mAppSettings;
     state["uiSettings"] = mUiSettings;
     state["uiViewState"] = mUiViewState;
@@ -3844,6 +3845,9 @@ void PluginController::DeserializeState(const std::string& json)
             if (presetOpt)
             {
                 mActivePresetId = state.value("presetId", presetOpt->id);
+                mActiveSceneId = state.contains("activeSceneId") && state["activeSceneId"].is_string()
+                    ? state["activeSceneId"].get<std::string>()
+                    : std::string{};
                 mActivePreset = *presetOpt;
                 mActivePresetJson = PresetStorage::SerializeToJson(*presetOpt);
                 ApplyPreset(*presetOpt);

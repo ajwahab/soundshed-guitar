@@ -473,6 +473,53 @@ bool TestLoadPresetViaMessage()
     return true;
 }
 
+bool TestPluginStateRestoresActiveScene()
+{
+    const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "active-scene-state";
+    std::error_code ec;
+    fs::remove_all(sandbox, ec);
+    fs::create_directories(sandbox, ec);
+    SetSettingsEnvRoot(sandbox);
+
+    TestHost host(sandbox);
+    guitarfx::PluginController source(host);
+    source.Initialize();
+
+    auto preset = BuildPassthroughPreset("p-scenes", "Scenes");
+    guitarfx::NormalizePresetScenes(preset);
+    auto secondScene = preset.scenes.front();
+    secondScene.id = "scene-2";
+    secondScene.title = "Scene 2";
+    preset.scenes.push_back(std::move(secondScene));
+
+    source.HandleUIMessage(nlohmann::json{
+        {"type", "loadPreset"},
+        {"preset", nlohmann::json::parse(guitarfx::PresetStorage::SerializeToJson(preset))},
+        {"presetId", preset.id},
+        {"sceneId", "scene-2"},
+    }.dump());
+
+    const auto savedState = nlohmann::json::parse(source.SerializeState());
+    if (savedState.value("activeSceneId", std::string{}) != "scene-2")
+    {
+        std::cerr << "Plugin state did not serialize the active scene\n";
+        return false;
+    }
+
+    guitarfx::PluginController restored(host);
+    restored.Initialize();
+    restored.DeserializeState(savedState.dump());
+
+    const auto restoredState = nlohmann::json::parse(restored.SerializeState());
+    if (restoredState.value("activeSceneId", std::string{}) != "scene-2")
+    {
+        std::cerr << "Plugin state did not restore the active scene\n";
+        return false;
+    }
+
+    return true;
+}
+
 bool TestLoadPresetRehydratesScrubbedHostedPluginState()
 {
     try
@@ -2252,6 +2299,7 @@ int main()
     };
 
     run("Load preset via message", TestLoadPresetViaMessage());
+    run("Plugin state restores active scene", TestPluginStateRestoresActiveScene());
     run("Load preset rehydrates scrubbed hosted plugin state", TestLoadPresetRehydratesScrubbedHostedPluginState());
     run("Load preset rehydrates scrubbed hosted plugin state from active preset", TestLoadPresetRehydratesScrubbedHostedPluginStateFromActivePreset());
     run("Load preset remaps hosted plugin resource by stable id", TestLoadPresetRemapsHostedPluginResourceByStableId());
