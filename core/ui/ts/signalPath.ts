@@ -311,6 +311,8 @@ function hideNodeParamsPanel(): void {
   disposeAmp3dView();
 }
 
+const AMP3D_DOCK_COLLAPSED_KEY = "guitarfx.amp3dDockCollapsed";
+
 /**
  * Amp stage markup: the 3D render fills the stage and the 2D controls (model
  * chooser above, remaining parameters below) float over the bottom of it in a
@@ -319,13 +321,31 @@ function hideNodeParamsPanel(): void {
  */
 function renderAmp3dViewportHtml(node: GraphNode, modelChooserHtml: string, extraControlsHtml: string): string {
   const withCabinet = nodeUsesFullRigNamCategory(node) ? " has-cabinet" : "";
+  const canCollapse = Boolean(extraControlsHtml);
+  const dockCollapsed = canCollapse && localStorage.getItem(AMP3D_DOCK_COLLAPSED_KEY) === "true";
+  const collapseBtn = canCollapse
+    ? `
+      <button class="amp3d-dock-collapse-btn" type="button"
+        aria-expanded="${dockCollapsed ? "false" : "true"}"
+        aria-label="${dockCollapsed ? "Expand amp controls" : "Collapse amp controls"}"
+        title="${dockCollapsed ? "Expand amp controls" : "Collapse amp controls"}">
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <path d="M3.5 5.75 8 10.25l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="amp3d-dock-collapsed-label" aria-hidden="true"><span>ADVANCED</span></span>
+      </button>
+    `
+    : "";
   const dock = modelChooserHtml || extraControlsHtml
     ? `
-      <div class="amp3d-dock">
+      <div class="amp3d-dock${dockCollapsed ? " is-collapsed" : ""}${canCollapse ? " has-advanced" : ""}">
+        ${collapseBtn ? `<div class="amp3d-dock-header">${collapseBtn}</div>` : ""}
         ${modelChooserHtml ? `<div class="amp3d-dock-models">${modelChooserHtml}</div>` : ""}
         ${extraControlsHtml ? `
         <div class="amp3d-dock-controls">
-          <div class="params-controls">${extraControlsHtml}</div>
+          <div class="amp3d-dock-controls-inner">
+            <div class="params-controls">${extraControlsHtml}</div>
+          </div>
         </div>
         ` : ""}
       </div>
@@ -341,6 +361,47 @@ function renderAmp3dViewportHtml(node: GraphNode, modelChooserHtml: string, extr
       ${dock}
     </div>
   `;
+}
+
+function bindAmp3dDockCollapse(): void {
+  const dock = nodeParamsPanelElement?.querySelector<HTMLElement>(".amp3d-dock.has-advanced");
+  const btn = dock?.querySelector<HTMLButtonElement>(".amp3d-dock-collapse-btn");
+  if (!dock || !btn) {
+    return;
+  }
+
+  const apply = (collapsed: boolean) => {
+    dock.classList.toggle("is-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.setAttribute("aria-label", collapsed ? "Expand amp controls" : "Collapse amp controls");
+    btn.title = collapsed ? "Expand amp controls" : "Collapse amp controls";
+  };
+
+  apply(localStorage.getItem(AMP3D_DOCK_COLLAPSED_KEY) === "true");
+
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const collapsed = !dock.classList.contains("is-collapsed");
+    apply(collapsed);
+    localStorage.setItem(AMP3D_DOCK_COLLAPSED_KEY, String(collapsed));
+  });
+}
+
+/** Push the selected node's smoothed peak avg into the live 3D amp glow. */
+function updateAmp3dSignalLevel(): void {
+  if (!amp3dView || !amp3dViewNodeId || amp3dViewNodeId !== selectedNodeId) {
+    return;
+  }
+  const peakAvg = selectedNodeDspStatusAverages.get("peak");
+  if (peakAvg === undefined || !Number.isFinite(peakAvg)) {
+    const live = getSelectedNodeDiagnostics()?.peakDbfs;
+    amp3dView.setSignalLevel(
+      live !== undefined && Number.isFinite(live) ? normalizePeakDbfsForShellMeter(live) : 0,
+    );
+    return;
+  }
+  amp3dView.setSignalLevel(normalizePeakDbfsForShellMeter(peakAvg));
 }
 
 /**
@@ -2257,11 +2318,13 @@ function normalizePeakDbfsForShellMeter(peakDbfs: number): number {
 export function updateSelectedNodePeakMeter(): void {
   const rail = nodeParamsPanelElement?.querySelector(".default-effect-shell-rail") as HTMLElement | null;
   if (!rail) {
+    updateAmp3dSignalLevel();
     return;
   }
 
   const meter = rail.querySelector<HTMLElement>(".default-effect-shell-meter");
   if (!meter) {
+    updateAmp3dSignalLevel();
     return;
   }
 
@@ -2272,6 +2335,7 @@ export function updateSelectedNodePeakMeter(): void {
     rail.classList.add("is-inactive");
     rail.title = "No diagnostics data for this node";
     meter.style.setProperty("--meter-fill-scale", "0");
+    updateAmp3dSignalLevel();
     return;
   }
 
@@ -2283,6 +2347,9 @@ export function updateSelectedNodePeakMeter(): void {
   }
 
   rail.title = `Node peak: ${metrics.peakDbfs.toFixed(1)} dBFS · Headroom: ${metrics.headroomDb.toFixed(1)} dB`;
+  // Keep the 3D amp glow in step with the same diagnostics stream as the meter.
+  // Prefer the DSP-status peak average when available (updated just after this).
+  updateAmp3dSignalLevel();
 }
 
 function formatDspStatusDb(value: number | null | undefined): string {
@@ -2378,16 +2445,21 @@ function addDspStatusSample(name: string, value: number | null): number | null {
 
 export function updateSelectedNodeDspStatus(): void {
   const status = nodeParamsPanelElement?.querySelector<HTMLElement>(".effect-dsp-status");
+  const diagnostics = getSelectedNodeDiagnosticsEntry();
+  const metrics = diagnostics?.levels;
+  // Always keep the peak average warm so the 3D amp glow can use it even when
+  // the DSP status panel is hidden.
+  addDspStatusSample("peak", metrics?.peakDbfs ?? null);
+  updateAmp3dSignalLevel();
+
   if (!status || !selectedNodeDspStatusVisible) {
     return;
   }
 
-  const diagnostics = getSelectedNodeDiagnosticsEntry();
-  const metrics = diagnostics?.levels;
   const timeUs = getSelectedNodeDspStatusTimeUs(diagnostics);
   const latencySamples = getSelectedNodeDspStatusLatencySamples(diagnostics);
   const values: Record<string, string> = {
-    peak: formatDspStatusDb(addDspStatusSample("peak", metrics?.peakDbfs ?? null)),
+    peak: formatDspStatusDb(selectedNodeDspStatusAverages.get("peak") ?? null),
     rms: formatDspStatusDb(addDspStatusSample("rms", metrics?.rmsDbfs ?? null)),
     headroom: formatDspStatusHeadroom(addDspStatusSample("headroom", metrics?.headroomDb ?? null)),
     processing: formatDspStatusTime(addDspStatusSample("processing", timeUs)),
@@ -4460,6 +4532,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   setAmp3dImmersiveMode(Boolean(amp3dSplit));
   if (amp3dSplit) {
     bindAmp3dView(node, preset, amp3dSplit.knobDefs);
+    bindAmp3dDockCollapse();
   } else {
     disposeAmp3dView();
   }

@@ -12,7 +12,6 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 import {
-  GRILLE_GLOW_Z,
   GRILLE_RECT,
   PANEL_HARDWARE,
   PANEL_RECT,
@@ -36,7 +35,6 @@ import {
   createTolexTextures,
   type PanelLabel,
 } from "./ampTextures.js";
-import { AmpInternals } from "./ampValves.js";
 
 const MODEL_BASE_PATH = "assets/models/";
 
@@ -64,7 +62,9 @@ const METAL_TILE_METRES = 0.12;
 const TOLEX_IMAGE_FILE = "amp-tolex-black.jpeg";
 
 /** Valve heaters are always warm regardless of the app theme - real ones are. */
-const VALVE_HEATER_COLOR = 0xff8a3a;
+/** Peak-driven glow stays within a modest band around the theme base intensity. */
+const GLOW_LEVEL_MIN = 0.82;
+const GLOW_LEVEL_MAX = 1.18;
 
 const modelCache = new Map<Amp3dModelName, Promise<THREE.Group>>();
 
@@ -237,8 +237,9 @@ export class AmpScene {
   private floorMesh: THREE.Mesh | null = null;
   private contactShadowMesh: THREE.Mesh | null = null;
   private headGroup: THREE.Group | null = null;
-  private internals: AmpInternals | null = null;
   private glowBaseIntensity = 0;
+  /** Normalised node output peak (0..1), used to vary grille glow a little. */
+  private signalLevel = 0;
   private switchHitTargets: THREE.Object3D[] = [];
   private environmentTexture: THREE.Texture | null = null;
 
@@ -275,7 +276,6 @@ export class AmpScene {
 
     await this.addPanelHardware(headGroup);
     this.addLogoDecal(headGroup);
-    this.addInternals(headGroup);
 
     if (cabinet) {
       this.applyMaterials(cabinet);
@@ -421,6 +421,7 @@ export class AmpScene {
       metalness: 0.0,
     }));
 
+    this.glowBaseIntensity = this.options.bypassed ? 0.02 : preset.grilleGlowIntensity;
     this.glowMaterial = this.track("GrilleGlow", new THREE.MeshStandardMaterial({
       color: 0x000000,
       emissive: new THREE.Color(preset.grilleGlowColor),
@@ -428,10 +429,11 @@ export class AmpScene {
         createGrilleGlowCanvas(`#${new THREE.Color(preset.grilleGlowColor).getHexString()}`, !this.options.bypassed),
         { srgb: true },
       )),
-      emissiveIntensity: preset.grilleGlowIntensity,
+      emissiveIntensity: this.glowBaseIntensity,
       roughness: 1,
       metalness: 0,
     }));
+    this.applyGlowIntensity();
 
     const cloth = createClothTextures(preset.tolexTint === "#2a221d" ? "#3a352f" : "#221f1c");
     this.track("GrilleCloth", new THREE.MeshStandardMaterial({
@@ -617,34 +619,8 @@ export class AmpScene {
     headGroup.add(jack);
   }
 
-  /**
-   * Animated valve/circuit lighting recessed behind the grille. Purely
-   * decorative, so a failure here must not break the amp: the caller keeps
-   * working with `internals === null`.
-   */
-  private addInternals(headGroup: THREE.Group): void {
-    const preset = this.options.preset;
-    try {
-      this.internals = new AmpInternals({
-        left: GRILLE_RECT.left,
-        right: GRILLE_RECT.right,
-        top: GRILLE_RECT.top,
-        bottom: GRILLE_RECT.bottom,
-        glowZ: GRILLE_GLOW_Z,
-        faceZ: GRILLE_RECT.faceZ,
-        valveColor: VALVE_HEATER_COLOR,
-        circuitColor: preset.grilleGlowColor,
-        intensity: preset.grilleGlowIntensity,
-        active: !this.options.bypassed,
-      });
-      headGroup.add(this.internals.group);
-    } catch (error) {
-      console.warn("Amp 3D: amp internals unavailable", error);
-      this.internals = null;
-    }
-  }
-
-  /** Brushed logo decal floating just in front of the grille. */  private addLogoDecal(headGroup: THREE.Group): void {
+  /** Brushed logo decal floating just in front of the grille. */
+  private addLogoDecal(headGroup: THREE.Group): void {
     const width = 0.26;
     const geometry = new THREE.PlaneGeometry(width, width / 4);
     this.geometries.add(geometry);
@@ -807,33 +783,51 @@ export class AmpScene {
     }
     if (this.glowMaterial) {
       this.glowBaseIntensity = active ? preset.grilleGlowIntensity : 0.02;
-      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity;
+      this.applyGlowIntensity();
       this.refreshGlowTexture();
     }
-    this.internals?.setActive(active);
     this.refreshDisplayTexture();
+  }
+
+  /**
+   * Sets the current node output level used to modulate grille glow.
+   * `level` is expected in 0..1 (already peak-averaged / normalised by the UI).
+   */
+  setSignalLevel(level: number): void {
+    const next = Number.isFinite(level) ? THREE.MathUtils.clamp(level, 0, 1) : 0;
+    if (Math.abs(next - this.signalLevel) < 0.0005) {
+      return;
+    }
+    this.signalLevel = next;
+    this.applyGlowIntensity();
+  }
+
+  private applyGlowIntensity(): void {
+    if (!this.glowMaterial) {
+      return;
+    }
+    if (this.options.bypassed) {
+      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity;
+      return;
+    }
+    // Quiet signal sits slightly under the theme base; louder peaks lift it a little.
+    const scale = GLOW_LEVEL_MIN + (GLOW_LEVEL_MAX - GLOW_LEVEL_MIN) * this.signalLevel;
+    this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * scale;
   }
 
   /** True while the scene has motion to draw (i.e. the amp is powered up). */
   get isAnimated(): boolean {
-    return !this.disposed && !this.options.bypassed && this.internals !== null;
+    // Display marquee still scrolls while powered; glow itself is peak-driven.
+    return !this.disposed && !this.options.bypassed;
   }
 
   /**
-   * Advances the animated internals. `elapsedSeconds` is absolute time since
-   * the view was created, so calls can be skipped or throttled without the
-   * animation drifting.
+   * Advances powered-on motion (currently the front-panel display marquee).
+   * `elapsedSeconds` is absolute time since the view was created.
    */
   update(elapsedSeconds: number): void {
     if (this.disposed || this.options.bypassed) {
       return;
-    }
-    this.internals?.update(elapsedSeconds);
-    if (this.glowMaterial && this.glowBaseIntensity > 0) {
-      // Very shallow breathing on the backlight so the wash behind the valves
-      // moves with them rather than sitting perfectly still.
-      const wobble = 1 + 0.05 * Math.sin(elapsedSeconds * 0.55) + 0.02 * Math.sin(elapsedSeconds * 1.9);
-      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * wobble;
     }
     const displayFrame = Math.floor(elapsedSeconds * 30);
     if (displayFrame !== this.lastDisplayRefreshFrame) {
@@ -911,9 +905,6 @@ export class AmpScene {
       return;
     }
     this.disposed = true;
-
-    this.internals?.dispose();
-    this.internals = null;
 
     this.lights.forEach((light) => {
       light.parent?.remove(light);

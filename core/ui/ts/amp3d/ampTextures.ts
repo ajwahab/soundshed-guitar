@@ -475,13 +475,12 @@ export function createGrilleGlowCanvas(color: string, active: boolean): HTMLCanv
     return canvas;
   }
 
-  // Dimmer than a plain backlit panel: most of the light now comes from the
-  // animated valves in front of this plane (see ampValves.ts), so the static
-  // wash is only there to keep the cavity from going black between them.
+  // Soft cavity wash behind the perforated grille. Intensity is modulated at
+  // runtime from the node's smoothed output peak rather than by extra sprites.
   const base = ctx.createLinearGradient(0, 0, 0, GRILLE_TEXTURE_HEIGHT);
-  base.addColorStop(0, "rgba(255,255,255,0.10)");
-  base.addColorStop(0.45, "rgba(255,255,255,0.22)");
-  base.addColorStop(1, "rgba(255,255,255,0.08)");
+  base.addColorStop(0, "rgba(255,255,255,0.16)");
+  base.addColorStop(0.45, "rgba(255,255,255,0.34)");
+  base.addColorStop(1, "rgba(255,255,255,0.14)");
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, GRILLE_TEXTURE_WIDTH, GRILLE_TEXTURE_HEIGHT);
 

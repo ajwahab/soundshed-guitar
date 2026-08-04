@@ -105,10 +105,95 @@ body.amp3d-immersive .amp3d-viewport.has-cabinet {
   -webkit-backdrop-filter: blur(12px) saturate(1.1);
 }
 
+.amp3d-dock-header {
+  display: flex;
+  align-items: center;
+  min-height: 0;
+}
+
+.amp3d-dock-header:empty {
+  display: none;
+}
+
+/* Same muted chevron pattern as the main control bar collapse control. */
+.amp3d-dock-collapse-btn {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: -2px 0 0 -4px;
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: rgba(226, 232, 244, 0.72);
+  opacity: 0.42;
+  line-height: 1;
+  transition: opacity 0.15s ease;
+  user-select: none;
+}
+
+.amp3d-dock-collapse-btn:hover {
+  opacity: 0.85;
+}
+
+.amp3d-dock-collapse-btn svg {
+  transition: transform 0.2s ease;
+  transform: rotate(180deg);
+}
+
+.amp3d-dock.is-collapsed .amp3d-dock-collapse-btn svg {
+  transform: rotate(0deg);
+}
+
+.amp3d-dock-collapsed-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  overflow: hidden;
+  opacity: 0;
+  transition: grid-template-columns 0.18s ease, opacity 0.18s ease;
+}
+
+.amp3d-dock-collapsed-label > span {
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.amp3d-dock.is-collapsed .amp3d-dock-collapsed-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
+/* Advanced controls clip closed while the model chooser stays visible. */
+.amp3d-dock-controls {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  transition: grid-template-rows 0.22s ease;
+}
+
+.amp3d-dock.is-collapsed .amp3d-dock-controls {
+  grid-template-rows: 0fr;
+}
+
+.amp3d-dock-controls-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Separator between the model chooser and the parameter controls below it. */
 .amp3d-dock-models + .amp3d-dock-controls {
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.amp3d-dock.is-collapsed .amp3d-dock-models + .amp3d-dock-controls {
+  padding-top: 0;
+  border-top-color: transparent;
 }
 
 .amp3d-dock .params-controls {
@@ -172,6 +257,10 @@ body.theme-light .amp3d-dock {
   background: rgba(248, 250, 253, 0.5);
   border-color: rgba(24, 30, 44, 0.14);
   box-shadow: 0 10px 30px rgba(24, 30, 44, 0.18);
+}
+
+body.theme-light .amp3d-dock-collapse-btn {
+  color: rgba(32, 38, 52, 0.72);
 }
 
 body.theme-light .amp3d-dock .node-resource-selector label,

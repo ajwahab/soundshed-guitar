@@ -48,14 +48,15 @@ export function isWebglAvailable(): boolean {
 const MIN_ZOOM = 0.62;
 const MAX_ZOOM = 1.35;
 const MAX_AZIMUTH = 0.42;
-const MIN_POLAR = -0.16;
-const MAX_POLAR = 0.34;
+const MIN_POLAR = -0.08;
+const MAX_POLAR = 0.42;
+/** Default orbit pitch: high enough to look down on the amp head slightly. */
+const DEFAULT_POLAR = 0.2;
 /** Pointer travel (px) below which a press counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 4;
 /**
- * Idle animation (valve glow / particles) is capped well below display refresh:
- * the motion is deliberately slow, and this view shares a machine with a
- * real-time audio engine.
+ * Idle animation (display marquee) is capped well below display refresh:
+ * this view shares a machine with a real-time audio engine.
  */
 const ANIMATION_FRAME_MS = 1000 / 30;
 /** Slack added around the fitted bounds so the amp never touches the edges. */
@@ -66,7 +67,12 @@ const CAMERA_FIT_MARGIN = 1.2;
  * centre and the camera is tilted slightly down, so the top edge projects
  * higher than the box maths predicts and would otherwise clip.
  */
-const CAMERA_TOP_HEADROOM = 0.03;
+const CAMERA_TOP_HEADROOM = 0.02;
+/**
+ * Fraction of framed height used to drop the look-at point so the amp head sits
+ * higher in the viewport (camera effectively aims a little lower).
+ */
+const CAMERA_LOOK_DOWN_BIAS = 0.08;
 /**
  * How much of the dock's height the camera actually keeps clear. The dock is
  * translucent and is meant to sit over the base of the cabinet, so reserving
@@ -110,7 +116,7 @@ export class Amp3dView {
   private bottomInset = 0;
   private cameraDistance = 2;
   private azimuth = 0;
-  private polar = 0.085;
+  private polar = DEFAULT_POLAR;
   private zoom = 1;
 
   private activeKnob: { key: string; startValue: number; startY: number; pointerId: number } | null = null;
@@ -272,16 +278,22 @@ export class Amp3dView {
     const distance = this.cameraDistance * this.zoom;
     // Push the framed content up out of the band the dock covers by aiming the
     // camera below its centre. Recomputed here (not in frameCamera) so zooming
-    // keeps the same clearance.
+    // keeps the same clearance. An extra look-down bias keeps the head high in
+    // frame while the orbit pitch looks slightly down onto the control panel.
     const tanHalfFov = Math.tan(((this.camera.fov * Math.PI) / 180) / 2);
     const worldHeight = 2 * distance * tanHalfFov;
+    const framedHeight = worldHeight * Math.max(0.5, 1 - this.bottomInset);
     this.cameraTarget.set(
       this.focusCenter.x,
-      this.focusCenter.y - (worldHeight * this.bottomInset) / 2,
+      this.focusCenter.y
+        - (worldHeight * this.bottomInset) / 2
+        - framedHeight * CAMERA_LOOK_DOWN_BIAS,
       this.focusCenter.z,
     );
     const x = Math.sin(this.azimuth) * Math.cos(this.polar) * distance;
-    const y = Math.sin(this.polar) * distance;
+    // Drop the orbit pivot a little so the camera sits lower while still
+    // pitching down onto the head (positive polar).
+    const y = Math.sin(this.polar) * distance - framedHeight * 0.04;
     const z = Math.cos(this.azimuth) * Math.cos(this.polar) * distance;
     this.camera.position.set(
       this.cameraTarget.x + x,
@@ -552,7 +564,7 @@ export class Amp3dView {
     if (!knobKey) {
       // Double-clicking the background resets the camera.
       this.azimuth = 0;
-      this.polar = 0.06;
+      this.polar = DEFAULT_POLAR;
       this.zoom = 1;
       this.requestRender();
       return;
@@ -599,6 +611,18 @@ export class Amp3dView {
   }
 
   // ── Updates ──────────────────────────────────────────────────────────────
+
+  /**
+   * Drives the grille glow from the node's smoothed output peak.
+   * `level` is 0..1 (already averaged / normalised by the host UI).
+   */
+  setSignalLevel(level: number): void {
+    if (this.disposed || !this.ampScene) {
+      return;
+    }
+    this.ampScene.setSignalLevel(level);
+    this.requestRender();
+  }
 
   /**
    * Applies new state from the effect panel. Values, bypass state and the
