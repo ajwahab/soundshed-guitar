@@ -16,7 +16,7 @@ import { requestResourceData } from "./archiveUtils.js";
 import { escapeHtml, idAccentColor, base64ToArrayBuffer, findResourceById } from "./utils.js";
 import { showNotification } from "./notifications.js";
 import { showConfirm } from "./dialogs.js";
-import { EffectTypeRegistry, getNodeEffectInfo, type EffectTypeInfo } from "./presetV2.js";
+import { EffectTypeRegistry, getNodeEffectInfo, type EffectTypeInfo, type ParameterDef } from "./presetV2.js";
 import { EffectGuids } from "./effectGuids.js";
 import { getBadgeIcon, getFxCategoryIcon, getFxEffectIcon, renderIcon } from "./iconAssets.js";
 import { deduplicateResourcesByHashAndPath, resolveResourceIdAlias } from "./resourceDedup.js";
@@ -76,6 +76,10 @@ import { getCustomEffectEntry, saveCurrentCustomEffect } from "./customEffects.j
 import { openCustomEffectDesigner } from "./customEffectDesigner.js";
 import { createPresetScene, findPresetScene, normalizePresetScenes, removePresetScene, selectPresetScene } from "./presetScenes.js";
 import { getCurrentUiSettings, updateUiSettings } from "./windowSettings.js";
+import { themeSwitcher } from "./theme-switcher.js";
+import { MAX_PANEL_KNOBS } from "./amp3d/ampLayout.js";
+import { isNeuralAmp3dViewEnabled, isWebglSupported, setNeuralAmp3dViewEnabled } from "./amp3d/ampSupport.js";
+import type { Amp3dKnobSpec, Amp3dView, Amp3dViewOptions } from "./amp3d/index.js";
 export { initializeBlendEditorModal, openBlendEditorWithDefinition } from "./signalPathBlend.js";
 
 const signalPathNodesElement = document.getElementById("signal-path-nodes");
@@ -184,6 +188,238 @@ function getEffectVisualizationEquipmentImage(node: GraphNode): string {
 layoutDesigner.onClose(() => {
   refreshSelectedNodeParams();
   renderSignalPathBar();
+});
+
+// ── Neural Amp 3D view ──────────────────────────────────────────────────────
+// Only the amp-head style NAM effects get the 3D amp; the NAM pedal (kFxNam)
+// keeps the standard controls because it is not an amp head.
+const AMP3D_SUPPORTED_TYPES: string[] = [
+  EffectGuids.kAmpNam,
+  EffectGuids.kAmpNamOptimized,
+  EffectGuids.kAmpNamBlend,
+];
+
+let amp3dView: Amp3dView | null = null;
+let amp3dViewNodeId: string | null = null;
+let amp3dMountToken = 0;
+
+function isAmp3dCapableNode(node: GraphNode): boolean {
+  const resolvedType = EffectTypeRegistry.resolve(node.type);
+  return AMP3D_SUPPORTED_TYPES.includes(resolvedType);
+}
+
+/** True when the 3D toggle button should be offered for this node. */
+function canOfferAmp3dView(node: GraphNode): boolean {
+  // Blend nodes remap parameter ranges on the fly and render extra blend
+  // indicators, so they stay on the standard controls.
+  return isAmp3dCapableNode(node) && !getBlendState(node) && isWebglSupported();
+}
+
+function shouldRenderAmp3dView(node: GraphNode, hasPositionedLayout: boolean): boolean {
+  return !hasPositionedLayout && canOfferAmp3dView(node) && isNeuralAmp3dViewEnabled();
+}
+
+interface Amp3dParamSplit {
+  knobDefs: ParameterDef[];
+  extraDefs: ParameterDef[];
+}
+
+/**
+ * Splits the parameter list into the continuous params rendered as physical
+ * knobs on the amp panel and everything else (toggles, enums, advanced params
+ * and any overflow beyond the panel capacity), which is still rendered as
+ * standard HTML controls underneath so no control is ever lost.
+ */
+function splitAmp3dParamDefs(paramDefs: ParameterDef[]): Amp3dParamSplit {
+  const knobDefs: ParameterDef[] = [];
+  const extraDefs: ParameterDef[] = [];
+  paramDefs.forEach((paramDef) => {
+    const isContinuous = !paramDef.advanced
+      && !isToggleParam(paramDef)
+      && paramDef.unit !== "enum"
+      && !Array.isArray(paramDef.labels)
+      && Number.isFinite(paramDef.min)
+      && Number.isFinite(paramDef.max)
+      && paramDef.max > paramDef.min;
+    if (isContinuous && knobDefs.length < MAX_PANEL_KNOBS) {
+      knobDefs.push(paramDef);
+    } else {
+      extraDefs.push(paramDef);
+    }
+  });
+  return { knobDefs, extraDefs };
+}
+
+function buildAmp3dKnobSpecs(node: GraphNode, knobDefs: ParameterDef[]): Amp3dKnobSpec[] {
+  return knobDefs.map((paramDef) => {
+    const min = paramDef.min;
+    const max = paramDef.max;
+    const defaultValue = Math.min(max, Math.max(min, paramDef.default));
+    const current = node.params?.[paramDef.key];
+    const value = typeof current === "number" && Number.isFinite(current)
+      ? Math.min(max, Math.max(min, current))
+      : defaultValue;
+    return {
+      key: paramDef.key,
+      label: paramDef.name || formatParamLabel(paramDef.key),
+      subLabel: paramDef.group || undefined,
+      value,
+      defaultValue,
+      min,
+      max,
+      step: typeof paramDef.step === "number" && paramDef.step > 0 ? paramDef.step : undefined,
+      unit: paramDef.unit || "",
+    };
+  });
+}
+
+function buildAmp3dViewOptions(node: GraphNode, preset: Preset, knobDefs: ParameterDef[]): Amp3dViewOptions {
+  const typeInfo = getNodeEffectInfo(node);
+  const modelSummary = getNodeResourceSummary(node);
+  return {
+    knobs: buildAmp3dKnobSpecs(node, knobDefs),
+    logoText: typeInfo?.displayName || "Neural Amp",
+    displayText: modelSummary || "NO MODEL LOADED",
+    brandText: "Soundshed Guitar",
+    bypassed: isNodeBypassed(node),
+    showCabinet: nodeUsesFullRigNamCategory(node),
+    theme: themeSwitcher.getCurrentTheme(),
+    onParamChange: (key, value) => {
+      if (!node.params) {
+        node.params = {};
+      }
+      node.params[key] = value;
+      sendSignalPathNodeParamUpdate(node.id, key, value);
+    },
+    onBypassToggle: () => {
+      toggleSignalPathNodeBypass(node, preset);
+    },
+  };
+}
+
+function disposeAmp3dView(): void {
+  amp3dMountToken += 1;
+  amp3dView?.dispose();
+  amp3dView = null;
+  amp3dViewNodeId = null;
+}
+
+/** Hides the node params panel and releases any live 3D amp resources. */
+function hideNodeParamsPanel(): void {
+  nodeParamsPanelElement?.classList.remove("visible");
+  disposeAmp3dView();
+}
+
+function renderAmp3dViewportHtml(node: GraphNode, overlayHtml: string): string {
+  const withCabinet = nodeUsesFullRigNamCategory(node) ? " has-cabinet" : "";
+  // No section chrome here: the stage bleeds to the shell edges and the model
+  // picker floats over the render as a translucent panel.
+  return `
+    <div class="amp3d-stage${withCabinet}">
+      <div class="amp3d-viewport is-loading${withCabinet}" data-node-id="${escapeHtml(node.id)}">
+        <div class="amp3d-placeholder">Loading 3D amp&hellip;</div>
+      </div>
+      ${overlayHtml ? `<div class="amp3d-overlay-panel">${overlayHtml}</div>` : ""}
+    </div>
+  `;
+}
+
+/**
+ * Mounts (or re-attaches) the 3D amp inside the freshly rendered params panel.
+ * The params panel rebuilds its innerHTML on every refresh, so an existing view
+ * is moved into the new container instead of being torn down and rebuilt.
+ */
+function bindAmp3dView(node: GraphNode, preset: Preset, knobDefs: ParameterDef[]): void {
+  const container = nodeParamsPanelElement?.querySelector<HTMLElement>(".amp3d-viewport");
+  if (!container) {
+    disposeAmp3dView();
+    return;
+  }
+
+  const options = buildAmp3dViewOptions(node, preset, knobDefs);
+
+  if (amp3dView && amp3dViewNodeId === node.id) {
+    container.classList.remove("is-loading");
+    container.innerHTML = "";
+    container.appendChild(amp3dView.element);
+    void amp3dView.update(options).catch((error) => {
+      console.warn("[amp3d] failed to update 3D amp view", error);
+    });
+    return;
+  }
+
+  disposeAmp3dView();
+  const token = amp3dMountToken;
+
+  void (async () => {
+    try {
+      const module = await import("./amp3d/index.js");
+      if (token !== amp3dMountToken || !container.isConnected) {
+        return;
+      }
+      const view = await module.Amp3dView.create(container, options);
+      if (token !== amp3dMountToken || !container.isConnected) {
+        view.dispose();
+        return;
+      }
+      amp3dView = view;
+      amp3dViewNodeId = node.id;
+      container.classList.remove("is-loading");
+      const placeholder = container.querySelector(".amp3d-placeholder");
+      placeholder?.remove();
+    } catch (error) {
+      console.warn("[amp3d] failed to load 3D amp view", error);
+      if (token !== amp3dMountToken || !container.isConnected) {
+        return;
+      }
+      container.classList.remove("is-loading");
+      container.classList.add("is-error");
+      container.innerHTML = `<div class="amp3d-placeholder">3D amp view unavailable. Switch back to the standard controls.</div>`;
+    }
+  })();
+}
+
+function renderAmp3dToggleButtonHtml(node: GraphNode): string {
+  if (!canOfferAmp3dView(node)) {
+    return "";
+  }
+  const enabled = isNeuralAmp3dViewEnabled();
+  const label = enabled ? "Show standard controls" : "Show 3D amp";
+  return `
+    <button
+      class="effect-visualization-toolbar-btn node-amp3d-toggle-btn${enabled ? " is-active" : ""}"
+      data-node-id="${escapeHtml(node.id)}"
+      type="button"
+      aria-pressed="${enabled ? "true" : "false"}"
+      title="${label}"
+      aria-label="${label}"
+    >
+      ${renderIcon(enabled ? "sliders" : "amp", "effect-visualization-toolbar-icon amp3d-toggle-icon")}
+    </button>
+  `;
+}
+
+function bindAmp3dToggleButton(): void {
+  const button = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".node-amp3d-toggle-btn");
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const enabled = !isNeuralAmp3dViewEnabled();
+    setNeuralAmp3dViewEnabled(enabled);
+    disposeAmp3dView();
+    refreshSelectedNodeParams();
+  });
+}
+
+// Lighting presets are theme-specific, so re-render the panel when the theme
+// changes while the 3D view is on screen.
+window.addEventListener("themeChanged", () => {
+  if (amp3dView) {
+    refreshSelectedNodeParams();
+  }
 });
 
 function updateEffectVisualization(node?: GraphNode): void {
@@ -397,7 +633,7 @@ function selectNodeForPreset(preset: Preset, presetChanged: boolean): void {
   const nodes = preset.graph?.nodes ?? [];
   if (!nodes.length) {
     selectedNodeId = null;
-    nodeParamsPanelElement?.classList.remove("visible");
+    hideNodeParamsPanel();
     updateEffectVisualization();
     return;
   }
@@ -2880,7 +3116,7 @@ function bindNodeClickHandlers(preset: Preset): void {
       if (collapseSplitterId && collapseMixerId) {
         sendCollapseParallelSplit(collapseSplitterId, collapseMixerId);
         selectedNodeId = null;
-        nodeParamsPanelElement?.classList.remove("visible");
+        hideNodeParamsPanel();
         updateEffectVisualization();
         return;
       }
@@ -2891,7 +3127,7 @@ function bindNodeClickHandlers(preset: Preset): void {
 
       sendSignalPathNodeDelete(nodeId);
       selectedNodeId = null;
-      nodeParamsPanelElement?.classList.remove("visible");
+      hideNodeParamsPanel();
       updateEffectVisualization();
     });
   });
@@ -3128,7 +3364,7 @@ function bindNodeClickHandlers(preset: Preset): void {
 
         sendSignalPathNodeDelete(nodeId);
         selectedNodeId = null;
-        nodeParamsPanelElement?.classList.remove("visible");
+        hideNodeParamsPanel();
         updateEffectVisualization();
       }
     });
@@ -4005,6 +4241,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     </button>
   ` : "";
   const equipmentImage = getEffectVisualizationEquipmentImage(node);
+  const amp3dToggleButton = renderAmp3dToggleButtonHtml(node);
+  const useAmp3dView = shouldRenderAmp3dView(node, Boolean(customLayoutHtml));
+  const amp3dSplit = useAmp3dView ? splitAmp3dParamDefs(paramDefs) : null;
   const isInputAnalyzerNode = EffectTypeRegistry.resolve(node.type) === EffectGuids.kInputAnalyzer;
   if (isInputAnalyzerNode) {
     analyzerSpectrogramHistoryByNode.delete(node.id);
@@ -4037,12 +4276,26 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       </div>
     </section>
   ` : "";
-  const shellEquipmentPanel = equipmentImage ? `
+  // The 3D amp is its own product shot, so the static equipment image is
+  // dropped and the viewport takes the full shell width.
+  const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit;
+  const shellEquipmentPanel = showEquipmentImage ? `
     <aside class="default-effect-shell-equipment-panel" aria-hidden="true">
       <img class="default-effect-shell-equipment-image" src="${equipmentImage}" alt="" loading="lazy" decoding="async" />
     </aside>
   ` : "";
-  const shellMainContent = customLayoutHtml ? `
+  const shellMainContent = amp3dSplit ? `
+    ${fullRigCabModelNote}
+    ${renderAmp3dViewportHtml(node, resourceSelector)}
+    ${customEffectActions}
+    ${amp3dSplit.extraDefs.length ? `
+    <div class="default-effect-section default-effect-section-controls amp3d-extra-controls">
+      <div class="params-controls">
+        ${buildParamControls(amp3dSplit.extraDefs)}
+      </div>
+    </div>
+    ` : ""}
+  ` : customLayoutHtml ? `
     ${fullRigCabModelNote}
     ${layoutIncludesResourceControls || placeCabIrResourcesInControls ? "" : resourceSelector}
     ${customEffectActions}
@@ -4144,9 +4397,10 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               aria-label="${shellBypassTitle}"
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${shellLayoutButton}
+            ${amp3dToggleButton}
           </div>
         </div>
-        <div class="default-effect-shell-content${equipmentImage ? " has-equipment-image" : ""}">
+        <div class="default-effect-shell-content${showEquipmentImage ? " has-equipment-image" : ""}">
           ${shellEquipmentPanel}
           <div class="default-effect-shell-main">
             ${shellMainContent}
@@ -4176,6 +4430,12 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindBypassButton(node, preset);
   bindSelectedNodeDspStatusToggle();
   bindCustomizeLayoutButton(node);
+  bindAmp3dToggleButton();
+  if (amp3dSplit) {
+    bindAmp3dView(node, preset, amp3dSplit.knobDefs);
+  } else {
+    disposeAmp3dView();
+  }
   bindParamTabs();
   applyCustomLayoutScaling(nodeParamsPanelElement);
   updateSelectedNodePeakMeter();

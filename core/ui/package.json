@@ -5,14 +5,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/assemble-html.js",
     "build:html": "node scripts/assemble-html.js",
+    "build:models": "node scripts/generate-amp-models.js",
     "test": "vitest run",
-    "postbuild": "node -e \"const fs=require('fs');const path=require('path');const src=path.join(__dirname,'node_modules','jszip','dist','jszip.min.js');const dst=path.join(__dirname,'dist','jszip.min.js');fs.copyFileSync(src,dst);\" && node -e \"const fs=require('fs');const path=require('path');const src=path.join(__dirname,'node_modules','alpinejs','dist','cdn.min.js');const dst=path.join(__dirname,'dist','alpine.min.js');fs.copyFileSync(src,dst); console.log('copied alpine.min.js');\""
+    "postbuild": "node scripts/copy-vendor.js"
   },
   "dependencies": {
     "alpinejs": "^3.15.12",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "three": "^0.180.0"
   },
   "devDependencies": {
+    "@types/three": "^0.180.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
