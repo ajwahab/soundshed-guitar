@@ -52,6 +52,29 @@ const MIN_POLAR = -0.16;
 const MAX_POLAR = 0.34;
 /** Pointer travel (px) below which a press counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 4;
+/**
+ * Idle animation (valve glow / particles) is capped well below display refresh:
+ * the motion is deliberately slow, and this view shares a machine with a
+ * real-time audio engine.
+ */
+const ANIMATION_FRAME_MS = 1000 / 30;
+/** Slack added around the fitted bounds so the amp never touches the edges. */
+const CAMERA_FIT_MARGIN = 1.2;
+/**
+ * Extra headroom above the model. The fit is computed from an axis-aligned box
+ * at the focus centre, but the top of the head is nearer the camera than that
+ * centre and the camera is tilted slightly down, so the top edge projects
+ * higher than the box maths predicts and would otherwise clip.
+ */
+const CAMERA_TOP_HEADROOM = 0.1;
+/**
+ * How much of the dock's height the camera actually keeps clear. The dock is
+ * translucent and is meant to sit over the base of the cabinet, so reserving
+ * all of it would push the amp needlessly small on short windows.
+ */
+const BOTTOM_INSET_RESERVE = 0.6;
+/** The floating control dock may never eat more than this much of the frame. */
+const MAX_BOTTOM_INSET = 0.3;
 
 export class Amp3dView {
   readonly element: HTMLElement;
@@ -73,8 +96,18 @@ export class Amp3dView {
   private frameHandle = 0;
   private disposed = false;
   private visible = true;
+  private readonly startTime = (typeof performance !== "undefined" ? performance.now() : Date.now());
+  private lastAnimationFrame = Number.NEGATIVE_INFINITY;
+  private readonly reducedMotion: MediaQueryList | null =
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
 
   private cameraTarget = new THREE.Vector3();
+  /** Centre of the framed content, before the bottom-dock offset is applied. */
+  private focusCenter = new THREE.Vector3();
+  /** Fraction of the viewport height hidden behind the floating control dock. */
+  private bottomInset = 0;
   private cameraDistance = 2;
   private azimuth = 0;
   private polar = 0.06;
@@ -128,6 +161,12 @@ export class Amp3dView {
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(this.element);
+    // The floating control dock overlaps the render; when it reflows (controls
+    // wrapping onto another row) the camera has to re-frame around it.
+    const dock = container.closest(".amp3d-stage")?.querySelector(".amp3d-dock");
+    if (dock instanceof HTMLElement) {
+      this.resizeObserver.observe(dock);
+    }
 
     this.canvas.addEventListener("pointerdown", this.handlePointerDown);
     this.canvas.addEventListener("pointermove", this.handlePointerMove);
@@ -187,15 +226,60 @@ export class Amp3dView {
     bounds.getSize(size);
     bounds.getCenter(center);
 
-    this.cameraTarget.copy(center);
-    const fov = (this.camera.fov * Math.PI) / 180;
-    const fitHeight = size.y / (2 * Math.tan(fov / 2));
-    const fitWidth = size.x / (2 * Math.tan(fov / 2) * Math.max(0.5, this.camera.aspect));
-    this.cameraDistance = Math.max(fitHeight, fitWidth) * 1.2 + size.z * 0.5;
+    // Grow the box upwards only, then re-centre: the extra space has to end up
+    // above the head, not split evenly above and below it.
+    const headroom = size.y * CAMERA_TOP_HEADROOM;
+    size.y += headroom;
+    center.y += headroom / 2;
+
+    this.bottomInset = this.measureBottomInset();
+    this.focusCenter.copy(center);
+
+    const tanHalfFov = Math.tan(((this.camera.fov * Math.PI) / 180) / 2);
+    // The dock covers the bottom of the frame, so the model has to fit in the
+    // remaining band rather than in the full viewport height.
+    const usableHeight = Math.max(0.5, 1 - this.bottomInset);
+    const fitHeight = size.y / (2 * tanHalfFov * usableHeight);
+    const fitWidth = size.x / (2 * tanHalfFov * Math.max(0.5, this.camera.aspect));
+    this.cameraDistance = Math.max(fitHeight, fitWidth) * CAMERA_FIT_MARGIN + size.z * 0.5;
+  }
+
+  /**
+   * Height of the floating control dock as a fraction of the viewport, so the
+   * camera can keep the amp clear of it. Returns 0 when there is no dock (the
+   * view is embedded elsewhere, or the controls have not been rendered yet).
+   */
+  private measureBottomInset(): number {
+    const viewportHeight = this.element.clientHeight;
+    if (viewportHeight <= 0) {
+      return 0;
+    }
+    const dock = this.element.closest(".amp3d-stage")?.querySelector(".amp3d-dock");
+    if (!(dock instanceof HTMLElement)) {
+      return 0;
+    }
+    // The dock is anchored a few pixels clear of the viewport edge; that gap is
+    // part of the band the amp must avoid.
+    const stageBottom = this.element.getBoundingClientRect().bottom;
+    const covered = stageBottom - dock.getBoundingClientRect().top;
+    if (!Number.isFinite(covered) || covered <= 0) {
+      return 0;
+    }
+    return Math.min(MAX_BOTTOM_INSET, (covered / viewportHeight) * BOTTOM_INSET_RESERVE);
   }
 
   private updateCamera(): void {
     const distance = this.cameraDistance * this.zoom;
+    // Push the framed content up out of the band the dock covers by aiming the
+    // camera below its centre. Recomputed here (not in frameCamera) so zooming
+    // keeps the same clearance.
+    const tanHalfFov = Math.tan(((this.camera.fov * Math.PI) / 180) / 2);
+    const worldHeight = 2 * distance * tanHalfFov;
+    this.cameraTarget.set(
+      this.focusCenter.x,
+      this.focusCenter.y - (worldHeight * this.bottomInset) / 2,
+      this.focusCenter.z,
+    );
     const x = Math.sin(this.azimuth) * Math.cos(this.polar) * distance;
     const y = Math.sin(this.polar) * distance;
     const z = Math.cos(this.azimuth) * Math.cos(this.polar) * distance;
@@ -226,19 +310,52 @@ export class Amp3dView {
     if (this.disposed || this.frameHandle !== 0 || !this.visible) {
       return;
     }
-    this.frameHandle = window.requestAnimationFrame(() => {
+    this.frameHandle = window.requestAnimationFrame((time) => {
       this.frameHandle = 0;
-      this.renderFrame();
+      this.renderFrame(time);
     });
   }
 
-  private renderFrame(): void {
+  /**
+   * True while the amp has motion worth drawing: powered up, on screen, and the
+   * user has not asked for reduced motion.
+   */
+  private shouldAnimate(): boolean {
+    return !this.disposed
+      && this.visible
+      && (this.ampScene?.isAnimated ?? false)
+      && !(this.reducedMotion?.matches ?? false);
+  }
+
+  private renderFrame(time?: number): void {
     if (this.disposed || !this.ampScene) {
       return;
     }
+
+    const now = time ?? (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const animating = this.shouldAnimate();
+    if (animating && now - this.lastAnimationFrame < ANIMATION_FRAME_MS) {
+      // Too soon for the next animation step, but a knob may still have moved:
+      // reschedule rather than dropping the frame outright.
+      this.requestRender();
+      return;
+    }
+
+    if (animating) {
+      this.lastAnimationFrame = now;
+      this.ampScene.update((now - this.startTime) / 1000);
+    } else {
+      // Reduced motion / bypassed: hold the deterministic resting pose.
+      this.ampScene.update(0);
+    }
+
     this.updateCamera();
     this.renderer.toneMappingExposure = this.preset.exposure;
     this.renderer.render(this.ampScene.scene, this.camera);
+
+    if (animating) {
+      this.requestRender();
+    }
   }
 
   setVisible(visible: boolean): void {

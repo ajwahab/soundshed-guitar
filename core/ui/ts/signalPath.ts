@@ -307,21 +307,50 @@ function disposeAmp3dView(): void {
 /** Hides the node params panel and releases any live 3D amp resources. */
 function hideNodeParamsPanel(): void {
   nodeParamsPanelElement?.classList.remove("visible");
+  setAmp3dImmersiveMode(false);
   disposeAmp3dView();
 }
 
-function renderAmp3dViewportHtml(node: GraphNode, overlayHtml: string): string {
+/**
+ * Amp stage markup: the 3D render fills the stage and the 2D controls (model
+ * chooser above, remaining parameters below) float over the bottom of it in a
+ * single translucent dock, so the floor / cabinet stays partly visible behind
+ * them and the render keeps the full height of the panel.
+ */
+function renderAmp3dViewportHtml(node: GraphNode, modelChooserHtml: string, extraControlsHtml: string): string {
   const withCabinet = nodeUsesFullRigNamCategory(node) ? " has-cabinet" : "";
-  // No section chrome here: the stage bleeds to the shell edges and the model
-  // picker floats over the render as a translucent panel.
+  const dock = modelChooserHtml || extraControlsHtml
+    ? `
+      <div class="amp3d-dock">
+        ${modelChooserHtml ? `<div class="amp3d-dock-models">${modelChooserHtml}</div>` : ""}
+        ${extraControlsHtml ? `
+        <div class="amp3d-dock-controls">
+          <div class="params-controls">${extraControlsHtml}</div>
+        </div>
+        ` : ""}
+      </div>
+    `
+    : "";
+  // No section chrome here: the stage bleeds to the shell edges and the
+  // controls float over the render rather than pushing it up the panel.
   return `
     <div class="amp3d-stage${withCabinet}">
       <div class="amp3d-viewport is-loading${withCabinet}" data-node-id="${escapeHtml(node.id)}">
         <div class="amp3d-placeholder">Loading 3D amp&hellip;</div>
       </div>
-      ${overlayHtml ? `<div class="amp3d-overlay-panel">${overlayHtml}</div>` : ""}
+      ${dock}
     </div>
   `;
+}
+
+/**
+ * Immersive mode lets the amp stage claim every pixel between the effect shell
+ * header and the window footer. It is a body-level flag because the height has
+ * to be handed down through the whole panel chain (tab panel → visualization
+ * panel → effect shell), none of which the 3D view owns.
+ */
+function setAmp3dImmersiveMode(enabled: boolean): void {
+  document.body.classList.toggle("amp3d-immersive", enabled);
 }
 
 /**
@@ -4286,15 +4315,12 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   ` : "";
   const shellMainContent = amp3dSplit ? `
     ${fullRigCabModelNote}
-    ${renderAmp3dViewportHtml(node, resourceSelector)}
+    ${renderAmp3dViewportHtml(
+      node,
+      resourceSelector,
+      amp3dSplit.extraDefs.length ? buildParamControls(amp3dSplit.extraDefs) : "",
+    )}
     ${customEffectActions}
-    ${amp3dSplit.extraDefs.length ? `
-    <div class="default-effect-section default-effect-section-controls amp3d-extra-controls">
-      <div class="params-controls">
-        ${buildParamControls(amp3dSplit.extraDefs)}
-      </div>
-    </div>
-    ` : ""}
   ` : customLayoutHtml ? `
     ${fullRigCabModelNote}
     ${layoutIncludesResourceControls || placeCabIrResourcesInControls ? "" : resourceSelector}
@@ -4431,6 +4457,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindSelectedNodeDspStatusToggle();
   bindCustomizeLayoutButton(node);
   bindAmp3dToggleButton();
+  setAmp3dImmersiveMode(Boolean(amp3dSplit));
   if (amp3dSplit) {
     bindAmp3dView(node, preset, amp3dSplit.knobDefs);
   } else {

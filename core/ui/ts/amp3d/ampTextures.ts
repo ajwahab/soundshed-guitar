@@ -136,6 +136,71 @@ export function createTolexTextures(tint: string, size = 512): SurfaceTextures {
   return { albedo, normal: heightToNormalCanvas(height, 1.6) };
 }
 
+/**
+ * Converts an already-loaded image into a tangent-space normal map.
+ *
+ * The luminance of the photo is used as the height field, auto-contrasted first
+ * because photographed material (a near-black tolex swatch, for instance)
+ * occupies only a sliver of the tonal range and would otherwise yield an almost
+ * flat normal map.
+ *
+ * Throws if the image cannot be read back (e.g. a cross-origin taint on the
+ * canvas); callers are expected to fall back to a procedural normal map.
+ */
+export function createNormalFromImageCanvas(
+  image: CanvasImageSource,
+  size = 512,
+  strength = 3.0,
+): HTMLCanvasElement {
+  const height = createCanvas(size, size);
+  const ctx = context2d(height);
+  ctx.drawImage(image, 0, 0, size, size);
+
+  const data = ctx.getImageData(0, 0, size, size);
+  const pixels = data.data;
+  let min = 255;
+  let max = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const luma = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    pixels[i] = luma;
+    if (luma < min) {
+      min = luma;
+    }
+    if (luma > max) {
+      max = luma;
+    }
+  }
+  const span = Math.max(1, max - min);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const stretched = ((pixels[i] - min) / span) * 255;
+    pixels[i] = stretched;
+    pixels[i + 1] = stretched;
+    pixels[i + 2] = stretched;
+    pixels[i + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+
+  return heightToNormalCanvas(height, strength);
+}
+
+/**
+ * Soft circular falloff used as the sprite/point map for the amp internals.
+ * Greyscale (no colour of its own) so a single texture can be tinted per use.
+ */
+export function createSoftDotCanvas(size = 128): HTMLCanvasElement {
+  const canvas = createCanvas(size, size);
+  const ctx = context2d(canvas);
+  const radius = size / 2;
+  const gradient = ctx.createRadialGradient(radius, radius, 0, radius, radius, radius);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.28, "rgba(255,255,255,0.62)");
+  gradient.addColorStop(0.62, "rgba(255,255,255,0.16)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  return canvas;
+}
+
 /** Fine grain leather for the carry handle. */
 export function createLeatherTextures(tint: string, size = 256): SurfaceTextures {
   const random = createRandom(0x1eaf01);
@@ -410,10 +475,13 @@ export function createGrilleGlowCanvas(color: string, active: boolean): HTMLCanv
     return canvas;
   }
 
+  // Dimmer than a plain backlit panel: most of the light now comes from the
+  // animated valves in front of this plane (see ampValves.ts), so the static
+  // wash is only there to keep the cavity from going black between them.
   const base = ctx.createLinearGradient(0, 0, 0, GRILLE_TEXTURE_HEIGHT);
-  base.addColorStop(0, "rgba(255,255,255,0.16)");
-  base.addColorStop(0.45, "rgba(255,255,255,0.34)");
-  base.addColorStop(1, "rgba(255,255,255,0.12)");
+  base.addColorStop(0, "rgba(255,255,255,0.10)");
+  base.addColorStop(0.45, "rgba(255,255,255,0.22)");
+  base.addColorStop(1, "rgba(255,255,255,0.08)");
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, GRILLE_TEXTURE_WIDTH, GRILLE_TEXTURE_HEIGHT);
 
@@ -428,7 +496,7 @@ export function createGrilleGlowCanvas(color: string, active: boolean): HTMLCanv
     const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
     gradient.addColorStop(0, color);
     gradient.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.4;
     ctx.fillStyle = gradient;
     ctx.fillRect(x - radius, 0, radius * 2, GRILLE_TEXTURE_HEIGHT);
   }

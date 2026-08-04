@@ -12,6 +12,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 import {
+  GRILLE_GLOW_Z,
   GRILLE_RECT,
   PANEL_HARDWARE,
   PANEL_RECT,
@@ -30,10 +31,12 @@ import {
   createGrilleGlowCanvas,
   createLeatherTextures,
   createLogoCanvas,
+  createNormalFromImageCanvas,
   createPanelTexture,
   createTolexTextures,
   type PanelLabel,
 } from "./ampTextures.js";
+import { AmpInternals } from "./ampValves.js";
 
 const MODEL_BASE_PATH = "assets/models/";
 
@@ -49,10 +52,85 @@ const MODEL_FILES = {
 export type Amp3dModelName = keyof typeof MODEL_FILES;
 
 const TOLEX_TILE_METRES = 0.085;
+/**
+ * Physical size the photographed tolex swatch covers. It is a much larger patch
+ * than the procedural fallback tile, so it repeats far less often across the
+ * cabinet (which is what keeps the photo from reading as an obvious tile).
+ */
+const TOLEX_IMAGE_TILE_METRES = 0.26;
 const LEATHER_TILE_METRES = 0.04;
 const METAL_TILE_METRES = 0.12;
 
+const TOLEX_IMAGE_FILE = "amp-tolex-black.jpeg";
+
+/** Valve heaters are always warm regardless of the app theme - real ones are. */
+const VALVE_HEATER_COLOR = 0xff8a3a;
+
 const modelCache = new Map<Amp3dModelName, Promise<THREE.Group>>();
+
+interface TolexSurface {
+  image: HTMLImageElement;
+  /** Null when the image could not be read back to derive a normal map. */
+  normal: HTMLCanvasElement | null;
+}
+
+let tolexSurfacePromise: Promise<TolexSurface | null> | null = null;
+
+function loadImageElement(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Failed to load amp texture "${url}"`));
+    image.src = url;
+  });
+}
+
+/**
+ * Loads the photographed tolex once per page and derives its normal map.
+ *
+ * Resolves to null (rather than rejecting) if the image is unavailable so the
+ * amp still builds with the procedural covering; a missing decorative texture
+ * must never take the whole view down.
+ */
+async function loadTolexSurface(): Promise<TolexSurface | null> {
+  if (!tolexSurfacePromise) {
+    tolexSurfacePromise = loadImageElement(MODEL_BASE_PATH + TOLEX_IMAGE_FILE)
+      .then((image) => {
+        let normal: HTMLCanvasElement | null = null;
+        try {
+          normal = createNormalFromImageCanvas(image, 512, 3.4);
+        } catch (error) {
+          // Canvas read-back can fail (tainted canvas, tiny/odd image). The
+          // albedo is still perfectly usable on its own.
+          console.warn("Amp 3D: could not derive tolex normal map", error);
+        }
+        return { image, normal };
+      })
+      .catch((error: unknown) => {
+        console.warn("Amp 3D: falling back to procedural tolex", error);
+        tolexSurfacePromise = null;
+        return null;
+      });
+  }
+  return tolexSurfacePromise;
+}
+
+/**
+ * Theme tint for the photographed tolex. The swatch is near black, so the raw
+ * theme tint (also near black) would crush it; instead we keep the hue and push
+ * the value up to a subtle multiplier.
+ */
+function tolexImageTint(tint: string): THREE.Color {
+  const color = new THREE.Color(tint);
+  const max = Math.max(color.r, color.g, color.b);
+  if (max <= 0.001) {
+    return new THREE.Color(0xffffff);
+  }
+  const normalized = color.clone().multiplyScalar(1 / max);
+  return new THREE.Color(0xffffff).lerp(normalized, 0.3);
+}
 
 let sharedLoader: GLTFLoader | null = null;
 
@@ -116,10 +194,10 @@ interface KnobInstance {
 }
 
 function canvasTexture(
-  canvas: HTMLCanvasElement,
+  source: HTMLCanvasElement | HTMLImageElement,
   { srgb = false, repeat = 0, anisotropy = 8 }: { srgb?: boolean; repeat?: number; anisotropy?: number } = {},
-): THREE.CanvasTexture {
-  const texture = new THREE.CanvasTexture(canvas);
+): THREE.Texture {
+  const texture = new THREE.Texture(source);
   texture.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   texture.anisotropy = anisotropy;
   if (repeat > 0) {
@@ -158,6 +236,8 @@ export class AmpScene {
   private floorMesh: THREE.Mesh | null = null;
   private contactShadowMesh: THREE.Mesh | null = null;
   private headGroup: THREE.Group | null = null;
+  private internals: AmpInternals | null = null;
+  private glowBaseIntensity = 0;
   private switchHitTargets: THREE.Object3D[] = [];
   private environmentTexture: THREE.Texture | null = null;
 
@@ -176,7 +256,8 @@ export class AmpScene {
   }
 
   private async build(renderer: THREE.WebGLRenderer): Promise<void> {
-    this.buildMaterials();
+    const tolexSurface = await loadTolexSurface();
+    this.buildMaterials(tolexSurface);
     this.buildEnvironment(renderer);
     this.buildBackground();
     this.buildLights();
@@ -193,6 +274,7 @@ export class AmpScene {
 
     await this.addPanelHardware(headGroup);
     this.addLogoDecal(headGroup);
+    this.addInternals(headGroup);
 
     if (cabinet) {
       this.applyMaterials(cabinet);
@@ -262,18 +344,44 @@ export class AmpScene {
     return texture;
   }
 
-  private buildMaterials(): void {
-    const preset = this.options.preset;
+  /** Photographed tolex covering used for the head shell, frame and cabinet. */
+  private buildImageTolexMaterial(
+    surface: TolexSurface,
+    preset: Amp3dThemePreset,
+  ): THREE.MeshStandardMaterial {
+    const repeat = 1 / TOLEX_IMAGE_TILE_METRES;
+    const material = new THREE.MeshStandardMaterial({
+      map: this.trackTexture(canvasTexture(surface.image, { srgb: true, repeat, anisotropy: 16 })),
+      color: tolexImageTint(preset.tolexTint),
+      roughness: 0.82,
+      metalness: 0.0,
+    });
+    if (surface.normal) {
+      material.normalMap = this.trackTexture(canvasTexture(surface.normal, { repeat }));
+      material.normalScale = new THREE.Vector2(0.7, 0.7);
+    }
+    return material;
+  }
 
+  /** Fallback covering when the tolex photo cannot be loaded. */
+  private buildProceduralTolexMaterial(preset: Amp3dThemePreset): THREE.MeshStandardMaterial {
     const tolex = createTolexTextures(preset.tolexTint);
-    const tolexRepeat = 1 / TOLEX_TILE_METRES;
-    this.track("Tolex", new THREE.MeshStandardMaterial({
-      map: this.trackTexture(canvasTexture(tolex.albedo, { srgb: true, repeat: tolexRepeat })),
-      normalMap: this.trackTexture(canvasTexture(tolex.normal, { repeat: tolexRepeat })),
+    const repeat = 1 / TOLEX_TILE_METRES;
+    return new THREE.MeshStandardMaterial({
+      map: this.trackTexture(canvasTexture(tolex.albedo, { srgb: true, repeat })),
+      normalMap: this.trackTexture(canvasTexture(tolex.normal, { repeat })),
       normalScale: new THREE.Vector2(0.85, 0.85),
       roughness: 0.86,
       metalness: 0.0,
-    }));
+    });
+  }
+
+  private buildMaterials(tolexSurface: TolexSurface | null): void {
+    const preset = this.options.preset;
+
+    this.track("Tolex", tolexSurface
+      ? this.buildImageTolexMaterial(tolexSurface, preset)
+      : this.buildProceduralTolexMaterial(preset));
 
     const leather = createLeatherTextures(preset.tolexTint);
     const leatherRepeat = 1 / LEATHER_TILE_METRES;
@@ -508,8 +616,34 @@ export class AmpScene {
     headGroup.add(jack);
   }
 
-  /** Brushed logo decal floating just in front of the grille. */
-  private addLogoDecal(headGroup: THREE.Group): void {
+  /**
+   * Animated valve/circuit lighting recessed behind the grille. Purely
+   * decorative, so a failure here must not break the amp: the caller keeps
+   * working with `internals === null`.
+   */
+  private addInternals(headGroup: THREE.Group): void {
+    const preset = this.options.preset;
+    try {
+      this.internals = new AmpInternals({
+        left: GRILLE_RECT.left,
+        right: GRILLE_RECT.right,
+        top: GRILLE_RECT.top,
+        bottom: GRILLE_RECT.bottom,
+        glowZ: GRILLE_GLOW_Z,
+        faceZ: GRILLE_RECT.faceZ,
+        valveColor: VALVE_HEATER_COLOR,
+        circuitColor: preset.grilleGlowColor,
+        intensity: preset.grilleGlowIntensity,
+        active: !this.options.bypassed,
+      });
+      headGroup.add(this.internals.group);
+    } catch (error) {
+      console.warn("Amp 3D: amp internals unavailable", error);
+      this.internals = null;
+    }
+  }
+
+  /** Brushed logo decal floating just in front of the grille. */  private addLogoDecal(headGroup: THREE.Group): void {
     const width = 0.26;
     const geometry = new THREE.PlaneGeometry(width, width / 4);
     this.geometries.add(geometry);
@@ -671,10 +805,35 @@ export class AmpScene {
       this.ledLight.intensity = active ? 0.12 : 0;
     }
     if (this.glowMaterial) {
-      this.glowMaterial.emissiveIntensity = active ? preset.grilleGlowIntensity : 0.02;
+      this.glowBaseIntensity = active ? preset.grilleGlowIntensity : 0.02;
+      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity;
       this.refreshGlowTexture();
     }
+    this.internals?.setActive(active);
     this.refreshDisplayTexture();
+  }
+
+  /** True while the scene has motion to draw (i.e. the amp is powered up). */
+  get isAnimated(): boolean {
+    return !this.disposed && !this.options.bypassed && this.internals !== null;
+  }
+
+  /**
+   * Advances the animated internals. `elapsedSeconds` is absolute time since
+   * the view was created, so calls can be skipped or throttled without the
+   * animation drifting.
+   */
+  update(elapsedSeconds: number): void {
+    if (this.disposed || this.options.bypassed) {
+      return;
+    }
+    this.internals?.update(elapsedSeconds);
+    if (this.glowMaterial && this.glowBaseIntensity > 0) {
+      // Very shallow breathing on the backlight so the wash behind the valves
+      // moves with them rather than sitting perfectly still.
+      const wobble = 1 + 0.05 * Math.sin(elapsedSeconds * 0.55) + 0.02 * Math.sin(elapsedSeconds * 1.9);
+      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * wobble;
+    }
   }
 
   private refreshGlowTexture(): void {
@@ -746,6 +905,9 @@ export class AmpScene {
       return;
     }
     this.disposed = true;
+
+    this.internals?.dispose();
+    this.internals = null;
 
     this.lights.forEach((light) => {
       light.parent?.remove(light);

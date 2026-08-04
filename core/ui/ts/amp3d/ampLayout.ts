@@ -33,6 +33,13 @@ export const GRILLE_RECT: PanelRect = {
   faceZ: 0.1215,
 };
 
+/**
+ * Z of the emissive backlight plane recessed behind the grille face
+ * (`HEAD.baffleZ + 0.007` in scripts/generate-amp-models.js). The thin slab
+ * between this and `GRILLE_RECT.faceZ` is where the animated amp internals live.
+ */
+export const GRILLE_GLOW_Z = 0.115;
+
 /** Fixed hardware positions on the control panel. */
 export const PANEL_HARDWARE = {
   jack: { x: -0.315, y: -0.092 },
