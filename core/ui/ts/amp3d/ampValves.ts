@@ -115,8 +115,8 @@ export class AmpInternals {
     const centerY = (options.top + options.bottom) / 2;
     // Slab the internals live in: in front of the backlight plane, behind the
     // grille face, so the halos read as depth rather than as a decal.
-    const slabBack = options.glowZ + 0.0008;
-    const slabFront = options.faceZ - 0.0015;
+    const slabBack = options.glowZ - 0.01;
+    const slabFront = options.faceZ - 0.008;
     const slabDepth = Math.max(0.001, slabFront - slabBack);
 
     const random = createRandom(0x7a15e5);
@@ -140,7 +140,7 @@ export class AmpInternals {
       sprite.position.set(
         centerX + (t - 0.5) * rowWidth,
         centerY - height * 0.06,
-        slabFront - slabDepth * 0.35,
+        slabBack + slabDepth * 0.2,
       );
       sprite.renderOrder = 3;
       this.group.add(sprite);
@@ -170,7 +170,7 @@ export class AmpInternals {
       sprite.position.set(
         options.left + width * (0.08 + random() * 0.84),
         options.bottom + height * (0.08 + random() * 0.26),
-        slabFront - slabDepth * (0.2 + random() * 0.5),
+        slabBack + slabDepth * (0.12 + random() * 0.3),
       );
       sprite.renderOrder = 3;
       this.group.add(sprite);
@@ -227,7 +227,7 @@ export class AmpInternals {
     // actually receive the valve glow instead of it reading as a flat sprite.
     this.heaterLightBase = 0.055 * Math.max(0.2, options.intensity);
     this.heaterLight = new THREE.PointLight(options.valveColor, 0, 0.22, 2);
-    this.heaterLight.position.set(centerX, centerY, slabBack);
+    this.heaterLight.position.set(centerX, centerY, slabBack + slabDepth * 0.1);
     this.group.add(this.heaterLight);
 
     this.group.visible = this.active;

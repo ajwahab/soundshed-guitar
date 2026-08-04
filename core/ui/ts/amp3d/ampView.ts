@@ -66,7 +66,7 @@ const CAMERA_FIT_MARGIN = 1.2;
  * centre and the camera is tilted slightly down, so the top edge projects
  * higher than the box maths predicts and would otherwise clip.
  */
-const CAMERA_TOP_HEADROOM = 0.1;
+const CAMERA_TOP_HEADROOM = 0.03;
 /**
  * How much of the dock's height the camera actually keeps clear. The dock is
  * translucent and is meant to sit over the base of the cabinet, so reserving
@@ -110,7 +110,7 @@ export class Amp3dView {
   private bottomInset = 0;
   private cameraDistance = 2;
   private azimuth = 0;
-  private polar = 0.06;
+  private polar = 0.085;
   private zoom = 1;
 
   private activeKnob: { key: string; startValue: number; startY: number; pointerId: number } | null = null;

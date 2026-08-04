@@ -542,19 +542,22 @@ export function createDisplayCanvas(text: string, color: string, active: boolean
     return canvas;
   }
 
-  const label = (text || "NO MODEL LOADED").toUpperCase();
-  let fontSize = 104;
-  ctx.textAlign = "center";
+  const rawLabel = (text || "NO MODEL LOADED").toUpperCase();
+  const gap = "   \u2022   ";
+  const label = rawLabel + gap + rawLabel + gap;
+  const fontSize = 104;
+  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  do {
-    ctx.font = `600 ${fontSize}px "Courier New", ui-monospace, monospace`;
-    fontSize -= 4;
-  } while (ctx.measureText(label).width > canvas.width * 0.9 && fontSize > 28);
+  ctx.font = `600 ${fontSize}px "Courier New", ui-monospace, monospace`;
 
   ctx.shadowColor = color;
   ctx.shadowBlur = 26;
   ctx.fillStyle = color;
-  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
+  const textWidth = ctx.measureText(label).width;
+  const offset = ((performance.now() / 1000) * 70) % Math.max(1, textWidth);
+  ctx.fillText(label, canvas.width - offset, canvas.height / 2);
+  ctx.fillText(label, canvas.width - offset - textWidth, canvas.height / 2);
+  ctx.fillText(label, canvas.width - offset + textWidth, canvas.height / 2);
   return canvas;
 }
 

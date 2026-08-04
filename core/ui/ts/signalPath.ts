@@ -278,7 +278,7 @@ function buildAmp3dViewOptions(node: GraphNode, preset: Preset, knobDefs: Parame
   const modelSummary = getNodeResourceSummary(node);
   return {
     knobs: buildAmp3dKnobSpecs(node, knobDefs),
-    logoText: typeInfo?.displayName || "Neural Amp",
+    logoText: "SOUNDSHED",
     displayText: modelSummary || "NO MODEL LOADED",
     brandText: "Soundshed Guitar",
     bypassed: isNodeBypassed(node),

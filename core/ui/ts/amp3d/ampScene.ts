@@ -225,6 +225,7 @@ export class AmpScene {
   private readonly geometries = new Set<THREE.BufferGeometry>();
   private readonly knobs: KnobInstance[] = [];
   private readonly lights: THREE.Light[] = [];
+  private lastDisplayRefreshFrame = -1;
 
   private switchLever: THREE.Object3D | null = null;
   private ledMaterial: THREE.MeshStandardMaterial | null = null;
@@ -833,6 +834,11 @@ export class AmpScene {
       // moves with them rather than sitting perfectly still.
       const wobble = 1 + 0.05 * Math.sin(elapsedSeconds * 0.55) + 0.02 * Math.sin(elapsedSeconds * 1.9);
       this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * wobble;
+    }
+    const displayFrame = Math.floor(elapsedSeconds * 30);
+    if (displayFrame !== this.lastDisplayRefreshFrame) {
+      this.lastDisplayRefreshFrame = displayFrame;
+      this.refreshDisplayTexture();
     }
   }
 
