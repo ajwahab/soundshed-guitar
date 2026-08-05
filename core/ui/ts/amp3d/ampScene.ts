@@ -61,10 +61,32 @@ const METAL_TILE_METRES = 0.12;
 
 const TOLEX_IMAGE_FILE = "amp-tolex-black.jpeg";
 
-/** Valve heaters are always warm regardless of the app theme - real ones are. */
+/**
+ * Master switch for powered-on live motion (LCD marquee + peak-driven grille glow).
+ * Hardcoded off for now to keep the view static and cheap; flip to true to restore.
+ * Bypass/power transitions still animate independently of this flag.
+ */
+export const AMP3D_LIVE_ANIMATION_ENABLED = false;
+
+/** Duration of the power on/off light ramp (LED, grille glow, display). */
+const POWER_TRANSITION_SECONDS = 1;
+
 /** Peak-driven glow stays within a modest band around the theme base intensity. */
 const GLOW_LEVEL_MIN = 0.82;
 const GLOW_LEVEL_MAX = 1.18;
+
+const SWITCH_LEVER_ON_X = -0.32;
+const SWITCH_LEVER_OFF_X = 0.32;
+const LED_OFF_INTENSITY = 0.02;
+const LED_LIGHT_ON_INTENSITY = 0.12;
+const GLOW_OFF_INTENSITY = 0.02;
+const DISPLAY_ON_EMISSIVE = 1.25;
+const DISPLAY_OFF_EMISSIVE = 0.04;
+
+function smoothstep(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
 
 const modelCache = new Map<Amp3dModelName, Promise<THREE.Group>>();
 
@@ -100,7 +122,7 @@ async function loadTolexSurface(): Promise<TolexSurface | null> {
       .then((image) => {
         let normal: HTMLCanvasElement | null = null;
         try {
-          normal = createNormalFromImageCanvas(image, 512, 3.4);
+          normal = createNormalFromImageCanvas(image, 256, 3.4);
         } catch (error) {
           // Canvas read-back can fail (tainted canvas, tiny/odd image). The
           // albedo is still perfectly usable on its own.
@@ -195,18 +217,32 @@ interface KnobInstance {
 
 function canvasTexture(
   source: HTMLCanvasElement | HTMLImageElement,
-  { srgb = false, repeat = 0, anisotropy = 8 }: { srgb?: boolean; repeat?: number; anisotropy?: number } = {},
+  {
+    srgb = false,
+    repeat = 0,
+    // 4× is enough for this viewing distance; higher values burn fill-rate on
+    // every shaded fragment for little visible gain inside the plugin panel.
+    anisotropy = 4,
+    wrapS,
+    wrapT,
+  }: {
+    srgb?: boolean;
+    repeat?: number;
+    anisotropy?: number;
+    wrapS?: THREE.Wrapping;
+    wrapT?: THREE.Wrapping;
+  } = {},
 ): THREE.Texture {
   const texture = new THREE.Texture(source);
   texture.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   texture.anisotropy = anisotropy;
   if (repeat > 0) {
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
+    texture.wrapS = wrapS ?? THREE.RepeatWrapping;
+    texture.wrapT = wrapT ?? THREE.RepeatWrapping;
     texture.repeat.set(repeat, repeat);
   } else {
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.wrapS = wrapS ?? THREE.ClampToEdgeWrapping;
+    texture.wrapT = wrapT ?? THREE.ClampToEdgeWrapping;
   }
   texture.needsUpdate = true;
   return texture;
@@ -225,12 +261,12 @@ export class AmpScene {
   private readonly geometries = new Set<THREE.BufferGeometry>();
   private readonly knobs: KnobInstance[] = [];
   private readonly lights: THREE.Light[] = [];
-  private lastDisplayRefreshFrame = -1;
 
-  private switchLever: THREE.Object3D | null = null;
-  private ledMaterial: THREE.MeshStandardMaterial | null = null;
-  private glowMaterial: THREE.MeshStandardMaterial | null = null;
-  private displayMaterial: THREE.MeshStandardMaterial | null = null;
+    private switchLever: THREE.Object3D | null = null;
+    private ledMaterial: THREE.MeshStandardMaterial | null = null;
+    private glowMaterial: THREE.MeshStandardMaterial | null = null;
+    private displayMaterial: THREE.MeshStandardMaterial | null = null;
+    private displayTexture: THREE.Texture | null = null;
   private panelMaterial: THREE.MeshStandardMaterial | null = null;
   private ledLight: THREE.PointLight | null = null;
   private shadowMaterial: THREE.ShadowMaterial | null = null;
@@ -242,6 +278,17 @@ export class AmpScene {
   private signalLevel = 0;
   private switchHitTargets: THREE.Object3D[] = [];
   private environmentTexture: THREE.Texture | null = null;
+    /** UV units/sec for the front-panel LCD marquee (applied via texture.offset). */
+    private static readonly DISPLAY_SCROLL_SPEED = 0.12;
+    /**
+     * 0 = fully off/bypassed, 1 = fully powered. Animated over
+     * {@link POWER_TRANSITION_SECONDS} when the user toggles bypass.
+     */
+    private powerAmount = 0;
+    private powerTarget = 0;
+    private powerTransitionActive = false;
+    /** Last `update(elapsedSeconds)` sample, used to integrate the power ramp. */
+    private lastElapsedSeconds: number | null = null;
 
   private options: Amp3dSceneOptions;
   private disposed = false;
@@ -296,8 +343,9 @@ export class AmpScene {
     this.headGroup = headGroup;
     this.addFloor();
     this.addContactShadow();
-    this.applyBypassState();
-  }
+        // Initial mount snaps to the current bypass state (no fade-in on load).
+        this.snapPowerState();
+      }
 
   /**
    * Soft elliptical contact shadow under the rig. The directional key light is
@@ -345,6 +393,21 @@ export class AmpScene {
     return texture;
   }
 
+    /** Swap a live map without leaking the previous entry in the track list. */
+    private replaceTrackedTexture(
+      previous: THREE.Texture | null | undefined,
+      next: THREE.Texture,
+    ): THREE.Texture {
+      if (previous) {
+        const index = this.textures.indexOf(previous);
+        if (index >= 0) {
+          this.textures.splice(index, 1);
+        }
+        previous.dispose();
+      }
+      return this.trackTexture(next);
+    }
+
   /** Photographed tolex covering used for the head shell, frame and cabinet. */
   private buildImageTolexMaterial(
     surface: TolexSurface,
@@ -352,7 +415,7 @@ export class AmpScene {
   ): THREE.MeshStandardMaterial {
     const repeat = 1 / TOLEX_IMAGE_TILE_METRES;
     const material = new THREE.MeshStandardMaterial({
-      map: this.trackTexture(canvasTexture(surface.image, { srgb: true, repeat, anisotropy: 16 })),
+          map: this.trackTexture(canvasTexture(surface.image, { srgb: true, repeat, anisotropy: 8 })),
       color: tolexImageTint(preset.tolexTint),
       roughness: 0.82,
       metalness: 0.0,
@@ -393,7 +456,7 @@ export class AmpScene {
       metalness: 0.0,
     }));
 
-    const panelBody = createBrushedMetalCanvas(512, 512, preset.panelBase, preset.panelTint, 0x51de);
+    const panelBody = createBrushedMetalCanvas(256, 256, preset.panelBase, preset.panelTint, 0x51de);
     this.track("PanelBody", new THREE.MeshStandardMaterial({
       map: this.trackTexture(canvasTexture(panelBody, { srgb: true, repeat: 1 / METAL_TILE_METRES })),
       roughness: 0.38,
@@ -421,19 +484,18 @@ export class AmpScene {
       metalness: 0.0,
     }));
 
-    this.glowBaseIntensity = this.options.bypassed ? 0.02 : preset.grilleGlowIntensity;
-    this.glowMaterial = this.track("GrilleGlow", new THREE.MeshStandardMaterial({
-      color: 0x000000,
-      emissive: new THREE.Color(preset.grilleGlowColor),
-      emissiveMap: this.trackTexture(canvasTexture(
-        createGrilleGlowCanvas(`#${new THREE.Color(preset.grilleGlowColor).getHexString()}`, !this.options.bypassed),
-        { srgb: true },
-      )),
-      emissiveIntensity: this.glowBaseIntensity,
-      roughness: 1,
-      metalness: 0,
-    }));
-    this.applyGlowIntensity();
+    this.glowBaseIntensity = this.options.bypassed ? GLOW_OFF_INTENSITY : preset.grilleGlowIntensity;
+        this.glowMaterial = this.track("GrilleGlow", new THREE.MeshStandardMaterial({
+          color: 0x000000,
+          emissive: new THREE.Color(preset.grilleGlowColor),
+          emissiveMap: this.trackTexture(canvasTexture(
+            createGrilleGlowCanvas(`#${new THREE.Color(preset.grilleGlowColor).getHexString()}`, !this.options.bypassed),
+            { srgb: true },
+          )),
+          emissiveIntensity: this.glowBaseIntensity,
+          roughness: 1,
+          metalness: 0,
+        }));
 
     const cloth = createClothTextures(preset.tolexTint === "#2a221d" ? "#3a352f" : "#221f1c");
     this.track("GrilleCloth", new THREE.MeshStandardMaterial({
@@ -464,17 +526,15 @@ export class AmpScene {
       metalness: 1.0,
     }));
 
-    this.displayMaterial = this.track("DisplayGlass", new THREE.MeshStandardMaterial({
-      color: 0x05070a,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: this.trackTexture(canvasTexture(
-        createDisplayCanvas(this.options.displayText, this.options.preset.displayColor, !this.options.bypassed),
-        { srgb: true },
-      )),
-      emissiveIntensity: 1.25,
-      roughness: 0.16,
-      metalness: 0.0,
-    }));
+    this.displayTexture = this.trackTexture(this.createDisplayTexture());
+        this.displayMaterial = this.track("DisplayGlass", new THREE.MeshStandardMaterial({
+          color: 0x05070a,
+          emissive: new THREE.Color(0xffffff),
+          emissiveMap: this.displayTexture,
+          emissiveIntensity: this.options.bypassed ? DISPLAY_OFF_EMISSIVE : DISPLAY_ON_EMISSIVE,
+          roughness: 0.16,
+          metalness: 0.0,
+        }));
 
     this.track("KnobBody", new THREE.MeshStandardMaterial({
       color: 0x121316,
@@ -495,7 +555,7 @@ export class AmpScene {
     this.ledMaterial = this.track("LedLens", new THREE.MeshStandardMaterial({
       color: 0x0a1024,
       emissive: new THREE.Color(preset.ledColor),
-      emissiveIntensity: this.options.bypassed ? 0 : preset.ledIntensity,
+          emissiveIntensity: this.options.bypassed ? LED_OFF_INTENSITY : preset.ledIntensity,
       roughness: 0.08,
       metalness: 0.0,
     }));
@@ -539,27 +599,36 @@ export class AmpScene {
    * Replaces the placeholder glTF materials with the generated PBR set, using
    * the `materialSlot` extras written by the model generator (falling back to
    * the glTF material name).
-   */
-  private applyMaterials(object: THREE.Object3D): void {
-    object.traverse((child) => {
-      const mesh = child as THREE.Mesh;
-      if (!mesh.isMesh) {
-        return;
-      }
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+     *
+     * Small hardware (knobs, switch, LED, jack) should pass `castShadow: false` —
+     * their contribution to the key-light shadow map is invisible at this scale
+     * but still costs a full shadow pass per mesh.
+     */
+    private applyMaterials(object: THREE.Object3D, { castShadow = true }: { castShadow?: boolean } = {}): void {
+      object.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
 
-      const slot = typeof mesh.userData?.materialSlot === "string"
-        ? mesh.userData.materialSlot
-        : (Array.isArray(mesh.material) ? mesh.material[0]?.name : mesh.material?.name) ?? "";
-      const replacement = this.materials.get(slot);
-      if (replacement) {
-        mesh.material = replacement;
-      }
-      // The cloned glTF materials are no longer referenced; release them now.
-      // (Geometry is shared with the cache and must not be disposed here.)
-    });
-  }
+        const slot = typeof mesh.userData?.materialSlot === "string"
+          ? mesh.userData.materialSlot
+          : (Array.isArray(mesh.material) ? mesh.material[0]?.name : mesh.material?.name) ?? "";
+        const replacement = this.materials.get(slot);
+        if (replacement) {
+          mesh.material = replacement;
+        }
+
+        const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        const transparent = Boolean(material && "transparent" in material && material.transparent);
+        // Transparent surfaces still receive light but casting them is expensive
+        // and usually wrong (alpha-tested grille is handled separately).
+        mesh.castShadow = castShadow && !transparent;
+        mesh.receiveShadow = true;
+        // The cloned glTF materials are no longer referenced; release them now.
+        // (Geometry is shared with the cache and must not be disposed here.)
+      });
+    }
 
   // ── Panel hardware ───────────────────────────────────────────────────────
 
@@ -575,7 +644,7 @@ export class AmpScene {
     this.options.knobs.forEach((spec, index) => {
       const placement = placements[index];
       const knobRoot = index === 0 ? knobTemplate : knobTemplate.clone(true);
-      this.applyMaterials(knobRoot);
+          this.applyMaterials(knobRoot);
       const holder = new THREE.Group();
       holder.name = `Knob_${spec.key}`;
       holder.position.set(placement.x, placement.y, PANEL_RECT.faceZ);
@@ -593,7 +662,7 @@ export class AmpScene {
       this.knobs.push({ spec, root: holder, meshes });
     });
 
-    this.applyMaterials(toggle);
+        this.applyMaterials(toggle, { castShadow: false });
     toggle.position.set(PANEL_HARDWARE.powerSwitch.x, PANEL_HARDWARE.powerSwitch.y, PANEL_RECT.faceZ);
     headGroup.add(toggle);
     this.switchLever = toggle.getObjectByName("SwitchLever") ?? null;
@@ -605,7 +674,7 @@ export class AmpScene {
       }
     });
 
-    this.applyMaterials(led);
+        this.applyMaterials(led, { castShadow: false });
     led.position.set(PANEL_HARDWARE.powerLed.x, PANEL_HARDWARE.powerLed.y, PANEL_RECT.faceZ);
     headGroup.add(led);
     led.traverse((child) => {
@@ -619,7 +688,7 @@ export class AmpScene {
     this.ledLight.position.set(PANEL_HARDWARE.powerLed.x, PANEL_HARDWARE.powerLed.y, PANEL_RECT.faceZ + 0.012);
     headGroup.add(this.ledLight);
 
-    this.applyMaterials(jack);
+        this.applyMaterials(jack, { castShadow: false });
     jack.position.set(PANEL_HARDWARE.jack.x, PANEL_HARDWARE.jack.y, PANEL_RECT.faceZ);
     headGroup.add(jack);
   }
@@ -710,15 +779,16 @@ export class AmpScene {
     const key = new THREE.DirectionalLight(preset.key.color, preset.key.intensity);
     key.position.set(...preset.key.position);
     key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.camera.near = 0.1;
-    key.shadow.camera.far = 6;
-    key.shadow.camera.left = -1.2;
-    key.shadow.camera.right = 1.2;
-    key.shadow.camera.top = 2.2;
-    key.shadow.camera.bottom = -0.4;
-    key.shadow.bias = -0.0012;
-    key.shadow.normalBias = 0.012;
+        // 512² is plenty for a small amp in a panel; 1024² quadrupled shadow cost.
+        key.shadow.mapSize.set(512, 512);
+        key.shadow.camera.near = 0.1;
+        key.shadow.camera.far = 6;
+        key.shadow.camera.left = -1.2;
+        key.shadow.camera.right = 1.2;
+        key.shadow.camera.top = 2.2;
+        key.shadow.camera.bottom = -0.4;
+        key.shadow.bias = -0.0012;
+        key.shadow.normalBias = 0.012;
     this.scene.add(key);
     this.lights.push(key);
 
@@ -756,117 +826,237 @@ export class AmpScene {
     knob.root.rotation.z = -valueToRotationRad(value, knob.spec.min, knob.spec.max);
   }
 
-  setBypassed(bypassed: boolean): void {
-    if (this.options.bypassed === bypassed) {
-      return;
-    }
-    this.options.bypassed = bypassed;
-    this.applyBypassState();
+  /**
+     * @param bypassed New bypass flag.
+     * @param immediate When true (e.g. prefers-reduced-motion), snap with no fade.
+     */
+    setBypassed(bypassed: boolean, immediate = false): void {
+      if (this.options.bypassed === bypassed) {
+        return;
+      }
+      this.options.bypassed = bypassed;
+      if (immediate) {
+        this.snapPowerState();
+      } else {
+        this.beginPowerTransition();
+      }
   }
 
-  setDisplayText(text: string): void {
-    if (this.options.displayText === text) {
-      return;
+    setDisplayText(text: string): void {
+      if (this.options.displayText === text) {
+        return;
+      }
+      this.options.displayText = text;
+      // Keep the lit artwork while any power is showing so the fade stays smooth.
+      this.refreshDisplayTexture(this.powerAmount > 0.001 || !this.options.bypassed);
     }
-    this.options.displayText = text;
-    this.refreshDisplayTexture();
-  }
 
-  private applyBypassState(): void {
-    const active = !this.options.bypassed;
-    const preset = this.options.preset;
+    /** Instantly match visuals to the current bypass flag (scene build / reduced motion). */
+    private snapPowerState(): void {
+      this.powerTarget = this.options.bypassed ? 0 : 1;
+      this.powerAmount = this.powerTarget;
+      this.powerTransitionActive = false;
+      this.lastElapsedSeconds = null;
+      this.refreshGlowTexture(this.powerAmount > 0.5);
+      this.refreshDisplayTexture(this.powerAmount > 0.5);
+      this.applyPowerVisuals();
+    }
 
-    if (this.switchLever) {
-      this.switchLever.rotation.x = active ? -0.32 : 0.32;
+    /** Start a 1s ramp toward the current bypass target. */
+    private beginPowerTransition(): void {
+      this.powerTarget = this.options.bypassed ? 0 : 1;
+      this.lastElapsedSeconds = null;
+      if (Math.abs(this.powerAmount - this.powerTarget) < 1e-4) {
+        this.snapPowerState();
+        return;
+      }
+      // Powering up: swap in lit maps immediately so the ramp has something to reveal.
+      if (this.powerTarget > this.powerAmount) {
+        this.refreshGlowTexture(true);
+        this.refreshDisplayTexture(true);
+      }
+      this.powerTransitionActive = true;
+      this.applyPowerVisuals();
     }
-    if (this.ledMaterial) {
-      this.ledMaterial.emissiveIntensity = active ? preset.ledIntensity : 0.02;
-      this.ledMaterial.needsUpdate = true;
-    }
-    if (this.ledLight) {
-      this.ledLight.intensity = active ? 0.12 : 0;
-    }
-    if (this.glowMaterial) {
-      this.glowBaseIntensity = active ? preset.grilleGlowIntensity : 0.02;
+
+    /**
+     * Applies the current `powerAmount` to LED, point light, grille glow, display
+     * and the rocker switch. Cheap uniform updates only — no texture rebuilds.
+     */
+    private applyPowerVisuals(): void {
+      const t = smoothstep(this.powerAmount);
+      const preset = this.options.preset;
+
+      if (this.switchLever) {
+        this.switchLever.rotation.x = THREE.MathUtils.lerp(SWITCH_LEVER_OFF_X, SWITCH_LEVER_ON_X, t);
+      }
+      if (this.ledMaterial) {
+        this.ledMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+          LED_OFF_INTENSITY,
+          preset.ledIntensity,
+          t,
+        );
+      }
+      if (this.ledLight) {
+        this.ledLight.intensity = THREE.MathUtils.lerp(0, LED_LIGHT_ON_INTENSITY, t);
+      }
+      if (this.displayMaterial) {
+        this.displayMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+          DISPLAY_OFF_EMISSIVE,
+          DISPLAY_ON_EMISSIVE,
+          t,
+        );
+      }
+
+      this.glowBaseIntensity = THREE.MathUtils.lerp(
+        GLOW_OFF_INTENSITY,
+        preset.grilleGlowIntensity,
+        t,
+      );
       this.applyGlowIntensity();
-      this.refreshGlowTexture();
     }
-    this.refreshDisplayTexture();
-  }
 
-  /**
-   * Sets the current node output level used to modulate grille glow.
-   * `level` is expected in 0..1 (already peak-averaged / normalised by the UI).
-   */
-  setSignalLevel(level: number): void {
-    const next = Number.isFinite(level) ? THREE.MathUtils.clamp(level, 0, 1) : 0;
-    if (Math.abs(next - this.signalLevel) < 0.0005) {
-      return;
+    /**
+     * Sets the current node output level used to modulate grille glow.
+     * `level` is expected in 0..1 (already peak-averaged / normalised by the UI).
+     * @returns true when the glow actually changed (callers should re-render).
+     */
+    setSignalLevel(level: number): boolean {
+      if (!AMP3D_LIVE_ANIMATION_ENABLED) {
+        return false;
+      }
+      const next = Number.isFinite(level) ? THREE.MathUtils.clamp(level, 0, 1) : 0;
+      // Glow only spans ~±18% of base intensity; sub-percent level noise is invisible
+      // but diagnostics arrive many times per second and used to force full redraws.
+      if (Math.abs(next - this.signalLevel) < 0.02) {
+        return false;
+      }
+      this.signalLevel = next;
+      this.applyGlowIntensity();
+      return true;
     }
-    this.signalLevel = next;
-    this.applyGlowIntensity();
-  }
 
-  private applyGlowIntensity(): void {
-    if (!this.glowMaterial) {
-      return;
+    private applyGlowIntensity(): void {
+      if (!this.glowMaterial) {
+        return;
+      }
+      if (this.powerAmount <= 0.001 || !AMP3D_LIVE_ANIMATION_ENABLED) {
+        this.glowMaterial.emissiveIntensity = this.glowBaseIntensity;
+        return;
+      }
+      // Quiet signal sits slightly under the theme base; louder peaks lift it a little.
+      const scale = GLOW_LEVEL_MIN + (GLOW_LEVEL_MAX - GLOW_LEVEL_MIN) * this.signalLevel;
+      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * scale;
     }
-    if (this.options.bypassed) {
-      this.glowMaterial.emissiveIntensity = this.glowBaseIntensity;
-      return;
-    }
-    // Quiet signal sits slightly under the theme base; louder peaks lift it a little.
-    const scale = GLOW_LEVEL_MIN + (GLOW_LEVEL_MAX - GLOW_LEVEL_MIN) * this.signalLevel;
-    this.glowMaterial.emissiveIntensity = this.glowBaseIntensity * scale;
-  }
 
-  /** True while the scene has motion to draw (i.e. the amp is powered up). */
-  get isAnimated(): boolean {
-    // Display marquee still scrolls while powered; glow itself is peak-driven.
-    return !this.disposed && !this.options.bypassed;
-  }
+    /** True while a short power ramp is in flight. */
+    get isPowerTransitioning(): boolean {
+      return !this.disposed && this.powerTransitionActive;
+    }
 
-  /**
-   * Advances powered-on motion (currently the front-panel display marquee).
-   * `elapsedSeconds` is absolute time since the view was created.
-   */
-  update(elapsedSeconds: number): void {
-    if (this.disposed || this.options.bypassed) {
-      return;
+    /**
+     * True while the scene has motion to draw: a power on/off ramp, or (when
+     * enabled) the powered-on idle marquee / reactive glow.
+     */
+    get isAnimated(): boolean {
+      if (this.disposed) {
+        return false;
+      }
+      if (this.powerTransitionActive) {
+        return true;
+      }
+      if (!AMP3D_LIVE_ANIMATION_ENABLED) {
+        return false;
+      }
+      return !this.options.bypassed;
     }
-    const displayFrame = Math.floor(elapsedSeconds * 30);
-    if (displayFrame !== this.lastDisplayRefreshFrame) {
-      this.lastDisplayRefreshFrame = displayFrame;
-      this.refreshDisplayTexture();
-    }
-  }
 
-  private refreshGlowTexture(): void {
-    if (!this.glowMaterial) {
-      return;
-    }
-    const color = `#${new THREE.Color(this.options.preset.grilleGlowColor).getHexString()}`;
-    const canvas = createGrilleGlowCanvas(color, !this.options.bypassed);
-    const texture = canvasTexture(canvas, { srgb: true });
-    this.glowMaterial.emissiveMap?.dispose();
-    this.glowMaterial.emissiveMap = this.trackTexture(texture);
-    this.glowMaterial.needsUpdate = true;
-  }
+    /**
+     * Advances time-based motion: power on/off ramps, and (when enabled) the
+     * front-panel display marquee.
+     *
+     * Marquee motion is a UV offset only — no canvas redraw, no texture upload.
+     */
+    update(elapsedSeconds: number): void {
+      if (this.disposed) {
+        return;
+      }
 
-  private refreshDisplayTexture(): void {
-    if (!this.displayMaterial) {
-      return;
+      if (this.powerTransitionActive) {
+        if (this.lastElapsedSeconds === null) {
+          this.lastElapsedSeconds = elapsedSeconds;
+        } else {
+          const dt = Math.max(0, Math.min(0.05, elapsedSeconds - this.lastElapsedSeconds));
+          this.lastElapsedSeconds = elapsedSeconds;
+          const delta = dt / POWER_TRANSITION_SECONDS;
+          if (this.powerAmount < this.powerTarget) {
+            this.powerAmount = Math.min(this.powerTarget, this.powerAmount + delta);
+          } else if (this.powerAmount > this.powerTarget) {
+            this.powerAmount = Math.max(this.powerTarget, this.powerAmount - delta);
+          }
+          this.applyPowerVisuals();
+          if (Math.abs(this.powerAmount - this.powerTarget) < 1e-4) {
+            this.powerAmount = this.powerTarget;
+            this.powerTransitionActive = false;
+            this.lastElapsedSeconds = null;
+            // Dim maps once fully off so a cold amp does not keep lit artwork at ε intensity.
+            if (this.powerAmount <= 0) {
+              this.refreshGlowTexture(false);
+              this.refreshDisplayTexture(false);
+              this.applyPowerVisuals();
+            }
+          }
+        }
+      }
+
+      if (
+        AMP3D_LIVE_ANIMATION_ENABLED
+        && !this.options.bypassed
+        && this.displayTexture
+        && this.powerAmount > 0.001
+      ) {
+        // Positive offset scrolls text right-to-left like a classic LCD marquee.
+        const offset = (elapsedSeconds * AmpScene.DISPLAY_SCROLL_SPEED) % 1;
+        this.displayTexture.offset.x = offset;
+      }
     }
-    const canvas = createDisplayCanvas(
-      this.options.displayText,
-      this.options.preset.displayColor,
-      !this.options.bypassed,
-    );
-    const texture = canvasTexture(canvas, { srgb: true });
-    this.displayMaterial.emissiveMap?.dispose();
-    this.displayMaterial.emissiveMap = this.trackTexture(texture);
-    this.displayMaterial.needsUpdate = true;
-  }
+
+    /** Untracked display map — callers must `trackTexture` / `replaceTrackedTexture`. */
+      private createDisplayTexture(active = !this.options.bypassed): THREE.Texture {
+        const canvas = createDisplayCanvas(
+          this.options.displayText,
+          this.options.preset.displayColor,
+          active,
+        );
+        // Repeat on S so offset.x marquee-scrolls without regenerating pixels.
+        return canvasTexture(canvas, {
+          srgb: true,
+          wrapS: THREE.RepeatWrapping,
+          wrapT: THREE.ClampToEdgeWrapping,
+        });
+      }
+
+      private refreshGlowTexture(active = !this.options.bypassed): void {
+        if (!this.glowMaterial) {
+          return;
+        }
+        const color = `#${new THREE.Color(this.options.preset.grilleGlowColor).getHexString()}`;
+        const canvas = createGrilleGlowCanvas(color, active);
+        const texture = canvasTexture(canvas, { srgb: true });
+        this.glowMaterial.emissiveMap = this.replaceTrackedTexture(this.glowMaterial.emissiveMap, texture);
+        this.glowMaterial.needsUpdate = true;
+      }
+
+      private refreshDisplayTexture(active = !this.options.bypassed): void {
+        if (!this.displayMaterial) {
+          return;
+        }
+        const previousOffsetX = this.displayTexture?.offset.x ?? 0;
+        this.displayTexture = this.replaceTrackedTexture(this.displayTexture, this.createDisplayTexture(active));
+        this.displayTexture.offset.x = previousOffsetX;
+        this.displayMaterial.emissiveMap = this.displayTexture;
+        this.displayMaterial.needsUpdate = true;
+      }
 
   /** Bounding box of the amp (excluding the shadow-catching floor). */
   getContentBounds(): THREE.Box3 {
@@ -925,9 +1115,10 @@ export class AmpScene {
     this.geometries.clear();
     this.environmentTexture?.dispose();
     this.environmentTexture = null;
-    this.scene.environment = null;
-    this.knobs.length = 0;
-    this.switchHitTargets = [];
-    this.scene.clear();
-  }
-}
+        this.displayTexture = null;
+        this.scene.environment = null;
+        this.knobs.length = 0;
+        this.switchHitTargets = [];
+        this.scene.clear();
+      }
+    }

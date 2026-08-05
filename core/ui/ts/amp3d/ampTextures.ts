@@ -97,7 +97,7 @@ export interface SurfaceTextures {
  * Pebbled vinyl (tolex) covering. Drawn with wrap-around so it tiles across the
  * cabinet without visible seams.
  */
-export function createTolexTextures(tint: string, size = 512): SurfaceTextures {
+export function createTolexTextures(tint: string, size = 256): SurfaceTextures {
   const random = createRandom(0x5eed1a);
   const height = createCanvas(size, size);
   const hctx = context2d(height);
@@ -149,7 +149,7 @@ export function createTolexTextures(tint: string, size = 512): SurfaceTextures {
  */
 export function createNormalFromImageCanvas(
   image: CanvasImageSource,
-  size = 512,
+  size = 256,
   strength = 3.0,
 ): HTMLCanvasElement {
   const height = createCanvas(size, size);
@@ -284,8 +284,10 @@ export interface PanelTextureOptions {
   mutedTextColor: string;
 }
 
-const PANEL_TEXTURE_WIDTH = 2048;
-const PANEL_TEXTURE_HEIGHT = 256;
+// 1024px is enough for silkscreen legibility at panel size; 2048 doubled
+// upload cost and GPU memory for little visible gain in the plugin UI.
+const PANEL_TEXTURE_WIDTH = 1024;
+const PANEL_TEXTURE_HEIGHT = 128;
 
 /**
  * Silkscreened control panel: brushed metal plus the parameter names, the
@@ -415,8 +417,8 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
   return canvas;
 }
 
-const GRILLE_TEXTURE_WIDTH = 1024;
-const GRILLE_TEXTURE_HEIGHT = 272;
+const GRILLE_TEXTURE_WIDTH = 512;
+const GRILLE_TEXTURE_HEIGHT = 136;
 
 /**
  * Alpha mask for the perforated front grille: opaque metal with a field of
@@ -510,61 +512,78 @@ export function createGrilleGlowCanvas(color: string, active: boolean): HTMLCanv
 
 /** Etched logo plate decal shown in the centre of the grille. */
 export function createLogoCanvas(text: string): HTMLCanvasElement {
-  const canvas = createCanvas(1024, 256);
+  const canvas = createCanvas(512, 128);
   const ctx = context2d(canvas);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const label = (text || "NEURAL AMP").toUpperCase();
-  const fontSize = label.length > 16 ? 84 : 118;
+  const fontSize = label.length > 16 ? 42 : 58;
   ctx.font = `200 ${fontSize}px Inter, "Segoe UI", system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#f2f4f8";
   ctx.shadowColor = "rgba(0,0,0,0.55)";
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 6;
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
   ctx.fillText(label, canvas.width / 2, canvas.height / 2);
   return canvas;
 }
 
-/** Backlit LCD strip that shows the loaded model name. */
+/**
+ * Backlit LCD strip that shows the loaded model name.
+ *
+ * The texture is static: marquee motion is applied by scrolling the GPU
+ * sampler (`texture.offset`) so powered-on idle never re-rasterises or
+ * re-uploads a canvas every animation tick.
+ *
+ * Width is an integer multiple of the text unit so `RepeatWrapping` seams
+ * match exactly when the UV offset wraps.
+ */
 export function createDisplayCanvas(text: string, color: string, active: boolean): HTMLCanvasElement {
-  const canvas = createCanvas(1024, 192);
+  const height = 96;
+  const fontSize = 52;
+  // Probe canvas just to measure the marquee unit before allocating the real one.
+  const probe = createCanvas(4, 4);
+  const probeCtx = context2d(probe);
+  probeCtx.font = `600 ${fontSize}px "Courier New", ui-monospace, monospace`;
+
+  const rawLabel = (text || "NO MODEL LOADED").toUpperCase();
+  const gap = "   \u2022   ";
+  const unit = rawLabel + gap;
+  const unitWidth = Math.max(1, probeCtx.measureText(unit).width);
+  // Keep GPU texture modest while covering at least ~512 px of content.
+  const tiles = Math.max(1, Math.ceil(512 / unitWidth));
+  const width = Math.max(64, Math.ceil(unitWidth * tiles));
+
+  const canvas = createCanvas(width, height);
   const ctx = context2d(canvas);
   ctx.fillStyle = "#050607";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, width, height);
 
-  const glass = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  const glass = ctx.createLinearGradient(0, 0, 0, height);
   glass.addColorStop(0, "rgba(255,255,255,0.12)");
   glass.addColorStop(0.45, "rgba(255,255,255,0.02)");
   glass.addColorStop(1, "rgba(255,255,255,0.07)");
   ctx.fillStyle = glass;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, width, height);
 
   if (!active) {
     return canvas;
   }
 
-  const rawLabel = (text || "NO MODEL LOADED").toUpperCase();
-  const gap = "   \u2022   ";
-  const label = rawLabel + gap + rawLabel + gap;
-  const fontSize = 104;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.font = `600 ${fontSize}px "Courier New", ui-monospace, monospace`;
-
   ctx.shadowColor = color;
-  ctx.shadowBlur = 26;
+  ctx.shadowBlur = 12;
   ctx.fillStyle = color;
-  const textWidth = ctx.measureText(label).width;
-  const offset = ((performance.now() / 1000) * 70) % Math.max(1, textWidth);
-  ctx.fillText(label, canvas.width - offset, canvas.height / 2);
-  ctx.fillText(label, canvas.width - offset - textWidth, canvas.height / 2);
-  ctx.fillText(label, canvas.width - offset + textWidth, canvas.height / 2);
+  for (let i = 0; i < tiles; i += 1) {
+    ctx.fillText(unit, i * unitWidth, height / 2);
+  }
   return canvas;
 }
 
 /** Woven speaker cloth for the cabinet front. */
-export function createClothTextures(tint: string, size = 512): SurfaceTextures {
+export function createClothTextures(tint: string, size = 256): SurfaceTextures {
   const random = createRandom(0xc107);
   const height = createCanvas(size, size);
   const ctx = context2d(height);

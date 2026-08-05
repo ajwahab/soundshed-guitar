@@ -56,9 +56,14 @@ const DEFAULT_POLAR = 0.2;
 const CLICK_SLOP_PX = 4;
 /**
  * Idle animation (display marquee) is capped well below display refresh:
- * this view shares a machine with a real-time audio engine.
+ * this view shares a machine with a real-time audio engine. 15 fps is enough
+ * for a slow LCD scroll and halves GPU time vs a 30 fps continuous loop.
  */
-const ANIMATION_FRAME_MS = 1000 / 30;
+const ANIMATION_FRAME_MS = 1000 / 15;
+/** Power on/off light ramps need a smoother cadence than idle marquee. */
+const POWER_TRANSITION_FRAME_MS = 1000 / 30;
+/** Cap backing-store resolution; full retina 2× is wasteful for this panel. */
+const MAX_PIXEL_RATIO = 1.5;
 /** Slack added around the fitted bounds so the amp never touches the edges. */
 const CAMERA_FIT_MARGIN = 1.2;
 /**
@@ -100,14 +105,32 @@ export class Amp3dView {
   private signature: string;
 
   private frameHandle = 0;
-  private disposed = false;
-  private visible = true;
-  private readonly startTime = (typeof performance !== "undefined" ? performance.now() : Date.now());
-  private lastAnimationFrame = Number.NEGATIVE_INFINITY;
-  private readonly reducedMotion: MediaQueryList | null =
-    typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(prefers-reduced-motion: reduce)")
-      : null;
+    /** True when `frameHandle` is a `setTimeout` id (animation pacing), not rAF. */
+    private frameHandleIsTimeout = false;
+    private disposed = false;
+    /** Host panel wants the view shown (independent of tab visibility). */
+    private viewVisible = true;
+    /** Document tab/window is visible. */
+    private pageVisible = typeof document === "undefined" || document.visibilityState !== "hidden";
+    /** Scene content changed and needs at least one draw. */
+    private dirty = true;
+    /** Camera orbit/zoom/fit changed since the last `updateCamera()`. */
+    private cameraDirty = true;
+    /** Shadow map must be regenerated (scene rebuild / rare geometry change). */
+    private shadowsDirty = true;
+    private readonly startTime = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    private lastAnimationFrame = Number.NEGATIVE_INFINITY;
+    private readonly reducedMotion: MediaQueryList | null =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    private readonly onVisibilityChange = (): void => {
+      if (typeof document === "undefined") {
+        return;
+      }
+      this.pageVisible = document.visibilityState !== "hidden";
+      this.syncVisibility();
+    };
 
   private cameraTarget = new THREE.Vector3();
   /** Centre of the framed content, before the bottom-dock offset is applied. */
@@ -152,36 +175,47 @@ export class Amp3dView {
 
     container.appendChild(this.element);
 
-    this.renderer = new THREE.WebGLRenderer({
-      canvas: this.canvas,
-      antialias: true,
-      alpha: false,
-      powerPreference: "low-power",
-    });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = this.preset.exposure;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+        // MSAA is expensive; on HiDPI the extra samples are rarely visible after
+        // downsampling, so only enable antialias when the backing store is 1×.
+        this.renderer = new THREE.WebGLRenderer({
+          canvas: this.canvas,
+          antialias: pixelRatio <= 1,
+          alpha: false,
+          powerPreference: "low-power",
+        });
+        this.renderer.setPixelRatio(pixelRatio);
+        this.renderer.shadowMap.enabled = true;
+        // PCF soft is roughly 2–4× the shadow filter cost of basic PCF.
+        this.renderer.shadowMap.type = THREE.PCFShadowMap;
+        // Key light and static geometry rarely move; rebuild shadows on demand so
+        // the powered-on marquee loop is a colour pass only.
+        this.renderer.shadowMap.autoUpdate = false;
+        this.renderer.shadowMap.needsUpdate = true;
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = this.preset.exposure;
+        this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.resizeObserver = new ResizeObserver(() => this.handleResize());
-    this.resizeObserver.observe(this.element);
-    // The floating control dock overlaps the render; when it reflows (controls
-    // wrapping onto another row) the camera has to re-frame around it.
-    const dock = container.closest(".amp3d-stage")?.querySelector(".amp3d-dock");
-    if (dock instanceof HTMLElement) {
-      this.resizeObserver.observe(dock);
-    }
+        this.resizeObserver = new ResizeObserver(() => this.handleResize());
+        this.resizeObserver.observe(this.element);
+        // The floating control dock overlaps the render; when it reflows (controls
+        // wrapping onto another row) the camera has to re-frame around it.
+        const dock = container.closest(".amp3d-stage")?.querySelector(".amp3d-dock");
+        if (dock instanceof HTMLElement) {
+          this.resizeObserver.observe(dock);
+        }
 
-    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.addEventListener("pointermove", this.handlePointerMove);
-    this.canvas.addEventListener("pointerup", this.handlePointerUp);
-    this.canvas.addEventListener("pointercancel", this.handlePointerUp);
-    this.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
-    this.canvas.addEventListener("dblclick", this.handleDoubleClick);
-    this.canvas.addEventListener("webglcontextlost", this.handleContextLost);
-  }
+        this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+        this.canvas.addEventListener("pointermove", this.handlePointerMove);
+        this.canvas.addEventListener("pointerup", this.handlePointerUp);
+        this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+        this.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
+        this.canvas.addEventListener("dblclick", this.handleDoubleClick);
+        this.canvas.addEventListener("webglcontextlost", this.handleContextLost);
+        if (typeof document !== "undefined") {
+          document.addEventListener("visibilitychange", this.onVisibilityChange);
+        }
+      }
 
   static async create(container: HTMLElement, options: Amp3dViewOptions): Promise<Amp3dView> {
     const view = new Amp3dView(container, options);
@@ -211,11 +245,12 @@ export class Amp3dView {
     }
     this.ampScene?.dispose();
     this.ampScene = next;
-    this.frameCamera();
-    this.handleResize();
-    this.updateStatusText();
-    this.requestRender();
-  }
+        this.shadowsDirty = true;
+        this.frameCamera();
+        this.handleResize();
+        this.updateStatusText();
+        this.requestRender();
+      }
 
   // ── Camera ───────────────────────────────────────────────────────────────
 
@@ -248,7 +283,8 @@ export class Amp3dView {
     const fitHeight = size.y / (2 * tanHalfFov * usableHeight);
     const fitWidth = size.x / (2 * tanHalfFov * Math.max(0.5, this.camera.aspect));
     this.cameraDistance = Math.max(fitHeight, fitWidth) * CAMERA_FIT_MARGIN + size.z * 0.5;
-  }
+        this.cameraDirty = true;
+      }
 
   /**
    * Height of the floating control dock as a fraction of the viewport, so the
@@ -318,64 +354,142 @@ export class Amp3dView {
 
   // ── Rendering ────────────────────────────────────────────────────────────
 
-  requestRender(): void {
-    if (this.disposed || this.frameHandle !== 0 || !this.visible) {
-      return;
+    private isEffectivelyVisible(): boolean {
+      return this.viewVisible && this.pageVisible;
     }
-    this.frameHandle = window.requestAnimationFrame((time) => {
+
+    /**
+     * Marks the view dirty and ensures a draw is scheduled. Continuous powered-on
+     * animation is paced with `setTimeout` so we do not wake on every display
+     * refresh just to decide the marquee is not due yet.
+     */
+    requestRender(): void {
+      if (this.disposed || !this.isEffectivelyVisible()) {
+        this.dirty = true;
+        return;
+      }
+      this.dirty = true;
+      this.ensureFrame();
+    }
+
+    private clearFrameHandle(): void {
+      if (this.frameHandle === 0) {
+        return;
+      }
+      if (this.frameHandleIsTimeout) {
+        window.clearTimeout(this.frameHandle);
+      } else {
+        window.cancelAnimationFrame(this.frameHandle);
+      }
       this.frameHandle = 0;
-      this.renderFrame(time);
-    });
-  }
-
-  /**
-   * True while the amp has motion worth drawing: powered up, on screen, and the
-   * user has not asked for reduced motion.
-   */
-  private shouldAnimate(): boolean {
-    return !this.disposed
-      && this.visible
-      && (this.ampScene?.isAnimated ?? false)
-      && !(this.reducedMotion?.matches ?? false);
-  }
-
-  private renderFrame(time?: number): void {
-    if (this.disposed || !this.ampScene) {
-      return;
+      this.frameHandleIsTimeout = false;
     }
 
-    const now = time ?? (typeof performance !== "undefined" ? performance.now() : Date.now());
-    const animating = this.shouldAnimate();
-    if (animating && now - this.lastAnimationFrame < ANIMATION_FRAME_MS) {
-      // Too soon for the next animation step, but a knob may still have moved:
-      // reschedule rather than dropping the frame outright.
+    private ensureFrame(): void {
+      if (this.disposed || this.frameHandle !== 0 || !this.isEffectivelyVisible()) {
+        return;
+      }
+      this.frameHandleIsTimeout = false;
+      this.frameHandle = window.requestAnimationFrame((time) => {
+        this.frameHandle = 0;
+        this.renderFrame(time);
+      });
+    }
+
+    private scheduleAnimation(delayMs: number): void {
+      if (this.disposed || this.frameHandle !== 0 || !this.isEffectivelyVisible()) {
+        return;
+      }
+      this.frameHandleIsTimeout = true;
+      this.frameHandle = window.setTimeout(() => {
+        this.frameHandle = 0;
+        this.frameHandleIsTimeout = false;
+        this.ensureFrame();
+      }, Math.max(0, delayMs)) as unknown as number;
+    }
+
+    /**
+       * True while the amp has motion worth drawing: a power ramp, idle marquee
+       * (when enabled), on screen, and the user has not asked for reduced motion.
+       */
+      private shouldAnimate(): boolean {
+        return !this.disposed
+          && this.isEffectivelyVisible()
+          && (this.ampScene?.isAnimated ?? false)
+          && !(this.reducedMotion?.matches ?? false);
+      }
+
+      private animationFrameBudgetMs(): number {
+        return this.ampScene?.isPowerTransitioning
+          ? POWER_TRANSITION_FRAME_MS
+          : ANIMATION_FRAME_MS;
+      }
+
+      private renderFrame(time?: number): void {
+        if (this.disposed || !this.ampScene || !this.isEffectivelyVisible()) {
+          return;
+        }
+
+        const now = time ?? (typeof performance !== "undefined" ? performance.now() : Date.now());
+        const animating = this.shouldAnimate();
+        const frameBudget = this.animationFrameBudgetMs();
+        const animationDue = animating && now - this.lastAnimationFrame >= frameBudget;
+
+        if (animationDue) {
+          this.lastAnimationFrame = now;
+          this.ampScene.update((now - this.startTime) / 1000);
+          this.dirty = true;
+        } else if (this.dirty && !animating) {
+          // Reduced motion / static: hold the resting pose (no time advance).
+          this.ampScene.update((now - this.startTime) / 1000);
+        } else if (this.dirty && animating) {
+          // Interaction frame between animation ticks — still advance time so
+          // power ramps and marquee stay in lockstep with the pointer.
+          this.ampScene.update((now - this.startTime) / 1000);
+          this.lastAnimationFrame = now;
+        }
+
+        if (this.dirty) {
+          this.dirty = false;
+          if (this.cameraDirty) {
+            this.updateCamera();
+            this.cameraDirty = false;
+          }
+          if (this.shadowsDirty) {
+            this.renderer.shadowMap.needsUpdate = true;
+          this.shadowsDirty = false;
+        }
+        this.renderer.toneMappingExposure = this.preset.exposure;
+        this.renderer.render(this.ampScene.scene, this.camera);
+      }
+
+      if (animating) {
+            const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now())
+              - this.lastAnimationFrame;
+            this.scheduleAnimation(this.animationFrameBudgetMs() - elapsed);
+          } else if (this.dirty) {
+            this.ensureFrame();
+          }
+        }
+
+    private syncVisibility(): void {
+      if (!this.isEffectivelyVisible()) {
+        this.clearFrameHandle();
+        return;
+      }
       this.requestRender();
-      return;
     }
 
-    if (animating) {
-      this.lastAnimationFrame = now;
-      this.ampScene.update((now - this.startTime) / 1000);
-    } else {
-      // Reduced motion / bypassed: hold the deterministic resting pose.
-      this.ampScene.update(0);
+    setVisible(visible: boolean): void {
+      if (this.viewVisible === visible) {
+        if (visible) {
+          this.requestRender();
+        }
+        return;
+      }
+      this.viewVisible = visible;
+      this.syncVisibility();
     }
-
-    this.updateCamera();
-    this.renderer.toneMappingExposure = this.preset.exposure;
-    this.renderer.render(this.ampScene.scene, this.camera);
-
-    if (animating) {
-      this.requestRender();
-    }
-  }
-
-  setVisible(visible: boolean): void {
-    this.visible = visible;
-    if (visible) {
-      this.requestRender();
-    }
-  }
 
   // ── Interaction ──────────────────────────────────────────────────────────
 
@@ -467,9 +581,10 @@ export class Amp3dView {
       this.orbitPointer.y = event.clientY;
       this.azimuth = Math.max(-MAX_AZIMUTH, Math.min(MAX_AZIMUTH, this.azimuth + dx * 0.004));
       this.polar = Math.max(MIN_POLAR, Math.min(MAX_POLAR, this.polar + dy * 0.003));
-      this.requestRender();
-      return;
-    }
+            this.cameraDirty = true;
+            this.requestRender();
+            return;
+          }
 
     this.updatePointer(event);
     const hovering = Boolean(this.pickKnobKey()) || this.pickPowerSwitch();
@@ -485,8 +600,11 @@ export class Amp3dView {
       this.activeKnob = null;
       this.hideReadout();
       this.releasePointer(event.pointerId);
-      return;
-    }
+          // Knobs cast; refresh the shadow map once the drag settles.
+          this.shadowsDirty = true;
+          this.requestRender();
+          return;
+        }
 
     if (this.orbitPointer && event.pointerId === this.orbitPointer.id) {
       const wasClick = this.orbitPointer.moved <= CLICK_SLOP_PX;
@@ -546,14 +664,16 @@ export class Amp3dView {
       this.showReadout(spec);
       window.setTimeout(() => this.hideReadout(), 900);
       this.updateStatusText();
-      this.requestRender();
-      return;
+            this.shadowsDirty = true;
+            this.requestRender();
+            return;
     }
 
     event.preventDefault();
     this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.zoom * (event.deltaY > 0 ? 1.08 : 0.93)));
-    this.requestRender();
-  };
+        this.cameraDirty = true;
+        this.requestRender();
+      };
 
   private handleDoubleClick = (event: MouseEvent): void => {
     if (!this.ampScene) {
@@ -566,9 +686,10 @@ export class Amp3dView {
       this.azimuth = 0;
       this.polar = DEFAULT_POLAR;
       this.zoom = 1;
-      this.requestRender();
-      return;
-    }
+            this.cameraDirty = true;
+            this.requestRender();
+            return;
+          }
     const spec = this.ampScene.getKnobSpec(knobKey);
     if (!spec || typeof spec.defaultValue !== "number") {
       return;
@@ -578,8 +699,9 @@ export class Amp3dView {
     this.options.onParamChange(knobKey, value);
     this.options.onParamCommit?.(knobKey, value);
     this.updateStatusText();
-    this.requestRender();
-  };
+        this.shadowsDirty = true;
+        this.requestRender();
+      };
 
   private handleContextLost = (event: Event): void => {
     event.preventDefault();
@@ -620,9 +742,10 @@ export class Amp3dView {
     if (this.disposed || !this.ampScene) {
       return;
     }
-    this.ampScene.setSignalLevel(level);
-    this.requestRender();
-  }
+      if (this.ampScene.setSignalLevel(level)) {
+        this.requestRender();
+      }
+    }
 
   /**
    * Applies new state from the effect panel. Values, bypass state and the
@@ -630,47 +753,54 @@ export class Amp3dView {
    * (theme, cabinet, knob set) rebuilds the scene.
    */
   async update(options: Amp3dViewOptions): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-    const nextSignature = structureSignature(options);
-    const themeChanged = options.theme !== this.options.theme;
-    this.options = options;
-    this.preset = getAmp3dThemePreset(options.theme);
+      if (this.disposed) {
+        return;
+      }
+      const nextSignature = structureSignature(options);
+      const themeChanged = options.theme !== this.options.theme;
+      const bypassBefore = this.options.bypassed;
+      this.options = options;
+      this.preset = getAmp3dThemePreset(options.theme);
 
-    if (nextSignature !== this.signature || themeChanged) {
-      this.signature = nextSignature;
-      await this.buildScene();
-      return;
-    }
+      if (nextSignature !== this.signature || themeChanged) {
+        this.signature = nextSignature;
+        await this.buildScene();
+        return;
+      }
 
-    options.knobs.forEach((knob) => this.ampScene?.setKnobValue(knob.key, knob.value));
-    this.ampScene?.setBypassed(options.bypassed);
-    this.ampScene?.setDisplayText(options.displayText);
-    this.updateStatusText();
-    this.requestRender();
+      options.knobs.forEach((knob) => this.ampScene?.setKnobValue(knob.key, knob.value));
+          const immediatePower = this.reducedMotion?.matches ?? false;
+          this.ampScene?.setBypassed(options.bypassed, immediatePower);
+          // Power switch moves with bypass; refresh shadows when the lever settles
+          // (immediate snap) or at the start of a timed ramp.
+          if (bypassBefore !== options.bypassed) {
+            this.shadowsDirty = true;
+          }
+          this.ampScene?.setDisplayText(options.displayText);
+          this.updateStatusText();
+          this.requestRender();
+        }
+
+    dispose(): void {
+      if (this.disposed) {
+        return;
+      }
+      this.disposed = true;
+      this.clearFrameHandle();
+      this.resizeObserver.disconnect();
+      this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
+      this.canvas.removeEventListener("pointermove", this.handlePointerMove);
+      this.canvas.removeEventListener("pointerup", this.handlePointerUp);
+      this.canvas.removeEventListener("pointercancel", this.handlePointerUp);
+      this.canvas.removeEventListener("wheel", this.handleWheel);
+      this.canvas.removeEventListener("dblclick", this.handleDoubleClick);
+      this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", this.onVisibilityChange);
+      }
+      this.ampScene?.dispose();
+      this.ampScene = null;
+      this.renderer.dispose();
+      this.element.remove();
+    }
   }
-
-  dispose(): void {
-    if (this.disposed) {
-      return;
-    }
-    this.disposed = true;
-    if (this.frameHandle !== 0) {
-      window.cancelAnimationFrame(this.frameHandle);
-      this.frameHandle = 0;
-    }
-    this.resizeObserver.disconnect();
-    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.removeEventListener("pointermove", this.handlePointerMove);
-    this.canvas.removeEventListener("pointerup", this.handlePointerUp);
-    this.canvas.removeEventListener("pointercancel", this.handlePointerUp);
-    this.canvas.removeEventListener("wheel", this.handleWheel);
-    this.canvas.removeEventListener("dblclick", this.handleDoubleClick);
-    this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
-    this.ampScene?.dispose();
-    this.ampScene = null;
-    this.renderer.dispose();
-    this.element.remove();
-  }
-}

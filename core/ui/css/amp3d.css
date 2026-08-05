@@ -101,9 +101,10 @@ body.amp3d-immersive .amp3d-viewport.has-cabinet {
   background: rgba(10, 13, 20, 0.42);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(12px) saturate(1.1);
-  -webkit-backdrop-filter: blur(12px) saturate(1.1);
-}
+  /* Blur is compositor-heavy over a live WebGL surface; keep it modest. */
+    backdrop-filter: blur(8px) saturate(1.05);
+    -webkit-backdrop-filter: blur(8px) saturate(1.05);
+  }
 
 .amp3d-dock-header {
   display: flex;
