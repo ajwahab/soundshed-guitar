@@ -23,14 +23,14 @@ describe("computeKnobPlacements", () => {
 
   it("centres a single knob in the knob zone", () => {
     const [only] = computeKnobPlacements(1);
-    expect(only.x).toBeCloseTo(0.065, 6);
+    expect(only.x).toBeCloseTo(0.06, 6);
   });
 
   it("keeps placements symmetric about the zone centre", () => {
     const placements = computeKnobPlacements(6);
     const first = placements[0].x;
     const last = placements[placements.length - 1].x;
-    expect((first + last) / 2).toBeCloseTo(0.065, 6);
+    expect((first + last) / 2).toBeCloseTo(0.06, 6);
   });
 
   it("uses uniform spacing that never drops below a knob diameter", () => {
@@ -39,7 +39,7 @@ describe("computeKnobPlacements", () => {
       const gaps = placements.slice(1).map((placement, index) => placement.x - placements[index].x);
       gaps.forEach((gap) => {
         expect(gap).toBeCloseTo(gaps[0], 9);
-        expect(gap).toBeGreaterThanOrEqual(0.047 - 1e-9);
+        expect(gap).toBeGreaterThanOrEqual(0.044 - 1e-9);
       });
     }
   });

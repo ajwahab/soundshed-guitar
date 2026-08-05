@@ -289,10 +289,11 @@ const MATERIAL_DEFAULTS = {
   GrilleCloth: { baseColorFactor: [0.16, 0.14, 0.12, 1], metallicFactor: 0.0, roughnessFactor: 0.95 },
   LogoPlate: { baseColorFactor: [0.85, 0.86, 0.88, 1], metallicFactor: 1.0, roughnessFactor: 0.22 },
   ChromeTrim: { baseColorFactor: [0.78, 0.79, 0.82, 1], metallicFactor: 1.0, roughnessFactor: 0.16 },
-  CornerMetal: { baseColorFactor: [0.16, 0.16, 0.17, 1], metallicFactor: 1.0, roughnessFactor: 0.38 },
+  CornerMetal: { baseColorFactor: [0.06, 0.06, 0.07, 1], metallicFactor: 1.0, roughnessFactor: 0.42 },
   DisplayGlass: { baseColorFactor: [0.02, 0.02, 0.02, 1], metallicFactor: 0.0, roughnessFactor: 0.18 },
-  KnobBody: { baseColorFactor: [0.86, 0.86, 0.87, 1], metallicFactor: 0.55, roughnessFactor: 0.34 },
-  KnobPointer: { baseColorFactor: [0.04, 0.04, 0.05, 1], metallicFactor: 0.0, roughnessFactor: 0.5 },
+  KnobBody: { baseColorFactor: [0.07, 0.07, 0.08, 1], metallicFactor: 0.05, roughnessFactor: 0.58 },
+  KnobCap: { baseColorFactor: [0.93, 0.93, 0.94, 1], metallicFactor: 0.0, roughnessFactor: 0.32 },
+  KnobPointer: { baseColorFactor: [0.02, 0.02, 0.025, 1], metallicFactor: 0.0, roughnessFactor: 0.45 },
   LedLens: { baseColorFactor: [0.12, 0.35, 0.9, 1], metallicFactor: 0.0, roughnessFactor: 0.08 },
   Rubber: { baseColorFactor: [0.04, 0.04, 0.045, 1], metallicFactor: 0.0, roughnessFactor: 0.95 },
   SpeakerCone: { baseColorFactor: [0.12, 0.1, 0.09, 1], metallicFactor: 0.0, roughnessFactor: 0.9 },
@@ -448,24 +449,32 @@ const HEAD = {
   width: 0.74,
   height: 0.30,
   depth: 0.26,
-  cornerRadius: 0.018,
-  // Front frame opening (the recessed grille area).
-  openingLeft: -0.325,
-  openingRight: 0.325,
-  openingTop: 0.128,
-  openingBottom: -0.040,
+  // Thin equal wall thickness for top/bottom/left/right/back panels.
+  wall: 0.0055,
+  // Front-face frame thickness. Panel must sit fully inside this opening.
+  frame: 0.028,
+  // Modest edge bevel — enough to soften the box, not ball-like.
+  cornerRadius: 0.014,
+  // Front openings (grille + panel bay) derived from the frame.
+  openingLeft: -0.342,
+  openingRight: 0.342,
+  openingTop: 0.124,
+  openingBottom: -0.038,
+  // Outer front face of the tolex frame.
   frontZ: 0.13,
-  baffleZ: 0.108,
-  panelTop: -0.048,
-  panelBottom: -0.136,
-  panelFrontZ: 0.1345,
+  baffleZ: 0.098,
+  panelTop: -0.045,
+  panelBottom: -0.138,
+  // Deeply recessed behind the front lip so the frame fully surrounds it.
+  panelFrontZ: 0.100,
 };
 
 // Exported for the runtime: keep in sync with amp3d/ampLayout.ts.
 const HEAD_LAYOUT = {
   panel: {
-    left: -0.352,
-    right: 0.352,
+    // Strictly inside the side rails (frame inner edge is ±0.342).
+    left: -0.334,
+    right: 0.334,
     top: HEAD.panelTop,
     bottom: HEAD.panelBottom,
     faceZ: HEAD.panelFrontZ,
@@ -475,7 +484,7 @@ const HEAD_LAYOUT = {
     right: HEAD.openingRight,
     top: HEAD.openingTop,
     bottom: HEAD.openingBottom,
-    faceZ: 0.1215,
+    faceZ: 0.110,
   },
 };
 
@@ -483,51 +492,87 @@ const HEAD_LAYOUT = {
 
 function buildAmpHead() {
   const parts = [];
-  const { width, height, depth, cornerRadius } = HEAD;
+  const { width, height, depth, wall, frame, cornerRadius } = HEAD;
+  const hw = width / 2;
+  const hh = height / 2;
+  // Body sits slightly behind the front frame so openings read recessed.
+  const shellZ = -0.006;
+  const shellDepth = depth - 0.018;
+  const shellHd = shellDepth / 2;
+  // Soft edge bevel only — clamp well below half the thinnest panel dimension.
+  const edgeRadius = Math.min(cornerRadius, wall * 0.45, 0.0024);
+  const railRadius = Math.min(0.005, frame * 0.3);
 
-  // Main tolex covered shell. Its front face sits behind the grille opening so
-  // the front frame rails below can form a genuine recess.
-  const shellDepth = depth - 0.024;
+  // Open-front cabinet from equal-thickness side/top/bottom/back panels.
   parts.push({
-    name: 'HeadShell',
+    name: 'HeadBack',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, height, shellDepth, cornerRadius, 4),
-      { translate: [0, 0, -0.012] },
+      roundedBox(width, height, wall, edgeRadius, 4),
+      { translate: [0, 0, shellZ - shellHd + wall / 2] },
     ),
   });
+  for (const sign of [-1, 1]) {
+    parts.push({
+      name: sign < 0 ? 'HeadSideLeft' : 'HeadSideRight',
+      material: 'Tolex',
+      geometry: transformGeometry(
+        roundedBox(wall, height, shellDepth - wall, edgeRadius, 4),
+        { translate: [sign * (hw - wall / 2), 0, shellZ + wall / 2] },
+      ),
+    });
+    parts.push({
+      name: sign < 0 ? 'HeadBottom' : 'HeadTop',
+      material: 'Tolex',
+      geometry: transformGeometry(
+        roundedBox(width - 2 * wall, wall, shellDepth - wall, edgeRadius, 4),
+        { translate: [0, sign * (hh - wall / 2), shellZ + wall / 2] },
+      ),
+    });
+  }
 
-  // Front frame: four tolex rails around the grille opening.
-  const frameZ = 0.118;
+  // Slim front tolex frame. Grille + control panel sit behind this lip.
   const frameDepth = 0.026;
-  const railTopHeight = height / 2 - HEAD.openingTop;
+  const frameCenterZ = HEAD.frontZ - frameDepth / 2;
+  const railTopHeight = hh - HEAD.openingTop;
   parts.push({
     name: 'FrameTop',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, railTopHeight, frameDepth, 0.008, 3),
-      { translate: [0, HEAD.openingTop + railTopHeight / 2, frameZ] },
+      roundedBox(width, railTopHeight, frameDepth, railRadius, 4),
+      { translate: [0, HEAD.openingTop + railTopHeight / 2, frameCenterZ] },
     ),
   });
-  const railBottomTop = HEAD.openingBottom;
-  const railBottomHeight = railBottomTop - HEAD.panelTop;
+  const railBottomHeight = HEAD.panelBottom + hh;
   parts.push({
     name: 'FrameBottom',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, railBottomHeight, frameDepth, 0.006, 3),
-      { translate: [0, HEAD.panelTop + railBottomHeight / 2, frameZ] },
+      roundedBox(width, railBottomHeight, frameDepth, railRadius, 4),
+      { translate: [0, -hh + railBottomHeight / 2, frameCenterZ] },
     ),
   });
-  const railSideWidth = width / 2 + HEAD.openingLeft;
-  const railSideHeight = HEAD.openingTop - HEAD.openingBottom;
+  // Divider strip between grille and control panel.
+  const dividerHeight = HEAD.openingBottom - HEAD.panelTop;
+  if (dividerHeight > 0.001) {
+    parts.push({
+      name: 'FrameDivider',
+      material: 'Tolex',
+      geometry: transformGeometry(
+        roundedBox(width - 2 * frame, dividerHeight, frameDepth, 0.002, 2),
+        { translate: [0, (HEAD.openingBottom + HEAD.panelTop) / 2, frameCenterZ] },
+      ),
+    });
+  }
+  // Full-height slim side rails framing the recessed panel.
+  const railSideHeight = HEAD.openingTop - (-hh);
   for (const sign of [-1, 1]) {
     parts.push({
       name: sign < 0 ? 'FrameLeft' : 'FrameRight',
       material: 'Tolex',
       geometry: transformGeometry(
-        roundedBox(railSideWidth, railSideHeight, frameDepth, 0.008, 3),
-        { translate: [sign * (width / 2 - railSideWidth / 2), (HEAD.openingTop + HEAD.openingBottom) / 2, frameZ] },
+        roundedBox(frame, railSideHeight, frameDepth, railRadius, 4),
+        { translate: [sign * (hw - frame / 2), (HEAD.openingTop - hh) / 2, frameCenterZ] },
       ),
     });
   }
@@ -563,17 +608,62 @@ function buildAmpHead() {
     ),
   });
 
-  // Control panel: brushed metal strip with a separate face plane that carries
-  // the silkscreened labels generated at runtime.
+  // Control panel recessed inside the front lip (matches reference heads).
   const panelWidth = HEAD_LAYOUT.panel.right - HEAD_LAYOUT.panel.left;
   const panelHeight = HEAD.panelTop - HEAD.panelBottom;
   const panelCenterY = (HEAD.panelTop + HEAD.panelBottom) / 2;
+  const panelRecess = HEAD.frontZ - HEAD.panelFrontZ;
+
+  // Opaque bay liner behind the control panel so the chassis interior is not
+  // visible around the panel edges when the head is viewed off-axis.
+  const bayInnerWidth = width - 2 * frame;
+  const bayInnerHeight = HEAD.openingBottom - HEAD.panelBottom + 0.004;
+  const bayCenterY = (HEAD.openingBottom + HEAD.panelBottom) / 2;
+  const bayBackZ = HEAD.panelFrontZ - Math.max(0.02, panelRecess * 0.85);
+  parts.push({
+    name: 'PanelBayBack',
+    material: 'GrilleBacking',
+    geometry: transformGeometry(
+      roundedBox(bayInnerWidth, bayInnerHeight, 0.008, 0.002, 2),
+      { translate: [0, bayCenterY, bayBackZ] },
+    ),
+  });
+  // Side/top/bottom liners close the recess pocket around the control panel.
+  const bayPocketDepth = Math.max(0.016, HEAD.panelFrontZ - bayBackZ);
+  const bayPocketCenterZ = (HEAD.panelFrontZ + bayBackZ) / 2;
+  for (const sign of [-1, 1]) {
+    parts.push({
+      name: sign < 0 ? 'PanelBayLeft' : 'PanelBayRight',
+      material: 'GrilleBacking',
+      geometry: transformGeometry(
+        roundedBox(0.006, bayInnerHeight, bayPocketDepth, 0.0015, 2),
+        { translate: [sign * (bayInnerWidth / 2 - 0.003), bayCenterY, bayPocketCenterZ] },
+      ),
+    });
+  }
+  parts.push({
+    name: 'PanelBayTop',
+    material: 'GrilleBacking',
+    geometry: transformGeometry(
+      roundedBox(bayInnerWidth - 0.012, 0.005, bayPocketDepth, 0.0015, 2),
+      { translate: [0, HEAD.panelTop + 0.0015, bayPocketCenterZ] },
+    ),
+  });
+  parts.push({
+    name: 'PanelBayBottom',
+    material: 'GrilleBacking',
+    geometry: transformGeometry(
+      roundedBox(bayInnerWidth - 0.012, 0.005, bayPocketDepth, 0.0015, 2),
+      { translate: [0, HEAD.panelBottom - 0.0015, bayPocketCenterZ] },
+    ),
+  });
+
   parts.push({
     name: 'PanelBody',
     material: 'PanelBody',
     geometry: transformGeometry(
-      roundedBox(panelWidth, panelHeight, 0.03, 0.004, 3),
-      { translate: [0, panelCenterY, HEAD.panelFrontZ - 0.015] },
+      roundedBox(panelWidth, panelHeight, Math.max(0.014, panelRecess * 0.7), 0.0025, 3),
+      { translate: [0, panelCenterY, HEAD.panelFrontZ - Math.max(0.007, panelRecess * 0.35)] },
     ),
   });
   parts.push({
@@ -582,17 +672,17 @@ function buildAmpHead() {
     uvMode: 'normalized',
     geometry: transformGeometry(
       planeXY(panelWidth, panelHeight),
-      { translate: [0, panelCenterY, HEAD.panelFrontZ + 0.0006] },
+      { translate: [0, panelCenterY, HEAD.panelFrontZ + 0.0004] },
     ),
   });
 
-  // Model-name display window (mirrors the reference "amp control module").
+  // Model-name display window (on the recessed panel face).
   parts.push({
     name: 'DisplayBezel',
     material: 'ChromeTrim',
     geometry: transformGeometry(
       roundedBox(0.132, 0.03, 0.006, 0.002, 2),
-      { translate: [-0.212, panelCenterY + 0.004, HEAD.panelFrontZ + 0.002] },
+      { translate: [-0.205, panelCenterY + 0.004, HEAD.panelFrontZ + 0.002] },
     ),
   });
   parts.push({
@@ -601,32 +691,9 @@ function buildAmpHead() {
     uvMode: 'normalized',
     geometry: transformGeometry(
       planeXY(0.124, 0.023),
-      { translate: [-0.212, panelCenterY + 0.004, HEAD.panelFrontZ + 0.0055] },
+      { translate: [-0.205, panelCenterY + 0.004, HEAD.panelFrontZ + 0.0052] },
     ),
   });
-
-  // Metal corner protectors.
-  const cornerSize = 0.055;
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        parts.push({
-          name: `Corner_${sx < 0 ? 'L' : 'R'}${sy < 0 ? 'B' : 'T'}${sz < 0 ? 'R' : 'F'}`,
-          material: 'CornerMetal',
-          geometry: transformGeometry(
-            roundedBox(cornerSize, cornerSize, cornerSize, 0.02, 2),
-            {
-              translate: [
-                sx * (width / 2 - cornerSize / 2 + 0.004),
-                sy * (height / 2 - cornerSize / 2 + 0.004),
-                sz * (depth / 2 - cornerSize / 2 + 0.002) - 0.012,
-              ],
-            },
-          ),
-        });
-      }
-    }
-  }
 
   // Top handle: leather strap plus two chrome mounts.
   parts.push({
@@ -634,7 +701,7 @@ function buildAmpHead() {
     material: 'Leather',
     geometry: transformGeometry(
       roundedBox(0.20, 0.014, 0.034, 0.006, 3),
-      { translate: [0, height / 2 + 0.014, -0.012] },
+      { translate: [0, hh + 0.014, shellZ] },
     ),
   });
   for (const sign of [-1, 1]) {
@@ -643,7 +710,7 @@ function buildAmpHead() {
       material: 'ChromeTrim',
       geometry: transformGeometry(
         roundedBox(0.03, 0.026, 0.044, 0.004, 2),
-        { translate: [sign * 0.108, height / 2 + 0.004, -0.012] },
+        { translate: [sign * 0.108, hh + 0.004, shellZ] },
       ),
     });
   }
@@ -658,7 +725,7 @@ function buildAmpHead() {
           cylinderZ(0.016, 0.018, 0.012, 20),
           {
             rotate: [Math.PI / 2, 0, 0],
-            translate: [sx * 0.27, -height / 2 - 0.005, sz * 0.075 - 0.012],
+            translate: [sx * 0.27, -hh - 0.005, sz * 0.075 + shellZ],
           },
         ),
       });
@@ -671,44 +738,61 @@ function buildAmpHead() {
 // ── Knob ───────────────────────────────────────────────────────────────────
 // Built facing +Z with its mounting face at z = 0 so it can be dropped onto the
 // control panel and rotated about Z to show its value.
+// Black plastic body + white cap with an on-cap indicator notch.
 
 function buildKnob() {
   const parts = [];
-  const skirtRadius = 0.0215;
-  const skirtLength = 0.014;
-  const capLength = 0.006;
+  const bodyRadius = 0.0132;
+  const bodyLength = 0.009;
+  const capRadius = 0.0124;
+  const capLength = 0.0032;
+  const capTopZ = bodyLength + capLength;
 
+  // Black plastic skirt / body.
   parts.push({
-    name: 'KnobSkirt',
+    name: 'KnobBody',
     material: 'KnobBody',
     geometry: transformGeometry(
-      cylinderZ(skirtRadius * 0.97, skirtRadius, skirtLength, 48, false, true),
-      { translate: [0, 0, skirtLength / 2] },
+      cylinderZ(bodyRadius * 0.96, bodyRadius, bodyLength, 48, false, true),
+      { translate: [0, 0, bodyLength / 2] },
     ),
   });
+  // Soft shoulder under the cap.
   parts.push({
     name: 'KnobShoulder',
     material: 'KnobBody',
     geometry: transformGeometry(
-      cylinderZ(skirtRadius * 0.86, skirtRadius * 0.97, capLength, 48, true, false),
-      { translate: [0, 0, skirtLength + capLength / 2] },
+      cylinderZ(capRadius * 0.98, bodyRadius * 0.96, 0.0016, 48, false, false),
+      { translate: [0, 0, bodyLength + 0.0008] },
+    ),
+  });
+
+  // White plastic cap.
+  parts.push({
+    name: 'KnobCap',
+    material: 'KnobCap',
+    geometry: transformGeometry(
+      cylinderZ(capRadius, capRadius, capLength, 48, true, true),
+      { translate: [0, 0, bodyLength + capLength / 2] },
     ),
   });
   parts.push({
-    name: 'KnobEdge',
-    material: 'KnobBody',
+    name: 'KnobCapRim',
+    material: 'KnobCap',
     geometry: transformGeometry(
-      torusZ(skirtRadius * 0.9, 0.0016, 48, 10),
-      { translate: [0, 0, skirtLength + capLength] },
+      torusZ(capRadius * 0.92, 0.0009, 40, 8),
+      { translate: [0, 0, capTopZ - 0.0002] },
     ),
   });
-  // Pointer groove running from the centre to the rim (the value indicator).
+
+  // Indicator notch sitting on the cap face (not hanging off the side).
+  const notchLength = capRadius * 0.78;
   parts.push({
     name: 'KnobPointer',
     material: 'KnobPointer',
     geometry: transformGeometry(
-      roundedBox(0.0028, skirtRadius * 1.55, 0.0035, 0.0012, 2),
-      { translate: [0, skirtRadius * 0.42, skirtLength + capLength - 0.0004] },
+      roundedBox(0.0016, notchLength, 0.0011, 0.00045, 2),
+      { translate: [0, notchLength * 0.28, capTopZ + 0.00035] },
     ),
   });
 
@@ -803,20 +887,24 @@ function buildCabinet() {
   const height = 0.78;
   const depth = 0.36;
   const frontZ = depth / 2;
-  const wall = 0.019;
+  // Match amp-head wall thickness so head and cab read as one family.
+  const wall = HEAD.wall;
   const frame = 0.05;      // width of the tolex rails around the cloth opening
   const frameDepth = 0.022;
   const clothZ = frontZ - 0.036;   // cloth is genuinely recessed inside the frame
+  const edgeRadius = Math.min(0.0024, wall * 0.45);
+  const railRadius = 0.006;
+  const shellDepth = depth - frameDepth;
+  const shellZ = -frameDepth / 2;
+  const shellHd = shellDepth / 2;
 
-  // The shell is an open-fronted box (back + four walls) so the baffle area is a
-  // real cavity: the speakers behind the cloth are visible instead of being
-  // buried inside a solid block.
+  // Open-front box from thin equal-thickness panels (same wall as amp head).
   parts.push({
     name: 'CabBack',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, height, 0.018, 0.008, 2),
-      { translate: [0, 0, -frontZ + 0.009] },
+      roundedBox(width, height, wall, edgeRadius, 4),
+      { translate: [0, 0, shellZ - shellHd + wall / 2] },
     ),
   });
   for (const sign of [-1, 1]) {
@@ -824,16 +912,16 @@ function buildCabinet() {
       name: sign < 0 ? 'CabWallLeft' : 'CabWallRight',
       material: 'Tolex',
       geometry: transformGeometry(
-        roundedBox(wall, height, depth - 0.018, 0.006, 2),
-        { translate: [sign * (width / 2 - wall / 2), 0, 0.009] },
+        roundedBox(wall, height, shellDepth - wall, edgeRadius, 4),
+        { translate: [sign * (width / 2 - wall / 2), 0, shellZ + wall / 2] },
       ),
     });
     parts.push({
       name: sign < 0 ? 'CabWallBottom' : 'CabWallTop',
       material: 'Tolex',
       geometry: transformGeometry(
-        roundedBox(width - 2 * wall, wall, depth - 0.018, 0.006, 2),
-        { translate: [0, sign * (height / 2 - wall / 2), 0.009] },
+        roundedBox(width - 2 * wall, wall, shellDepth - wall, edgeRadius, 4),
+        { translate: [0, sign * (height / 2 - wall / 2), shellZ + wall / 2] },
       ),
     });
   }
@@ -843,7 +931,7 @@ function buildCabinet() {
     name: 'CabFrameTop',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, frame, frameDepth, 0.008, 3),
+      roundedBox(width, frame, frameDepth, railRadius, 4),
       { translate: [0, height / 2 - frame / 2, frontZ - frameDepth / 2] },
     ),
   });
@@ -851,7 +939,7 @@ function buildCabinet() {
     name: 'CabFrameBottom',
     material: 'Tolex',
     geometry: transformGeometry(
-      roundedBox(width, frame, frameDepth, 0.008, 3),
+      roundedBox(width, frame, frameDepth, railRadius, 4),
       { translate: [0, -(height / 2 - frame / 2), frontZ - frameDepth / 2] },
     ),
   });
@@ -860,13 +948,13 @@ function buildCabinet() {
       name: sign < 0 ? 'CabFrameLeft' : 'CabFrameRight',
       material: 'Tolex',
       geometry: transformGeometry(
-        roundedBox(frame, height - 2 * frame, frameDepth, 0.008, 3),
+        roundedBox(frame, height - 2 * frame, frameDepth, railRadius, 4),
         { translate: [sign * (width / 2 - frame / 2), 0, frontZ - frameDepth / 2] },
       ),
     });
   }
 
-  // Baffle board sitting behind the speakers, closing off the cavity.
+  // Baffle board closing the cavity behind the speakers.
   parts.push({
     name: 'CabBaffle',
     material: 'GrilleBacking',
@@ -921,28 +1009,6 @@ function buildCabinet() {
       { translate: [0, 0, clothZ] },
     ),
   });
-
-  const cornerSize = 0.075;
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        parts.push({
-          name: `CabCorner_${sx < 0 ? 'L' : 'R'}${sy < 0 ? 'B' : 'T'}${sz < 0 ? 'R' : 'F'}`,
-          material: 'CornerMetal',
-          geometry: transformGeometry(
-            roundedBox(cornerSize, cornerSize, cornerSize, 0.026, 2),
-            {
-              translate: [
-                sx * (width / 2 - cornerSize / 2 + 0.005),
-                sy * (height / 2 - cornerSize / 2 + 0.005),
-                sz * (depth / 2 - cornerSize / 2 + 0.004),
-              ],
-            },
-          ),
-        });
-      }
-    }
-  }
 
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {

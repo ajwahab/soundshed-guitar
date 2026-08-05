@@ -262,7 +262,8 @@ function buildAmp3dKnobSpecs(node: GraphNode, knobDefs: ParameterDef[]): Amp3dKn
     return {
       key: paramDef.key,
       label: paramDef.name || formatParamLabel(paramDef.key),
-      subLabel: paramDef.group || undefined,
+      // Panel silkscreen shows the control function only (no Level/Tone sub-labels).
+      subLabel: undefined,
       value,
       defaultValue,
       min,

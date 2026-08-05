@@ -454,8 +454,8 @@ export class AmpScene {
       metalness: 1.0,
     }));
     this.track("CornerMetal", new THREE.MeshStandardMaterial({
-      color: 0x2a2c30,
-      roughness: 0.42,
+      color: 0x101214,
+      roughness: 0.45,
       metalness: 1.0,
     }));
     this.track("LogoPlate", new THREE.MeshStandardMaterial({
@@ -477,13 +477,18 @@ export class AmpScene {
     }));
 
     this.track("KnobBody", new THREE.MeshStandardMaterial({
-      color: 0xd2d6dc,
-      roughness: 0.26,
-      metalness: 0.7,
+      color: 0x121316,
+      roughness: 0.58,
+      metalness: 0.05,
+    }));
+    this.track("KnobCap", new THREE.MeshStandardMaterial({
+      color: 0xeeeff2,
+      roughness: 0.32,
+      metalness: 0.0,
     }));
     this.track("KnobPointer", new THREE.MeshStandardMaterial({
-      color: 0x08090b,
-      roughness: 0.35,
+      color: 0x050607,
+      roughness: 0.42,
       metalness: 0.0,
     }));
 

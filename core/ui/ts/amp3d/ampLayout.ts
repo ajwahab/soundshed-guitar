@@ -18,41 +18,43 @@ export interface PanelRect {
 }
 
 export const PANEL_RECT: PanelRect = {
-  left: -0.352,
-  right: 0.352,
-  top: -0.048,
-  bottom: -0.136,
-  faceZ: 0.1345,
+  // Must stay inside the front frame rails (inner edge ±0.342).
+  left: -0.334,
+  right: 0.334,
+  top: -0.045,
+  bottom: -0.138,
+  // Recessed behind the front tolex lip (see HEAD.panelFrontZ).
+  faceZ: 0.100,
 };
 
 export const GRILLE_RECT: PanelRect = {
-  left: -0.325,
-  right: 0.325,
-  top: 0.128,
-  bottom: -0.04,
-  faceZ: 0.1215,
+  left: -0.342,
+  right: 0.342,
+  top: 0.124,
+  bottom: -0.038,
+  faceZ: 0.110,
 };
 
 /**
  * Z of the emissive backlight plane recessed behind the grille face
  * (`HEAD.baffleZ + 0.007` in scripts/generate-amp-models.js).
  */
-export const GRILLE_GLOW_Z = 0.115;
+export const GRILLE_GLOW_Z = 0.105;
 
 /** Fixed hardware positions on the control panel. */
 export const PANEL_HARDWARE = {
-  jack: { x: -0.315, y: -0.092 },
-  display: { x: -0.212, y: -0.088, width: 0.124, height: 0.023 },
-  powerSwitch: { x: 0.3, y: -0.096 },
-  powerLed: { x: 0.334, y: -0.096 },
+  jack: { x: -0.302, y: -0.091 },
+  display: { x: -0.205, y: -0.088, width: 0.124, height: 0.023 },
+  powerSwitch: { x: 0.286, y: -0.094 },
+  powerLed: { x: 0.316, y: -0.094 },
 } as const;
 
 /** Horizontal band of the panel that knobs are laid out across. */
-const KNOB_ZONE_LEFT = -0.135;
-const KNOB_ZONE_RIGHT = 0.265;
-const KNOB_CENTER_Y = -0.092;
-const KNOB_MAX_SPACING = 0.062;
-const KNOB_MIN_SPACING = 0.047;
+const KNOB_ZONE_LEFT = -0.128;
+const KNOB_ZONE_RIGHT = 0.248;
+const KNOB_CENTER_Y = -0.091;
+const KNOB_MAX_SPACING = 0.058;
+const KNOB_MIN_SPACING = 0.044;
 
 /** Knobs that do not fit on the panel fall back to the regular HTML controls. */
 export const MAX_PANEL_KNOBS = Math.max(

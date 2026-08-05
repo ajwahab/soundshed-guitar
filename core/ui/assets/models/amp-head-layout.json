@@ -1,16 +1,16 @@
 {
   "panel": {
-    "left": -0.352,
-    "right": 0.352,
-    "top": -0.048,
-    "bottom": -0.136,
-    "faceZ": 0.1345
+    "left": -0.334,
+    "right": 0.334,
+    "top": -0.045,
+    "bottom": -0.138,
+    "faceZ": 0.1
   },
   "grille": {
-    "left": -0.325,
-    "right": 0.325,
-    "top": 0.128,
-    "bottom": -0.04,
-    "faceZ": 0.1215
+    "left": -0.342,
+    "right": 0.342,
+    "top": 0.124,
+    "bottom": -0.038,
+    "faceZ": 0.11
   }
 }

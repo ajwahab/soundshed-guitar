@@ -289,7 +289,7 @@ const PANEL_TEXTURE_HEIGHT = 256;
 
 /**
  * Silkscreened control panel: brushed metal plus the parameter names, the
- * INPUT / POWER legends and the module label around the display window.
+ * INPUT / POWER legends and the "AMP MODEL" label around the display window.
  */
 export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElement {
   const canvas = createBrushedMetalCanvas(
@@ -344,41 +344,44 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
     ctx.restore();
   };
 
-  const labelFont = Math.round(0.011 * pxPerMetre);
+  // ~33% smaller than the previous 0.011 m silkscreen size.
+  const labelFont = Math.round(0.0074 * pxPerMetre);
+  // Keep labels tight to the control they annotate.
+  const labelOffsetY = 0.022;
 
   options.labels.forEach((label) => {
-    const top = toCanvas(label.placement.x, label.placement.y + 0.0335);
+    const top = toCanvas(label.placement.x, label.placement.y + labelOffsetY);
     drawText(label.topLabel.toUpperCase(), top.x, top.y, labelFont, options.textColor);
     if (label.bottomLabel) {
-      const bottom = toCanvas(label.placement.x, label.placement.y - 0.0345);
-      drawText(label.bottomLabel.toUpperCase(), bottom.x, bottom.y, Math.round(labelFont * 0.82), options.mutedTextColor);
+      const bottom = toCanvas(label.placement.x, label.placement.y - labelOffsetY);
+      drawText(label.bottomLabel.toUpperCase(), bottom.x, bottom.y, Math.round(labelFont * 0.9), options.mutedTextColor);
     }
   });
 
-  const inputLabel = toCanvas(PANEL_HARDWARE.jack.x, PANEL_HARDWARE.jack.y + 0.0335);
+  const inputLabel = toCanvas(PANEL_HARDWARE.jack.x, PANEL_HARDWARE.jack.y + labelOffsetY);
   drawText("INPUT", inputLabel.x, inputLabel.y, labelFont, options.textColor);
 
-  const moduleLabel = toCanvas(PANEL_HARDWARE.display.x, PANEL_HARDWARE.display.y + 0.0275);
-  drawText("AMP-CONTROL-MODULE", moduleLabel.x, moduleLabel.y, Math.round(labelFont * 0.72), options.mutedTextColor, "600", 1.5);
+  const moduleLabel = toCanvas(PANEL_HARDWARE.display.x, PANEL_HARDWARE.display.y + 0.02);
+  drawText("AMP MODEL", moduleLabel.x, moduleLabel.y, Math.round(labelFont * 0.85), options.mutedTextColor, "600", 1.4);
 
   const powerLabel = toCanvas(
     (PANEL_HARDWARE.powerSwitch.x + PANEL_HARDWARE.powerLed.x) / 2,
-    PANEL_HARDWARE.powerSwitch.y + 0.0335,
+    PANEL_HARDWARE.powerSwitch.y + labelOffsetY,
   );
   drawText("POWER", powerLabel.x, powerLabel.y, labelFont, options.textColor);
 
   if (options.brandText) {
     const brandCenterX = (PANEL_HARDWARE.powerSwitch.x + PANEL_HARDWARE.powerLed.x) / 2;
-    const brand = toCanvas(brandCenterX, PANEL_HARDWARE.powerSwitch.y - 0.0345);
+    const brand = toCanvas(brandCenterX, PANEL_HARDWARE.powerSwitch.y - labelOffsetY);
     const availableMetres = Math.max(0.02, (PANEL_RECT.right - 0.006 - brandCenterX) * 2);
     drawText(
       options.brandText.toUpperCase(),
       brand.x,
       brand.y,
-      Math.round(labelFont * 0.66),
+      Math.round(labelFont * 0.78),
       options.mutedTextColor,
       "600",
-      1.2,
+      1.1,
       availableMetres * pxPerMetre,
     );
   }
