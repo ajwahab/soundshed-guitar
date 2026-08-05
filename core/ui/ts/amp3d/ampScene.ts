@@ -207,8 +207,23 @@ export interface Amp3dSceneOptions {
   brandText: string;
   bypassed: boolean;
   showCabinet: boolean;
-  preset: Amp3dThemePreset;
-}
+  /**
+   * Number of cabinet meshes (0–2). When omitted, derived from `showCabinet`
+   * (true → 1, false → 0). Dual-IR chains pass 2.
+   */
+  cabinetCount?: number;
+  /**
+     * When false, only cabinet mesh(es) are built (IR-only node). Defaults true.
+     */
+    showHead?: boolean;
+    /**
+     * When true, only the high-quality amp/cab product is built. Scene lights,
+     * backdrop, floor fade and PMREM environment are owned by the parent stage
+     * (signal-chain 3D view). Contact shadow still attaches under the rig.
+     */
+    embed?: boolean;
+    preset: Amp3dThemePreset;
+  }
 
 interface KnobInstance {
   spec: Amp3dKnobSpec;
@@ -274,6 +289,7 @@ export class AmpScene {
   private floorMesh: THREE.Mesh | null = null;
   private contactShadowMesh: THREE.Mesh | null = null;
   private headGroup: THREE.Group | null = null;
+  private cabinetGroups: THREE.Group[] = [];
   private glowBaseIntensity = 0;
   /** Normalised node output peak (0..1), used to vary grille glow a little. */
   private signalLevel = 0;
@@ -296,58 +312,95 @@ export class AmpScene {
 
   private constructor(options: Amp3dSceneOptions) {
     this.options = options;
-    this.scene.add(this.root);
-  }
+      // Standalone owns its scene graph; embed mode re-parents `root` into the chain.
+      if (!options.embed) {
+        this.scene.add(this.root);
+      }
+    }
 
-  static async create(options: Amp3dSceneOptions, renderer: THREE.WebGLRenderer): Promise<AmpScene> {
-    const instance = new AmpScene(options);
-    await instance.build(renderer);
-    return instance;
-  }
+    static async create(options: Amp3dSceneOptions, renderer: THREE.WebGLRenderer): Promise<AmpScene> {
+      const instance = new AmpScene(options);
+      await instance.build(renderer);
+      return instance;
+    }
 
-  private async build(renderer: THREE.WebGLRenderer): Promise<void> {
+    /** Resolved cabinet mesh count (0–2). */
+    private resolvedCabinetCount(): number {
+      if (typeof this.options.cabinetCount === "number" && Number.isFinite(this.options.cabinetCount)) {
+        return Math.max(0, Math.min(2, Math.floor(this.options.cabinetCount)));
+      }
+      return this.options.showCabinet ? 1 : 0;
+    }
+
+    private async build(renderer: THREE.WebGLRenderer): Promise<void> {
       // Silkscreen canvas needs AmpPanel loaded before we bake the panel map.
       const [, tolexSurface] = await Promise.all([ensurePanelLabelFont(), loadTolexSurface()]);
       this.buildMaterials(tolexSurface);
-    this.buildEnvironment(renderer);
-    this.buildBackground();
-    this.buildLights();
 
-    const [head, cabinet] = await Promise.all([
-      loadAmpComponent("head"),
-      this.options.showCabinet ? loadAmpComponent("cabinet") : Promise.resolve(null),
-    ]);
-
-    const headGroup = new THREE.Group();
-    headGroup.name = "AmpHead";
-    this.applyMaterials(head);
-    headGroup.add(head);
-
-    await this.addPanelHardware(headGroup);
-    this.addLogoDecal(headGroup);
-
-    if (cabinet) {
-      this.applyMaterials(cabinet);
-      // Stack from the measured geometry so the cabinet rests on the floor and
-      // the head sits flush on the cabinet, whatever the model dimensions are.
-      const cabinetBounds = new THREE.Box3().setFromObject(cabinet);
-      cabinet.position.y = -cabinetBounds.min.y;
-      this.root.add(cabinet);
-
-      const headBounds = new THREE.Box3().setFromObject(headGroup);
-      headGroup.position.y = (cabinetBounds.max.y - cabinetBounds.min.y) - headBounds.min.y;
-    } else {
-      const headBounds = new THREE.Box3().setFromObject(headGroup);
-      headGroup.position.y = -headBounds.min.y;
-    }
-
-    this.root.add(headGroup);
-        this.headGroup = headGroup;
-        this.addFloor();
-        this.addContactShadow();
-        // Initial mount snaps to the current bypass state (no fade-in on load).
-        this.snapPowerState();
+      const embed = Boolean(this.options.embed);
+      if (!embed) {
+        this.buildEnvironment(renderer);
+        this.buildBackground();
+        this.buildLights();
       }
+
+      const cabinetCount = this.resolvedCabinetCount();
+      const showHead = this.options.showHead !== false;
+      const [head, ...cabinetLoads] = await Promise.all([
+        showHead ? loadAmpComponent("head") : Promise.resolve(null),
+        ...Array.from({ length: cabinetCount }, () => loadAmpComponent("cabinet")),
+      ]);
+
+      const headGroup = new THREE.Group();
+      headGroup.name = "AmpHead";
+      if (head) {
+        this.applyMaterials(head);
+        headGroup.add(head);
+        await this.addPanelHardware(headGroup);
+        this.addLogoDecal(headGroup);
+      }
+
+      let cabinetTop = 0;
+      const cabinets = cabinetLoads.filter((cab): cab is THREE.Group => Boolean(cab));
+            this.cabinetGroups = [];
+            // Cabinet mesh is ~0.8m wide; place dual cabs from measured width + gap so
+            // they never interpenetrate (fixed ±0.3 was too tight).
+            const DUAL_CAB_GAP = 0.1;
+            cabinets.forEach((cabinet, index) => {
+              this.applyMaterials(cabinet);
+              cabinet.name = cabinets.length === 2 ? `AmpCabinet_${index + 1}` : "AmpCabinet";
+              // Stack from the measured geometry so the cabinet rests on the floor and
+              // the head sits flush on the cabinet, whatever the model dimensions are.
+              const cabinetBounds = new THREE.Box3().setFromObject(cabinet);
+              const cabWidth = Math.max(0.4, cabinetBounds.max.x - cabinetBounds.min.x);
+              cabinet.position.y = -cabinetBounds.min.y;
+              if (cabinets.length === 2) {
+                const offsetX = cabWidth * 0.5 + DUAL_CAB_GAP * 0.5;
+                cabinet.position.x = index === 0 ? -offsetX : offsetX;
+              }
+              this.root.add(cabinet);
+              this.cabinetGroups.push(cabinet);
+              cabinetTop = Math.max(cabinetTop, cabinetBounds.max.y - cabinetBounds.min.y);
+            });
+
+      if (head) {
+        const headBounds = new THREE.Box3().setFromObject(headGroup);
+        headGroup.position.y = cabinets.length
+          ? cabinetTop - headBounds.min.y
+          : -headBounds.min.y;
+        // Dual cab: centre the head between the pair.
+        headGroup.position.x = 0;
+        this.root.add(headGroup);
+        this.headGroup = headGroup;
+      }
+
+      if (!embed) {
+        this.addFloor();
+      }
+      this.addContactShadow();
+      // Initial mount snaps to the current bypass state (no fade-in on load).
+      this.snapPowerState();
+    }
 
       /**
        * Soft elliptical contact shadow under the rig. The directional key light is
@@ -1096,27 +1149,41 @@ export class AmpScene {
   }
 
   /**
-   * Bounds the camera should frame. With a cabinet the rig is far taller than
-   * it is wide, so framing all of it shrinks the control panel to the point of
-   * being unusable. Instead we frame the head and let the cabinet run off the
-   * bottom of the viewport — it stays implied rather than fully in shot.
-   */
-  getFocusBounds(): THREE.Box3 {
-    const content = this.getContentBounds();
-    if (!this.headGroup || !this.options.showCabinet || content.isEmpty()) {
+     * Bounds the camera should frame.
+     * - `head` (default with cabinet): frame the head/control panel so knobs stay usable.
+     * - `cab`: frame cabinet mesh(es) only (IR / paired cab selection).
+     * - `all`: full amp+cab content bounds.
+     * - `auto`: head when both present, otherwise content.
+     */
+    getFocusBounds(mode: "auto" | "head" | "cab" | "all" = "auto"): THREE.Box3 {
+      const content = this.getContentBounds();
+      const resolved =
+        mode === "auto"
+          ? (this.headGroup && this.cabinetGroups.length > 0 ? "head" : "all")
+          : mode;
+
+      if (resolved === "cab" && this.cabinetGroups.length > 0) {
+        const box = new THREE.Box3();
+        this.cabinetGroups.forEach((cab) => box.expandByObject(cab));
+        return box.isEmpty() ? content : box;
+      }
+
+      if (resolved === "head" && this.headGroup) {
+        const head = new THREE.Box3().setFromObject(this.headGroup);
+        if (head.isEmpty()) {
+          return content;
+        }
+        if (this.cabinetGroups.length > 0 && !content.isEmpty()) {
+          // Keep a sliver of the cabinet top in frame so the stack still reads as a
+          // full rig, then clamp to the real content so we never frame empty space.
+          // Do not expand X to dual-cab width — that pulls the camera too far back.
+          head.min.y = Math.max(content.min.y, head.min.y - (head.max.y - head.min.y) * 0.35);
+        }
+        return head;
+      }
+
       return content;
     }
-    const head = new THREE.Box3().setFromObject(this.headGroup);
-    if (head.isEmpty()) {
-      return content;
-    }
-    // Keep a sliver of the cabinet top in frame so the stack still reads as a
-    // full rig, then clamp to the real content so we never frame empty space.
-    head.min.y = Math.max(content.min.y, head.min.y - (head.max.y - head.min.y) * 0.45);
-    head.min.x = Math.min(head.min.x, content.min.x);
-    head.max.x = Math.max(head.max.x, content.max.x);
-    return head;
-  }
 
   dispose(): void {
     if (this.disposed) {
@@ -1138,10 +1205,11 @@ export class AmpScene {
     this.geometries.clear();
     this.environmentTexture?.dispose();
     this.environmentTexture = null;
-        this.displayTexture = null;
-        this.scene.environment = null;
-        this.knobs.length = 0;
-        this.switchHitTargets = [];
-        this.scene.clear();
-      }
+      this.displayTexture = null;
+      this.scene.environment = null;
+      this.knobs.length = 0;
+      this.switchHitTargets = [];
+      this.root.clear();
+      this.scene.clear();
     }
+  }

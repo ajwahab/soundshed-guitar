@@ -433,3 +433,15 @@ body.theme-light .amp3d-dock-models + .amp3d-dock-controls {
     padding: 8px;
   }
 }
+
+/* Full signal-chain stage (extends amp stage immersion) */
+.chain3d-stage .amp3d-viewport,
+body.amp3d-immersive .chain3d-stage .amp3d-viewport {
+  min-height: 280px;
+}
+
+.chain3d-view {
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+}
