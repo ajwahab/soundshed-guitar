@@ -33,6 +33,7 @@ import {
   createNormalFromImageCanvas,
   createPanelTexture,
   createTolexTextures,
+  ensurePanelLabelFont,
   type PanelLabel,
 } from "./ampTextures.js";
 
@@ -305,8 +306,9 @@ export class AmpScene {
   }
 
   private async build(renderer: THREE.WebGLRenderer): Promise<void> {
-    const tolexSurface = await loadTolexSurface();
-    this.buildMaterials(tolexSurface);
+      // Silkscreen canvas needs AmpPanel loaded before we bake the panel map.
+      const [, tolexSurface] = await Promise.all([ensurePanelLabelFont(), loadTolexSurface()]);
+      this.buildMaterials(tolexSurface);
     this.buildEnvironment(renderer);
     this.buildBackground();
     this.buildLights();
@@ -340,19 +342,19 @@ export class AmpScene {
     }
 
     this.root.add(headGroup);
-    this.headGroup = headGroup;
-    this.addFloor();
-    this.addContactShadow();
+        this.headGroup = headGroup;
+        this.addFloor();
+        this.addContactShadow();
         // Initial mount snaps to the current bypass state (no fade-in on load).
         this.snapPowerState();
       }
 
-  /**
-   * Soft elliptical contact shadow under the rig. The directional key light is
-   * in front of the amp, so its cast shadow falls behind it; without this the
-   * amp reads as floating above the floor.
-   */
-  private addContactShadow(): void {
+      /**
+       * Soft elliptical contact shadow under the rig. The directional key light is
+       * in front of the amp, so its cast shadow falls behind it; without this the
+       * amp reads as floating above the floor.
+       */
+      private addContactShadow(): void {
     const bounds = this.getContentBounds();
     if (bounds.isEmpty()) {
       return;
@@ -463,11 +465,13 @@ export class AmpScene {
       metalness: 0.85,
     }));
 
-    this.panelMaterial = this.track("PanelFace", new THREE.MeshStandardMaterial({
-      map: this.trackTexture(canvasTexture(this.buildPanelCanvas(), { srgb: true })),
-      roughness: 0.34,
-      metalness: 0.78,
-    }));
+    // Higher anisotropy keeps condensed silkscreen stems sharp when the panel
+        // is viewed at an angle (default 4× was still soft after the res bump).
+        this.panelMaterial = this.track("PanelFace", new THREE.MeshStandardMaterial({
+          map: this.trackTexture(canvasTexture(this.buildPanelCanvas(), { srgb: true, anisotropy: 8 })),
+          roughness: 0.34,
+          metalness: 0.78,
+        }));
 
     this.track("GrilleMetal", new THREE.MeshStandardMaterial({
       map: this.trackTexture(canvasTexture(createGrilleBaseCanvas(), { srgb: true })),
@@ -776,32 +780,51 @@ export class AmpScene {
     this.scene.add(ambient);
     this.lights.push(ambient);
 
-    const key = new THREE.DirectionalLight(preset.key.color, preset.key.intensity);
-    key.position.set(...preset.key.position);
-    key.castShadow = true;
-        // 512² is plenty for a small amp in a panel; 1024² quadrupled shadow cost.
-        key.shadow.mapSize.set(512, 512);
-        key.shadow.camera.near = 0.1;
-        key.shadow.camera.far = 6;
-        key.shadow.camera.left = -1.2;
-        key.shadow.camera.right = 1.2;
-        key.shadow.camera.top = 2.2;
-        key.shadow.camera.bottom = -0.4;
-        key.shadow.bias = -0.0012;
-        key.shadow.normalBias = 0.012;
-    this.scene.add(key);
-    this.lights.push(key);
+      // Soft key still fills the body, but no longer owns shadows — the practical
+      // spot below carves the panel and knob contact shadows.
+      const key = new THREE.DirectionalLight(preset.key.color, preset.key.intensity);
+      key.position.set(...preset.key.position);
+      key.castShadow = false;
+      this.scene.add(key);
+      this.lights.push(key);
 
-    const fill = new THREE.DirectionalLight(preset.fill.color, preset.fill.intensity);
-    fill.position.set(...preset.fill.position);
-    this.scene.add(fill);
-    this.lights.push(fill);
+      const fill = new THREE.DirectionalLight(preset.fill.color, preset.fill.intensity);
+      fill.position.set(...preset.fill.position);
+      this.scene.add(fill);
+      this.lights.push(fill);
 
-    const rim = new THREE.DirectionalLight(preset.rim.color, preset.rim.intensity);
-    rim.position.set(...preset.rim.position);
-    this.scene.add(rim);
-    this.lights.push(rim);
-  }
+      const rim = new THREE.DirectionalLight(preset.rim.color, preset.rim.intensity);
+      rim.position.set(...preset.rim.position);
+      this.scene.add(rim);
+      this.lights.push(rim);
+
+      // Top-right practical: the hero light. Tight enough to graze knobs from above
+      // so each pointer throws a short contact shadow onto the brushed panel.
+      const spot = new THREE.SpotLight(
+        preset.spot.color,
+        preset.spot.intensity,
+        preset.spot.distance,
+        preset.spot.angle,
+        preset.spot.penumbra,
+        preset.spot.decay,
+      );
+      spot.name = "PanelSpot";
+      spot.position.set(...preset.spot.position);
+      spot.target.position.set(...preset.spot.target);
+      spot.castShadow = true;
+      // 1024² keeps knob silhouettes crisp at panel scale without the full-scene
+      // cost of a large directional cascade.
+      spot.shadow.mapSize.set(1024, 1024);
+      spot.shadow.camera.near = 0.15;
+      spot.shadow.camera.far = Math.max(2.5, preset.spot.distance);
+      spot.shadow.camera.fov = THREE.MathUtils.radToDeg(preset.spot.angle) * 2;
+      spot.shadow.bias = -0.00035;
+      spot.shadow.normalBias = 0.018;
+      spot.shadow.radius = 2.5;
+      this.scene.add(spot);
+      this.scene.add(spot.target);
+      this.lights.push(spot);
+    }
 
   // ── Public API ───────────────────────────────────────────────────────────
 

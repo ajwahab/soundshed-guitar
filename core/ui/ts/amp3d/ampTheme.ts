@@ -15,6 +15,19 @@ export interface Amp3dLightSetting {
   position: [number, number, number];
 }
 
+export interface Amp3dSpotSetting extends Amp3dLightSetting {
+  /** World-space point the spot aims at (typically the control panel). */
+  target: [number, number, number];
+  /** Outer cone angle in radians. */
+  angle: number;
+  /** Penumbra 0..1 (soft edge of the cone). */
+  penumbra: number;
+  /** Distance falloff (Three.js SpotLight.distance). */
+  distance: number;
+  /** Distance decay exponent. */
+  decay: number;
+}
+
 export interface Amp3dThemePreset {
   /** Tone mapping exposure applied to the renderer. */
   exposure: number;
@@ -28,6 +41,11 @@ export interface Amp3dThemePreset {
   key: Amp3dLightSetting;
   fill: Amp3dLightSetting;
   rim: Amp3dLightSetting;
+  /**
+   * Top-right practical that carries most of the form lighting and casts the
+   * knob shadows on the control panel.
+   */
+  spot: Amp3dSpotSetting;
   /** Colour/strength of the light spilling through the front grille. */
   grilleGlowColor: number;
   grilleGlowIntensity: number;
@@ -47,15 +65,26 @@ export interface Amp3dThemePreset {
 }
 
 const DARK_PRESET: Amp3dThemePreset = {
-  exposure: 0.95,
+  exposure: 0.92,
   backgroundTop: 0x14171d,
   backgroundBottom: 0x05070a,
   ambientColor: 0x38414f,
-  ambientIntensity: 0.5,
-  environmentIntensity: 0.6,
-  key: { color: 0xfdfaf4, intensity: 2.8, position: [0.55, 0.85, 1.15] },
-  fill: { color: 0x9aa6bd, intensity: 0.65, position: [-0.95, 0.15, 0.85] },
-  rim: { color: 0xbcd8f2, intensity: 1.0, position: [-0.5, 0.6, -1.1] },
+  ambientIntensity: 0.34,
+  environmentIntensity: 0.42,
+  // Soft key/fill/rim are intentionally dimmer so the practical spot sculpts the form.
+  key: { color: 0xfdfaf4, intensity: 1.15, position: [0.55, 0.85, 1.15] },
+  fill: { color: 0x9aa6bd, intensity: 0.38, position: [-0.95, 0.15, 0.85] },
+  rim: { color: 0xbcd8f2, intensity: 0.62, position: [-0.5, 0.6, -1.1] },
+  spot: {
+    color: 0xfff4e5,
+    intensity: 38,
+    position: [0.62, 1.15, 0.72],
+    target: [0.04, -0.09, 0.11],
+    angle: 0.48,
+    penumbra: 0.42,
+    distance: 3.6,
+    decay: 1.6,
+  },
   grilleGlowColor: 0x3f7bff,
   grilleGlowIntensity: 1.35,
   ledColor: 0x4d8cff,
@@ -71,15 +100,25 @@ const DARK_PRESET: Amp3dThemePreset = {
 };
 
 const LIGHT_PRESET: Amp3dThemePreset = {
-  exposure: 1.2,
+  exposure: 1.12,
   backgroundTop: 0xf1f3f6,
   backgroundBottom: 0xc9ced6,
   ambientColor: 0xf5f7ff,
-  ambientIntensity: 1.1,
-  environmentIntensity: 1.15,
-  key: { color: 0xffffff, intensity: 3.1, position: [0.7, 1.1, 1.25] },
-  fill: { color: 0xdfe8ff, intensity: 1.4, position: [-1.05, 0.3, 0.95] },
-  rim: { color: 0xffffff, intensity: 1.1, position: [-0.4, 0.75, -1.05] },
+  ambientIntensity: 0.72,
+  environmentIntensity: 0.82,
+  key: { color: 0xffffff, intensity: 1.25, position: [0.7, 1.1, 1.25] },
+  fill: { color: 0xdfe8ff, intensity: 0.75, position: [-1.05, 0.3, 0.95] },
+  rim: { color: 0xffffff, intensity: 0.7, position: [-0.4, 0.75, -1.05] },
+  spot: {
+    color: 0xffffff,
+    intensity: 42,
+    position: [0.7, 1.25, 0.8],
+    target: [0.04, -0.09, 0.11],
+    angle: 0.5,
+    penumbra: 0.48,
+    distance: 3.8,
+    decay: 1.5,
+  },
   grilleGlowColor: 0x4f86ff,
   grilleGlowIntensity: 0.85,
   ledColor: 0x2f6fff,
@@ -95,15 +134,25 @@ const LIGHT_PRESET: Amp3dThemePreset = {
 };
 
 const VINTAGE_PRESET: Amp3dThemePreset = {
-  exposure: 1.05,
+  exposure: 1.0,
   backgroundTop: 0x2b2118,
   backgroundBottom: 0x0d0907,
   ambientColor: 0x5a3f28,
-  ambientIntensity: 0.7,
-  environmentIntensity: 0.7,
-  key: { color: 0xffcf96, intensity: 2.8, position: [0.6, 0.9, 1.1] },
-  fill: { color: 0xa9713c, intensity: 1.0, position: [-0.9, 0.2, 0.9] },
-  rim: { color: 0xffb060, intensity: 1.3, position: [-0.55, 0.55, -1.1] },
+  ambientIntensity: 0.46,
+  environmentIntensity: 0.5,
+  key: { color: 0xffcf96, intensity: 1.2, position: [0.6, 0.9, 1.1] },
+  fill: { color: 0xa9713c, intensity: 0.55, position: [-0.9, 0.2, 0.9] },
+  rim: { color: 0xffb060, intensity: 0.8, position: [-0.55, 0.55, -1.1] },
+  spot: {
+    color: 0xffd7a0,
+    intensity: 36,
+    position: [0.58, 1.12, 0.7],
+    target: [0.04, -0.09, 0.11],
+    angle: 0.48,
+    penumbra: 0.4,
+    distance: 3.6,
+    decay: 1.55,
+  },
   grilleGlowColor: 0xffa542,
   grilleGlowIntensity: 1.15,
   ledColor: 0xff9b3d,

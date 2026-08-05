@@ -8,6 +8,10 @@
  */
 
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { FXAAPass } from "three/examples/jsm/postprocessing/FXAAPass.js";
 
 import { AmpScene, type Amp3dKnobSpec, type Amp3dSceneOptions } from "./ampScene.js";
 import { dragToValue, formatKnobValue } from "./ampLayout.js";
@@ -45,15 +49,19 @@ export function isWebglAvailable(): boolean {
   return isWebglSupported();
 }
 
-const MIN_ZOOM = 0.62;
-const MAX_ZOOM = 1.35;
-const MAX_AZIMUTH = 0.42;
-const MIN_POLAR = -0.08;
-const MAX_POLAR = 0.42;
+const MIN_ZOOM = 0.45;
+const MAX_ZOOM = 1.6;
+const MAX_AZIMUTH = 0.85;
+const MIN_POLAR = -0.18;
+const MAX_POLAR = 0.55;
 /** Default orbit pitch: high enough to look down on the amp head slightly. */
 const DEFAULT_POLAR = 0.2;
 /** Pointer travel (px) below which a press counts as a click, not an orbit. */
 const CLICK_SLOP_PX = 4;
+/** World-units of pan per pixel at the default camera distance. */
+const PAN_PIXEL_SCALE = 0.00165;
+/** Clamp on the user pan offset so the amp cannot be dragged completely away. */
+const MAX_PAN = 1.35;
 /**
  * Idle animation (display marquee) is capped well below display refresh:
  * this view shares a machine with a real-time audio engine. 15 fps is enough
@@ -94,12 +102,15 @@ export class Amp3dView {
   private readonly overlay: HTMLElement;
   private readonly status: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
-  private readonly camera = new THREE.PerspectiveCamera(30, 1, 0.05, 40);
-  private readonly raycaster = new THREE.Raycaster();
-  private readonly pointer = new THREE.Vector2();
-  private readonly resizeObserver: ResizeObserver;
+    private readonly composer: EffectComposer;
+    private readonly renderPass: RenderPass;
+    private readonly fxaaPass: FXAAPass;
+    private readonly camera = new THREE.PerspectiveCamera(30, 1, 0.05, 40);
+    private readonly raycaster = new THREE.Raycaster();
+    private readonly pointer = new THREE.Vector2();
+    private readonly resizeObserver: ResizeObserver;
 
-  private ampScene: AmpScene | null = null;
+    private ampScene: AmpScene | null = null;
   private options: Amp3dViewOptions;
   private preset: Amp3dThemePreset;
   private signature: string;
@@ -135,15 +146,21 @@ export class Amp3dView {
   private cameraTarget = new THREE.Vector3();
   /** Centre of the framed content, before the bottom-dock offset is applied. */
   private focusCenter = new THREE.Vector3();
-  /** Fraction of the viewport height hidden behind the floating control dock. */
-  private bottomInset = 0;
-  private cameraDistance = 2;
-  private azimuth = 0;
-  private polar = DEFAULT_POLAR;
-  private zoom = 1;
+    /** User pan offset in world space (camera-right / camera-up axes). */
+    private panOffset = new THREE.Vector3();
+    private readonly panRight = new THREE.Vector3();
+    private readonly panUp = new THREE.Vector3();
+    /** Fraction of the viewport height hidden behind the floating control dock. */
+    private bottomInset = 0;
+    private cameraDistance = 2;
+    private azimuth = 0;
+    private polar = DEFAULT_POLAR;
+    private zoom = 1;
 
-  private activeKnob: { key: string; startValue: number; startY: number; pointerId: number } | null = null;
-  private orbitPointer: { id: number; x: number; y: number; moved: number } | null = null;
+    private activeKnob: { key: string; startValue: number; startY: number; pointerId: number } | null = null;
+    private orbitPointer: { id: number; x: number; y: number; moved: number } | null = null;
+    /** Middle / right / shift+left drag pans the look-at point. */
+    private panPointer: { id: number; x: number; y: number } | null = null;
 
   private constructor(container: HTMLElement, options: Amp3dViewOptions) {
     this.options = options;
@@ -176,25 +193,35 @@ export class Amp3dView {
     container.appendChild(this.element);
 
         const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
-        // MSAA is expensive; on HiDPI the extra samples are rarely visible after
-        // downsampling, so only enable antialias when the backing store is 1×.
-        this.renderer = new THREE.WebGLRenderer({
-          canvas: this.canvas,
-          antialias: pixelRatio <= 1,
-          alpha: false,
-          powerPreference: "low-power",
-        });
-        this.renderer.setPixelRatio(pixelRatio);
-        this.renderer.shadowMap.enabled = true;
-        // PCF soft is roughly 2–4× the shadow filter cost of basic PCF.
-        this.renderer.shadowMap.type = THREE.PCFShadowMap;
-        // Key light and static geometry rarely move; rebuild shadows on demand so
-        // the powered-on marquee loop is a colour pass only.
-        this.renderer.shadowMap.autoUpdate = false;
-        this.renderer.shadowMap.needsUpdate = true;
-        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = this.preset.exposure;
-        this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+            // MSAA is skipped: the EffectComposer path renders into its own targets, so
+            // framebuffer multisampling would not reach the final image. FXAA runs as
+            // the last pass instead and is cheaper at this panel resolution.
+            this.renderer = new THREE.WebGLRenderer({
+              canvas: this.canvas,
+              antialias: false,
+              alpha: false,
+              powerPreference: "low-power",
+            });
+            this.renderer.setPixelRatio(pixelRatio);
+            this.renderer.shadowMap.enabled = true;
+            // Soft PCF pairs better with the tight panel spotlight for knob shadows.
+            this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            // Geometry and the practical spot rarely move; rebuild shadows on demand so
+            // idle frames stay a colour + FXAA pass only.
+            this.renderer.shadowMap.autoUpdate = false;
+            this.renderer.shadowMap.needsUpdate = true;
+            this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            this.renderer.toneMappingExposure = this.preset.exposure;
+            this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+            // Render → tone-map/colour-manage → FXAA. FXAA must follow OutputPass so it
+            // samples already-encoded sRGB (see three.js OutputPass docs).
+            this.composer = new EffectComposer(this.renderer);
+            this.renderPass = new RenderPass(new THREE.Scene(), this.camera);
+            this.composer.addPass(this.renderPass);
+            this.composer.addPass(new OutputPass());
+            this.fxaaPass = new FXAAPass();
+            this.composer.addPass(this.fxaaPass);
 
         this.resizeObserver = new ResizeObserver(() => this.handleResize());
         this.resizeObserver.observe(this.element);
@@ -209,6 +236,7 @@ export class Amp3dView {
         this.canvas.addEventListener("pointermove", this.handlePointerMove);
         this.canvas.addEventListener("pointerup", this.handlePointerUp);
         this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+        this.canvas.addEventListener("contextmenu", this.handleContextMenu);
         this.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
         this.canvas.addEventListener("dblclick", this.handleDoubleClick);
         this.canvas.addEventListener("webglcontextlost", this.handleContextLost);
@@ -245,6 +273,8 @@ export class Amp3dView {
     }
     this.ampScene?.dispose();
     this.ampScene = next;
+        this.renderPass.scene = next.scene;
+        this.renderPass.camera = this.camera;
         this.shadowsDirty = true;
         this.frameCamera();
         this.handleResize();
@@ -320,37 +350,71 @@ export class Amp3dView {
     const worldHeight = 2 * distance * tanHalfFov;
     const framedHeight = worldHeight * Math.max(0.5, 1 - this.bottomInset);
     this.cameraTarget.set(
-      this.focusCenter.x,
+        this.focusCenter.x + this.panOffset.x,
       this.focusCenter.y
-        - (worldHeight * this.bottomInset) / 2
-        - framedHeight * CAMERA_LOOK_DOWN_BIAS,
-      this.focusCenter.z,
-    );
-    const x = Math.sin(this.azimuth) * Math.cos(this.polar) * distance;
-    // Drop the orbit pivot a little so the camera sits lower while still
-    // pitching down onto the head (positive polar).
-    const y = Math.sin(this.polar) * distance - framedHeight * 0.04;
-    const z = Math.cos(this.azimuth) * Math.cos(this.polar) * distance;
-    this.camera.position.set(
-      this.cameraTarget.x + x,
-      this.cameraTarget.y + y,
-      this.cameraTarget.z + z,
-    );
-    this.camera.lookAt(this.cameraTarget);
-  }
+          + this.panOffset.y
+          - (worldHeight * this.bottomInset) / 2
+          - framedHeight * CAMERA_LOOK_DOWN_BIAS,
+        this.focusCenter.z + this.panOffset.z,
+      );
+      const x = Math.sin(this.azimuth) * Math.cos(this.polar) * distance;
+      // Drop the orbit pivot a little so the camera sits lower while still
+      // pitching down onto the head (positive polar).
+      const y = Math.sin(this.polar) * distance - framedHeight * 0.04;
+      const z = Math.cos(this.azimuth) * Math.cos(this.polar) * distance;
+      this.camera.position.set(
+        this.cameraTarget.x + x,
+        this.cameraTarget.y + y,
+        this.cameraTarget.z + z,
+      );
+      this.camera.lookAt(this.cameraTarget);
+    }
+
+    /** Screen-space drag → world pan along the camera's right/up axes. */
+    private applyPanDelta(dxPx: number, dyPx: number): void {
+      const distance = this.cameraDistance * this.zoom;
+      const scale = PAN_PIXEL_SCALE * distance;
+      // Rebuild the orbit basis without depending on the last camera matrix so a
+      // pan that starts mid-orbit stays stable.
+      this.panRight.set(Math.cos(this.azimuth), 0, -Math.sin(this.azimuth)).normalize();
+      this.panUp.set(
+        -Math.sin(this.azimuth) * Math.sin(this.polar),
+        Math.cos(this.polar),
+        -Math.cos(this.azimuth) * Math.sin(this.polar),
+      ).normalize();
+      // Drag right → content follows the pointer (standard trackball pan).
+      this.panOffset.addScaledVector(this.panRight, -dxPx * scale);
+      this.panOffset.addScaledVector(this.panUp, dyPx * scale);
+      this.panOffset.x = Math.max(-MAX_PAN, Math.min(MAX_PAN, this.panOffset.x));
+      this.panOffset.y = Math.max(-MAX_PAN, Math.min(MAX_PAN, this.panOffset.y));
+      this.panOffset.z = Math.max(-MAX_PAN, Math.min(MAX_PAN, this.panOffset.z));
+      this.cameraDirty = true;
+    }
+
+    private resetCamera(): void {
+      this.azimuth = 0;
+      this.polar = DEFAULT_POLAR;
+      this.zoom = 1;
+      this.panOffset.set(0, 0, 0);
+      this.cameraDirty = true;
+    }
 
   private handleResize = (): void => {
     if (this.disposed) {
       return;
     }
     const width = Math.max(1, Math.round(this.element.clientWidth));
-    const height = Math.max(1, Math.round(this.element.clientHeight));
-    this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
-    this.frameCamera();
-    this.requestRender();
-  };
+      const height = Math.max(1, Math.round(this.element.clientHeight));
+      this.renderer.setSize(width, height, false);
+      // Composer multiplies width/height by its pixel ratio when sizing passes
+      // (including FXAA's inverse-resolution uniform).
+      this.composer.setPixelRatio(this.renderer.getPixelRatio());
+      this.composer.setSize(width, height);
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      this.frameCamera();
+      this.requestRender();
+    };
 
   // ── Rendering ────────────────────────────────────────────────────────────
 
@@ -456,12 +520,14 @@ export class Amp3dView {
             this.cameraDirty = false;
           }
           if (this.shadowsDirty) {
-            this.renderer.shadowMap.needsUpdate = true;
-          this.shadowsDirty = false;
-        }
-        this.renderer.toneMappingExposure = this.preset.exposure;
-        this.renderer.render(this.ampScene.scene, this.camera);
-      }
+                  this.renderer.shadowMap.needsUpdate = true;
+                  this.shadowsDirty = false;
+                }
+                this.renderer.toneMappingExposure = this.preset.exposure;
+                this.renderPass.scene = this.ampScene.scene;
+                this.renderPass.camera = this.camera;
+                this.composer.render();
+              }
 
       if (animating) {
             const elapsed = (typeof performance !== "undefined" ? performance.now() : Date.now())
@@ -518,106 +584,150 @@ export class Amp3dView {
   }
 
   private handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0 || !this.ampScene) {
+      if (!this.ampScene) {
       return;
     }
-    this.updatePointer(event);
 
-    const knobKey = this.pickKnobKey();
-    if (knobKey) {
-      const spec = this.ampScene.getKnobSpec(knobKey);
-      if (!spec) {
+      // Pan: middle / right button always. Shift+left pans only off knobs so
+      // shift can still start a fine knob drag.
+      if (event.button === 1 || event.button === 2) {
+        event.preventDefault();
+        this.capturePointer(event.pointerId);
+        this.panPointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        this.canvas.style.cursor = "move";
         return;
       }
-      event.preventDefault();
-      this.capturePointer(event.pointerId);
-      this.activeKnob = {
-        key: knobKey,
-        startValue: spec.value,
-        startY: event.clientY,
-        pointerId: event.pointerId,
-      };
-      this.showReadout(spec);
-      return;
-    }
 
-    this.orbitPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: 0 };
-    this.capturePointer(event.pointerId);
-  };
-
-  private handlePointerMove = (event: PointerEvent): void => {
-    if (!this.ampScene) {
-      return;
-    }
-
-    if (this.activeKnob && event.pointerId === this.activeKnob.pointerId) {
-      const spec = this.ampScene.getKnobSpec(this.activeKnob.key);
-      if (!spec) {
+      if (event.button !== 0) {
         return;
       }
-      const value = dragToValue({
-        startValue: this.activeKnob.startValue,
-        deltaPixels: this.activeKnob.startY - event.clientY,
-        min: spec.min,
-        max: spec.max,
-        step: spec.step,
-        fine: event.shiftKey,
-      });
-      if (value !== spec.value) {
-        this.ampScene.setKnobValue(this.activeKnob.key, value);
-        this.options.onParamChange(this.activeKnob.key, value);
-        this.showReadout(spec);
-        this.updateStatusText();
-        this.requestRender();
-      }
-      return;
-    }
+      this.updatePointer(event);
 
-    if (this.orbitPointer && event.pointerId === this.orbitPointer.id) {
-      const dx = event.clientX - this.orbitPointer.x;
-      const dy = event.clientY - this.orbitPointer.y;
-      this.orbitPointer.moved += Math.abs(dx) + Math.abs(dy);
-      this.orbitPointer.x = event.clientX;
-      this.orbitPointer.y = event.clientY;
-      this.azimuth = Math.max(-MAX_AZIMUTH, Math.min(MAX_AZIMUTH, this.azimuth + dx * 0.004));
-      this.polar = Math.max(MIN_POLAR, Math.min(MAX_POLAR, this.polar + dy * 0.003));
-            this.cameraDirty = true;
-            this.requestRender();
-            return;
-          }
-
-    this.updatePointer(event);
-    const hovering = Boolean(this.pickKnobKey()) || this.pickPowerSwitch();
-    this.canvas.style.cursor = hovering ? "grab" : "default";
-  };
-
-  private handlePointerUp = (event: PointerEvent): void => {
-    if (this.activeKnob && event.pointerId === this.activeKnob.pointerId) {
-      const spec = this.ampScene?.getKnobSpec(this.activeKnob.key);
-      if (spec) {
-        this.options.onParamCommit?.(this.activeKnob.key, spec.value);
-      }
-      this.activeKnob = null;
-      this.hideReadout();
-      this.releasePointer(event.pointerId);
-          // Knobs cast; refresh the shadow map once the drag settles.
-          this.shadowsDirty = true;
-          this.requestRender();
+      const knobKey = this.pickKnobKey();
+      if (knobKey) {
+        const spec = this.ampScene.getKnobSpec(knobKey);
+        if (!spec) {
           return;
         }
+        event.preventDefault();
+        this.capturePointer(event.pointerId);
+        this.activeKnob = {
+          key: knobKey,
+          startValue: spec.value,
+          startY: event.clientY,
+          pointerId: event.pointerId,
+        };
+        this.showReadout(spec);
+        return;
+      }
 
-    if (this.orbitPointer && event.pointerId === this.orbitPointer.id) {
-      const wasClick = this.orbitPointer.moved <= CLICK_SLOP_PX;
-      this.orbitPointer = null;
-      this.releasePointer(event.pointerId);
-      if (wasClick) {
-        this.updatePointer(event);
-        if (this.pickPowerSwitch()) {
-          this.options.onBypassToggle();
+      if (event.shiftKey) {
+        event.preventDefault();
+        this.capturePointer(event.pointerId);
+        this.panPointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        this.canvas.style.cursor = "move";
+        return;
+      }
+
+      this.orbitPointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: 0 };
+      this.capturePointer(event.pointerId);
+    };
+
+    private handlePointerMove = (event: PointerEvent): void => {
+      if (!this.ampScene) {
+        return;
+      }
+
+      if (this.activeKnob && event.pointerId === this.activeKnob.pointerId) {
+        const spec = this.ampScene.getKnobSpec(this.activeKnob.key);
+        if (!spec) {
+          return;
+        }
+        const value = dragToValue({
+          startValue: this.activeKnob.startValue,
+          deltaPixels: this.activeKnob.startY - event.clientY,
+          min: spec.min,
+          max: spec.max,
+          step: spec.step,
+          fine: event.shiftKey,
+        });
+        if (value !== spec.value) {
+          this.ampScene.setKnobValue(this.activeKnob.key, value);
+          this.options.onParamChange(this.activeKnob.key, value);
+          this.showReadout(spec);
+          this.updateStatusText();
+          this.requestRender();
+        }
+        return;
+      }
+
+      if (this.panPointer && event.pointerId === this.panPointer.id) {
+        const dx = event.clientX - this.panPointer.x;
+        const dy = event.clientY - this.panPointer.y;
+        this.panPointer.x = event.clientX;
+        this.panPointer.y = event.clientY;
+        this.applyPanDelta(dx, dy);
+        this.requestRender();
+        return;
+      }
+
+      if (this.orbitPointer && event.pointerId === this.orbitPointer.id) {
+        const dx = event.clientX - this.orbitPointer.x;
+        const dy = event.clientY - this.orbitPointer.y;
+        this.orbitPointer.moved += Math.abs(dx) + Math.abs(dy);
+        this.orbitPointer.x = event.clientX;
+        this.orbitPointer.y = event.clientY;
+        this.azimuth = Math.max(-MAX_AZIMUTH, Math.min(MAX_AZIMUTH, this.azimuth + dx * 0.004));
+        this.polar = Math.max(MIN_POLAR, Math.min(MAX_POLAR, this.polar + dy * 0.003));
+        this.cameraDirty = true;
+        this.requestRender();
+        return;
+      }
+
+      this.updatePointer(event);
+      const hovering = Boolean(this.pickKnobKey()) || this.pickPowerSwitch();
+      this.canvas.style.cursor = hovering ? "grab" : "default";
+    };
+
+    private handlePointerUp = (event: PointerEvent): void => {
+      if (this.activeKnob && event.pointerId === this.activeKnob.pointerId) {
+        const spec = this.ampScene?.getKnobSpec(this.activeKnob.key);
+        if (spec) {
+          this.options.onParamCommit?.(this.activeKnob.key, spec.value);
+        }
+        this.activeKnob = null;
+        this.hideReadout();
+        this.releasePointer(event.pointerId);
+        // Knobs cast; refresh the shadow map once the drag settles.
+        this.shadowsDirty = true;
+        this.requestRender();
+        return;
+      }
+
+      if (this.panPointer && event.pointerId === this.panPointer.id) {
+        this.panPointer = null;
+        this.releasePointer(event.pointerId);
+        this.canvas.style.cursor = "default";
+        return;
+      }
+
+      if (this.orbitPointer && event.pointerId === this.orbitPointer.id) {
+        const wasClick = this.orbitPointer.moved <= CLICK_SLOP_PX;
+        this.orbitPointer = null;
+        this.releasePointer(event.pointerId);
+        if (wasClick) {
+          this.updatePointer(event);
+          if (this.pickPowerSwitch()) {
+            this.options.onBypassToggle();
+          }
         }
       }
-    }
-  };
+    };
+
+    private handleContextMenu = (event: Event): void => {
+      // Right-drag pans; suppress the browser menu over the canvas.
+      event.preventDefault();
+    };
 
   private capturePointer(pointerId: number): void {
     try {
@@ -682,14 +792,11 @@ export class Amp3dView {
     this.updatePointer(event);
     const knobKey = this.pickKnobKey();
     if (!knobKey) {
-      // Double-clicking the background resets the camera.
-      this.azimuth = 0;
-      this.polar = DEFAULT_POLAR;
-      this.zoom = 1;
-            this.cameraDirty = true;
-            this.requestRender();
-            return;
-          }
+          // Double-clicking the background resets the camera (orbit + pan + zoom).
+          this.resetCamera();
+          this.requestRender();
+          return;
+        }
     const spec = this.ampScene.getKnobSpec(knobKey);
     if (!spec || typeof spec.defaultValue !== "number") {
       return;
@@ -792,6 +899,7 @@ export class Amp3dView {
       this.canvas.removeEventListener("pointermove", this.handlePointerMove);
       this.canvas.removeEventListener("pointerup", this.handlePointerUp);
       this.canvas.removeEventListener("pointercancel", this.handlePointerUp);
+      this.canvas.removeEventListener("contextmenu", this.handleContextMenu);
       this.canvas.removeEventListener("wheel", this.handleWheel);
       this.canvas.removeEventListener("dblclick", this.handleDoubleClick);
       this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
@@ -799,8 +907,9 @@ export class Amp3dView {
         document.removeEventListener("visibilitychange", this.onVisibilityChange);
       }
       this.ampScene?.dispose();
-      this.ampScene = null;
-      this.renderer.dispose();
-      this.element.remove();
-    }
+          this.ampScene = null;
+          this.composer.dispose();
+          this.renderer.dispose();
+          this.element.remove();
   }
+      }

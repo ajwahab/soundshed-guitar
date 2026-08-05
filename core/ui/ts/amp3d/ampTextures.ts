@@ -284,10 +284,48 @@ export interface PanelTextureOptions {
   mutedTextColor: string;
 }
 
-// 1024px is enough for silkscreen legibility at panel size; 2048 doubled
-// upload cost and GPU memory for little visible gain in the plugin UI.
-const PANEL_TEXTURE_WIDTH = 1024;
-const PANEL_TEXTURE_HEIGHT = 128;
+/**
+ * Panel silkscreen texture resolution.
+ * Aspect tracks PANEL_RECT (~7.18:1). 2048-wide keeps ~3k px/m so condensed
+ * labels land around 28px — sharp under mipmaps at typical viewing distance.
+ * 1024-wide collapsed that to ~11px and read as fuzzy.
+ */
+const PANEL_TEXTURE_WIDTH = 2048;
+const PANEL_TEXTURE_HEIGHT = 286;
+
+/**
+ * Condensed industrial face registered in base.css (Barlow Condensed).
+ * Falls back to system condensed sans if the face has not finished loading.
+ */
+const PANEL_LABEL_FONT_STACK = 'AmpPanel, "Bahnschrift SemiBold", Bahnschrift, "Arial Narrow", "Helvetica Neue", Inter, sans-serif';
+
+/** Promise that resolves once the AmpPanel faces are ready for canvas use. */
+let panelFontReady: Promise<void> | null = null;
+
+/**
+ * Ensures the silkscreen font is available before `createPanelTexture` draws.
+ * Safe to call multiple times; no-ops when `document.fonts` is unavailable.
+ */
+export async function ensurePanelLabelFont(): Promise<void> {
+  if (typeof document === "undefined" || !document.fonts) {
+    return;
+  }
+  if (!panelFontReady) {
+    panelFontReady = (async () => {
+      try {
+        await Promise.all([
+          document.fonts.load(`500 24px AmpPanel`),
+          document.fonts.load(`600 24px AmpPanel`),
+          document.fonts.load(`700 28px AmpPanel`),
+        ]);
+        await document.fonts.ready;
+      } catch {
+        // Fall back to the system stack; labels still render.
+      }
+    })();
+  }
+  await panelFontReady;
+}
 
 /**
  * Silkscreened control panel: brushed metal plus the parameter names, the
@@ -301,6 +339,12 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
     options.panelTint,
   );
   const ctx = context2d(canvas);
+  // Prefer geometric precision so condensed caps stay crisp when scaled onto
+  // the mesh (browser support varies; ignored where unsupported).
+  (ctx as CanvasRenderingContext2D & { textRendering?: string }).textRendering = "geometricPrecision";
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
   const pxPerMetre = panelPixelsPerMetre(PANEL_TEXTURE_WIDTH);
 
   const toCanvas = (x: number, y: number) => panelPointToCanvas(x, y, PANEL_TEXTURE_WIDTH, PANEL_TEXTURE_HEIGHT);
@@ -310,13 +354,13 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
     y: number,
     fontPx: number,
     color: string,
-    weight = "700",
-    letterSpacing = 2,
+    weight = "600",
+    letterSpacing = 2.6,
     maxWidthPx?: number,
   ) => {
     ctx.save();
     const measure = (size: number, spacing: number) => {
-      ctx.font = `${weight} ${size}px Inter, "Segoe UI", system-ui, sans-serif`;
+      ctx.font = `${weight} ${size}px ${PANEL_LABEL_FONT_STACK}`;
       const characters = [...text];
       const widths = characters.map((character) => ctx.measureText(character).width);
       const total = widths.reduce((sum, width) => sum + width, 0) + spacing * Math.max(0, characters.length - 1);
@@ -330,24 +374,43 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
     // being allowed to run off the edge of the panel.
     if (maxWidthPx && metrics.total > maxWidthPx) {
       const scale = maxWidthPx / metrics.total;
-      size = Math.max(6, size * scale);
+      size = Math.max(10, size * scale);
       spacing = spacing * scale;
       metrics = measure(size, spacing);
     }
 
-    ctx.fillStyle = color;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     let cursor = x - metrics.total / 2;
+
+    // Hairline dark under-stroke: reads as stamped metal and keeps thin stems
+    // from vanishing when the texture is mip-filtered in 3D.
+    const strokeWidth = Math.max(0.75, size * 0.045);
+    ctx.lineWidth = strokeWidth;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.strokeStyle = "rgba(12, 14, 18, 0.55)";
     metrics.characters.forEach((character, index) => {
-      ctx.fillText(character, cursor, y);
+      const cx = cursor + metrics.widths[index] / 2;
+      // strokeText with per-char left align is awkward; draw centered per glyph.
+      ctx.textAlign = "center";
+      ctx.strokeText(character, cx, y);
+      cursor += metrics.widths[index] + spacing;
+    });
+
+    cursor = x - metrics.total / 2;
+    ctx.fillStyle = color;
+    metrics.characters.forEach((character, index) => {
+      const cx = cursor + metrics.widths[index] / 2;
+      ctx.textAlign = "center";
+      ctx.fillText(character, cx, y);
       cursor += metrics.widths[index] + spacing;
     });
     ctx.restore();
   };
 
-  // ~33% smaller than the previous 0.011 m silkscreen size.
-  const labelFont = Math.round(0.0074 * pxPerMetre);
+  // Physical silkscreen height (~9.2 mm). At 2048-wide this is ~28px.
+  const labelFont = Math.round(0.0092 * pxPerMetre);
   // Keep labels tight to the control they annotate.
   const labelOffsetY = 0.022;
 
@@ -356,7 +419,7 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
     drawText(label.topLabel.toUpperCase(), top.x, top.y, labelFont, options.textColor);
     if (label.bottomLabel) {
       const bottom = toCanvas(label.placement.x, label.placement.y - labelOffsetY);
-      drawText(label.bottomLabel.toUpperCase(), bottom.x, bottom.y, Math.round(labelFont * 0.9), options.mutedTextColor);
+      drawText(label.bottomLabel.toUpperCase(), bottom.x, bottom.y, Math.round(labelFont * 0.9), options.mutedTextColor, "500", 2.2);
     }
   });
 
@@ -364,7 +427,7 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
   drawText("INPUT", inputLabel.x, inputLabel.y, labelFont, options.textColor);
 
   const moduleLabel = toCanvas(PANEL_HARDWARE.display.x, PANEL_HARDWARE.display.y + 0.02);
-  drawText("AMP MODEL", moduleLabel.x, moduleLabel.y, Math.round(labelFont * 0.85), options.mutedTextColor, "600", 1.4);
+  drawText("AMP MODEL", moduleLabel.x, moduleLabel.y, Math.round(labelFont * 0.88), options.mutedTextColor, "500", 2.8);
 
   const powerLabel = toCanvas(
     (PANEL_HARDWARE.powerSwitch.x + PANEL_HARDWARE.powerLed.x) / 2,
@@ -380,10 +443,10 @@ export function createPanelTexture(options: PanelTextureOptions): HTMLCanvasElem
       options.brandText.toUpperCase(),
       brand.x,
       brand.y,
-      Math.round(labelFont * 0.78),
+      Math.round(labelFont * 0.82),
       options.mutedTextColor,
-      "600",
-      1.1,
+      "500",
+      2.0,
       availableMetres * pxPerMetre,
     );
   }
@@ -512,18 +575,23 @@ export function createGrilleGlowCanvas(color: string, active: boolean): HTMLCanv
 
 /** Etched logo plate decal shown in the centre of the grille. */
 export function createLogoCanvas(text: string): HTMLCanvasElement {
-  const canvas = createCanvas(512, 128);
+  const canvas = createCanvas(1024, 256);
   const ctx = context2d(canvas);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  (ctx as CanvasRenderingContext2D & { textRendering?: string }).textRendering = "geometricPrecision";
   const label = (text || "NEURAL AMP").toUpperCase();
-  const fontSize = label.length > 16 ? 42 : 58;
-  ctx.font = `200 ${fontSize}px Inter, "Segoe UI", system-ui, sans-serif`;
+  const fontSize = label.length > 16 ? 84 : 116;
+  ctx.font = `600 ${fontSize}px ${PANEL_LABEL_FONT_STACK}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  ctx.lineWidth = Math.max(1.5, fontSize * 0.035);
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.strokeText(label, canvas.width / 2, canvas.height / 2);
   ctx.fillStyle = "#f2f4f8";
-  ctx.shadowColor = "rgba(0,0,0,0.55)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 3;
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 2;
   ctx.fillText(label, canvas.width / 2, canvas.height / 2);
   return canvas;
 }

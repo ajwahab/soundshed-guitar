@@ -25,7 +25,18 @@ const FILES = [
   ['three/examples/jsm/loaders/GLTFLoader.js', 'vendor/three/examples/jsm/loaders/GLTFLoader.js'],
   ['three/examples/jsm/utils/BufferGeometryUtils.js', 'vendor/three/examples/jsm/utils/BufferGeometryUtils.js'],
   ['three/examples/jsm/environments/RoomEnvironment.js', 'vendor/three/examples/jsm/environments/RoomEnvironment.js'],
-];
+    // FXAA post chain (EffectComposer pulls MaskPass + CopyShader transitively).
+    ['three/examples/jsm/postprocessing/EffectComposer.js', 'vendor/three/examples/jsm/postprocessing/EffectComposer.js'],
+    ['three/examples/jsm/postprocessing/Pass.js', 'vendor/three/examples/jsm/postprocessing/Pass.js'],
+    ['three/examples/jsm/postprocessing/ShaderPass.js', 'vendor/three/examples/jsm/postprocessing/ShaderPass.js'],
+    ['three/examples/jsm/postprocessing/RenderPass.js', 'vendor/three/examples/jsm/postprocessing/RenderPass.js'],
+    ['three/examples/jsm/postprocessing/OutputPass.js', 'vendor/three/examples/jsm/postprocessing/OutputPass.js'],
+    ['three/examples/jsm/postprocessing/FXAAPass.js', 'vendor/three/examples/jsm/postprocessing/FXAAPass.js'],
+    ['three/examples/jsm/postprocessing/MaskPass.js', 'vendor/three/examples/jsm/postprocessing/MaskPass.js'],
+    ['three/examples/jsm/shaders/CopyShader.js', 'vendor/three/examples/jsm/shaders/CopyShader.js'],
+    ['three/examples/jsm/shaders/FXAAShader.js', 'vendor/three/examples/jsm/shaders/FXAAShader.js'],
+    ['three/examples/jsm/shaders/OutputShader.js', 'vendor/three/examples/jsm/shaders/OutputShader.js'],
+  ];
 
 let copied = 0;
 const missing = [];
