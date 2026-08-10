@@ -597,6 +597,7 @@ export class ResourceBrowserModal {
   private handleFolderListingFailedEvent = (event: Event): void => {
     const detail = (event as CustomEvent<{ path?: string; message?: string }>).detail;
     this.folderLoading = false;
+    this.folderListing = null;
     if (this.folderStatus) {
       this.folderStatus.textContent = detail?.message ? `Error: ${detail.message}` : "Unable to read folder.";
     }

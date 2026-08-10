@@ -5254,11 +5254,28 @@ void PluginController::HandleLoadModelRequest(const nlohmann::json& payload)
         return;
     }
 
+    std::string resourceError;
+    const auto savedResource = SaveLocalLibraryResource(
+        nlohmann::json{
+            {"resourceType", "nam"},
+            {"filePath", filePath.string()},
+            {"name", filePath.stem().string()},
+            {"category", "Local"},
+            {"metadata", nlohmann::json::object({{"provider", kLocalResourceProvider}})}
+        },
+        resourceError,
+        true);
+    if (!savedResource)
+    {
+        ReportErrorToUI("Model load failed", resourceError.empty() ? "Could not register model in the resource library" : resourceError);
+        return;
+    }
+
     const bool updatedNamResource =
-        UpdateResourceForNodeType(EffectGuids::kAmpNamOptimized, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kAmpNamBlend, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kFxNam, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kAmpNam, "nam", filePath);
+        UpdateResourceForNodeType(EffectGuids::kAmpNamOptimized, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kAmpNamBlend, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kFxNam, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kAmpNam, savedResource->type, filePath);
 
     if (updatedNamResource)
     {
@@ -7485,8 +7502,13 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec);
     if (ec)
     {
+        const std::string detail = ec.message();
         if (!superseded())
-            SendMessageToUI(nlohmann::json{{"type", "resourceFolderListingFailed"}, {"path", requestPath}, {"message", "Unable to read folder"}}.dump());
+            SendMessageToUI(nlohmann::json{
+                {"type", "resourceFolderListingFailed"},
+                {"path", requestPath},
+                {"message", detail.empty() ? "Unable to read folder" : "Unable to read folder: " + detail}
+            }.dump());
         return;
     }
 
@@ -12253,6 +12275,24 @@ bool PluginController::UpdateResourceForNodeType(const std::string& nodeType,
             ResourceRef ref;
             ref.resourceType = resourceType;
             ref.filePath = filePath;
+
+            const auto normalizePath = [](const std::filesystem::path& value) {
+                std::string normalized = value.lexically_normal().generic_string();
+                std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                return normalized;
+            };
+            const auto normalizedFilePath = normalizePath(filePath);
+            for (const auto& resource : mResourceLibrary.GetResourcesByType(resourceType))
+            {
+                if (normalizePath(resource.filePath) == normalizedFilePath)
+                {
+                    ref.resourceId = resource.id;
+                    ref.filePath.clear();
+                    break;
+                }
+            }
+
             if (node.resources.empty())
                 node.resources.push_back(ref);
             else
