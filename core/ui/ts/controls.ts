@@ -469,6 +469,10 @@ export class GenericKnob {
     if (indicator) {
       indicator.style.transform = `translateX(-50%) rotate(${rotation}deg)`;
     }
+    const customFace = this.knobElement.querySelector(".custom-knob-face") as HTMLElement | null;
+    if (customFace) {
+      customFace.style.transform = `rotate(${rotation}deg)`;
+    }
   }
 
   public setValue(value: number): void {

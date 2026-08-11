@@ -2227,6 +2227,22 @@ body.signal-path-resizing * {
   gap: 14px;
 }
 
+.default-effect-shell.has-custom-layout .default-effect-shell-main {
+  align-items: center;
+}
+
+.default-effect-shell.has-custom-layout .default-effect-section-custom-layout,
+.default-effect-shell.has-custom-layout .default-effect-section-controls {
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.default-effect-shell.has-custom-layout .default-effect-section-custom-layout .custom-layout-scale-outer,
+.default-effect-shell.has-custom-layout .default-effect-section-controls .custom-layout-scale-outer {
+  margin-inline: auto;
+}
+
 .default-effect-shell-equipment-panel {
   border-radius: 18px;
   border: 1px solid rgba(168, 182, 212, 0.14);
@@ -2526,6 +2542,35 @@ body.signal-path-resizing * {
 .default-effect-shell .resource-browse-btn:hover,
 .default-effect-shell .blend-open-btn:hover {
   border-color: rgba(255, 190, 120, 0.36);
+}
+
+/* ── Resource slot drag-and-drop ── */
+
+.default-effect-shell .resource-drop-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: rgba(185, 195, 220, 0.38);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
+.default-effect-shell .node-resource-selector.drag-over {
+  border-color: rgba(255, 190, 100, 0.55);
+  background:
+    linear-gradient(180deg, rgba(255, 190, 100, 0.06) 0%, rgba(255, 190, 100, 0.02) 100%),
+    linear-gradient(180deg, rgba(13, 16, 24, 0.6) 0%, rgba(17, 20, 29, 0.32) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 0 2px rgba(255, 190, 100, 0.18);
+}
+
+.default-effect-shell .node-resource-selector.drag-over .resource-drop-hint {
+  color: rgba(255, 190, 100, 0.7);
+}
+
+/* Effect visualization drag-over state for NAM/IR nodes */
+#effect-visualization.nam-ir-drop-target.drag-over {
+  outline: 2px dashed rgba(255, 190, 100, 0.55);
+  outline-offset: -4px;
 }
 
 
@@ -3897,6 +3942,20 @@ body.signal-path-resizing * {
 .custom-layout-control {
   box-sizing: border-box;
   pointer-events: auto;
+  min-width: 80px;
+}
+
+.custom-layout-control .custom-control-label,
+.custom-layout-control .node-param-value {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.custom-layout-control .node-param-value {
+  min-height: 1.3em;
+  font-variant-numeric: tabular-nums;
 }
 
 .custom-layout-resource-selector {

@@ -554,9 +554,12 @@ function renderControls(
       } else {
         // Knob
         const knobImageId = control.style?.knobImageId;
-        const knobBg = knobImageId
-          ? `background-image: url('${getLayoutImageUrl(knobImageId) || ""}'); background-size: contain;`
+        const knobImageUrl = knobImageId ? getLayoutImageUrl(knobImageId) : null;
+        const useCustomKnobImage = knobStyle === "custom" && !!knobImageUrl;
+        const knobBg = useCustomKnobImage
+          ? `background-image: none;`
           : "";
+        const customKnobAttr = useCustomKnobImage ? `data-custom-knob-image="true"` : "";
 
         controlHtml += `
           <div 
@@ -570,8 +573,10 @@ function renderControls(
             data-unit="${unit || "amount"}"
             ${step !== undefined ? `data-step="${step}"` : ""}
             ${isEnum ? `data-labels="${labels?.join("|") ?? ""}"` : ""}
+            ${customKnobAttr}
             style="${knobBg}"
           >
+            ${useCustomKnobImage ? `<div class="custom-knob-face" style="background-image: url('${knobImageUrl}');"></div>` : ""}
             <div class="knob-indicator"></div>
           </div>
         `;

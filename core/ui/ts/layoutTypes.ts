@@ -229,9 +229,9 @@ export const DEFAULT_LAYOUT_DIMENSIONS = {
 /** Minimum/maximum canvas dimensions */
 export const LAYOUT_DIMENSION_LIMITS = {
   minWidth: 200,
-  maxWidth: 800,
+  maxWidth: 1024,
   minHeight: 150,
-  maxHeight: 600,
+  maxHeight: 768,
 };
 
 /**

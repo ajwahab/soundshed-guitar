@@ -1368,12 +1368,25 @@ export class LayoutDesignerModal {
     return null;
   }
 
-  private getReusableLayoutImages(purpose: "background" | "knob"): LayoutImageRef[] {
+  private getReusableLayoutImages(purpose: "background" | "knob", selectedImageId?: string): LayoutImageRef[] {
     const images = uiState.layoutLibrary?.images ?? [];
     const available = images.filter((img) => Boolean(img.imageId) && (Boolean(img.dataUrl) || Boolean(img.fileName)));
     const preferredType = purpose === "background" ? "background" : "knob";
-    const matching = available.filter((img) => img.type === preferredType);
-    return [...matching].sort((a, b) => {
+    const compatible = available.filter((img) => {
+      if (img.imageId === selectedImageId) {
+        return true;
+      }
+      if (!img.type || img.type === "general") {
+        return true;
+      }
+      return img.type === preferredType;
+    });
+    return [...compatible].sort((a, b) => {
+      const aPriority = a.type === preferredType ? 0 : a.imageId === selectedImageId ? 1 : 2;
+      const bPriority = b.type === preferredType ? 0 : b.imageId === selectedImageId ? 1 : 2;
+      if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+      }
       const aName = (a.fileName || a.imageId).toLowerCase();
       const bName = (b.fileName || b.imageId).toLowerCase();
       return aName.localeCompare(bName);
@@ -1381,7 +1394,7 @@ export class LayoutDesignerModal {
   }
 
   private renderImageOptionsHtml(purpose: "background" | "knob", selectedImageId?: string): string {
-    const images = this.getReusableLayoutImages(purpose);
+    const images = this.getReusableLayoutImages(purpose, selectedImageId);
     const options = [
       `<option value="">Select existing image...</option>`,
       ...images.map((img) => {
@@ -1466,7 +1479,13 @@ export class LayoutDesignerModal {
     } else if (control.type === "slider") {
       html += `<div class="control-slider"><div class="control-slider-track"><div class="control-slider-thumb"></div></div></div>`;
     } else {
-      html += `<div class="control-knob" data-style="${control.style?.knobStyle || "default"}"></div>`;
+      const knobStyle = control.style?.knobStyle || "default";
+      const knobImageUrl = knobStyle === "custom" && control.style?.knobImageId
+        ? this.getImageUrl(control.style.knobImageId)
+        : null;
+      const customKnobClass = knobImageUrl ? " is-custom-image" : "";
+      const customKnobStyle = knobImageUrl ? ` style="background-image: url('${knobImageUrl}');"` : "";
+      html += `<div class="control-knob${customKnobClass}" data-style="${knobStyle}"${customKnobStyle}></div>`;
     }
 
     if (!hideLabel && labelPos === "bottom") {
