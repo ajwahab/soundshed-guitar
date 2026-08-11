@@ -13,7 +13,7 @@ import type {
 } from "./types.js";
 import { postMessage, setAppSetting, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, removeActivePreset } from "./bridge.js";
 import { requestResourceData } from "./archiveUtils.js";
-import { escapeHtml, idAccentColor, base64ToArrayBuffer, findResourceById } from "./utils.js";
+import { escapeHtml, idAccentColor, base64ToArrayBuffer, arrayBufferToBase64, findResourceById } from "./utils.js";
 import { showNotification } from "./notifications.js";
 import { showConfirm } from "./dialogs.js";
 import { EffectTypeRegistry, getNodeEffectInfo, type EffectTypeInfo, type ParameterDef } from "./presetV2.js";
@@ -128,6 +128,7 @@ let layoutScaleObserverCleanups: (() => void)[] = [];
 let nodeDragStartPoint: { nodeId: string; x: number; y: number } | null = null;
 let lastNodeDragPoint: { x: number; y: number } | null = null;
 let nodeDragDropHandled = false;
+let effectVisualizationDropCleanup: (() => void) | null = null;
 type HostedPluginLoadFailure = {
   selectionKey: string;
   resourceIndex?: number;
@@ -565,9 +566,16 @@ function updateEffectVisualization(node?: GraphNode): void {
     return;
   }
 
+  // Remove previous file drop bindings on the visualization element
+  if (effectVisualizationDropCleanup) {
+    effectVisualizationDropCleanup();
+    effectVisualizationDropCleanup = null;
+  }
+
   if (!node) {
     effectVisualizationElement.classList.remove("has-selection");
     effectVisualizationElement.classList.remove("has-equipment-image");
+    effectVisualizationElement.classList.remove("nam-ir-drop-target");
     effectVisualizationElement.style.removeProperty("--effect-visual-bg");
     effectVisualizationElement.dataset.effectType = "";
     effectVisualizationElement.dataset.effectCategory = "";
@@ -583,6 +591,55 @@ function updateEffectVisualization(node?: GraphNode): void {
   effectVisualizationElement.style.setProperty("--effect-visual-bg", background);
   effectVisualizationElement.dataset.effectType = node.type;
   effectVisualizationElement.dataset.effectCategory = category;
+
+  // Bind file drop for NAM / cab-IR nodes on the effect visualization panel
+  if (isNamOrCabIrNode(node)) {
+    const nodeId = node.id;
+    effectVisualizationElement.classList.add("nam-ir-drop-target");
+
+    const onDragOver = (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      effectVisualizationElement!.classList.add("drag-over");
+    };
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!effectVisualizationElement!.contains(e.relatedTarget as Node | null)) {
+        effectVisualizationElement!.classList.remove("drag-over");
+      }
+    };
+
+    const onDrop = (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      effectVisualizationElement!.classList.remove("drag-over");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const file = files[0];
+      if (!file) return;
+      const resourceType = inferResourceTypeFromFile(file);
+      const resolvedNode = getSignalPathPreset()?.graph?.nodes.find((n) => n.id === nodeId);
+      if (resourceType && resolvedNode && nodeAcceptsResourceType(resolvedNode, resourceType)) {
+        void handleNamIrFileDrop(file, nodeId);
+      }
+    };
+
+    effectVisualizationElement.addEventListener("dragover", onDragOver);
+    effectVisualizationElement.addEventListener("dragleave", onDragLeave);
+    effectVisualizationElement.addEventListener("drop", onDrop);
+
+    effectVisualizationDropCleanup = () => {
+      effectVisualizationElement!.removeEventListener("dragover", onDragOver);
+      effectVisualizationElement!.removeEventListener("dragleave", onDragLeave);
+      effectVisualizationElement!.removeEventListener("drop", onDrop);
+      effectVisualizationElement!.classList.remove("nam-ir-drop-target");
+      effectVisualizationElement!.classList.remove("drag-over");
+    };
+  } else {
+    effectVisualizationElement.classList.remove("nam-ir-drop-target");
+  }
 }
 
 export function handleHostedPluginResourceLoadFailed(payload: {
@@ -1324,6 +1381,73 @@ function isNeuralModelNode(node: GraphNode): boolean {
     || resolvedType === EffectGuids.kAmpNamOptimized
     || resolvedType === EffectGuids.kFxNam;
 }
+
+function isNamOrCabIrNode(node: GraphNode): boolean {
+  const resolvedType = EffectTypeRegistry.resolve(node.type);
+  return resolvedType === EffectGuids.kAmpNam
+    || resolvedType === EffectGuids.kAmpNamOptimized
+    || resolvedType === EffectGuids.kFxNam
+    || resolvedType === EffectGuids.kCabIr;
+}
+
+/**
+ * Infers the resource type ("nam" | "ir" | null) from a dropped File's extension.
+ */
+function inferResourceTypeFromFile(file: File): "nam" | "ir" | null {
+  const lower = file.name.trim().toLowerCase();
+  if (lower.endsWith(".nam")) {
+    return "nam";
+  }
+  if (lower.endsWith(".wav") || lower.endsWith(".ir") || lower.endsWith(".flac")) {
+    return "ir";
+  }
+  return null;
+}
+
+/**
+ * Returns whether this node accepts a given resource type via file drop.
+ * NAM nodes accept .nam files; cab IR nodes accept IR files.
+ */
+function nodeAcceptsResourceType(node: GraphNode, resourceType: "nam" | "ir"): boolean {
+  const resolvedType = EffectTypeRegistry.resolve(node.type);
+  if (resourceType === "nam") {
+    return resolvedType === EffectGuids.kAmpNam
+      || resolvedType === EffectGuids.kAmpNamOptimized
+      || resolvedType === EffectGuids.kFxNam;
+  }
+  if (resourceType === "ir") {
+    return resolvedType === EffectGuids.kCabIr;
+  }
+  return false;
+}
+
+/**
+ * Saves a dropped NAM or IR file and loads it into the given node.
+ * The C++ side deduplicates by hash and calls updateNodeResource automatically
+ * when a nodeId is provided.
+ */
+async function handleNamIrFileDrop(file: File, nodeId: string, resourceIndex?: number): Promise<void> {
+  const resourceType = inferResourceTypeFromFile(file);
+  if (!resourceType) {
+    return;
+  }
+
+  const name = file.name.replace(/\.[^.]+$/, "");
+  const data = arrayBufferToBase64(await file.arrayBuffer());
+
+  postMessage({
+    type: "saveLocalLibraryResource",
+    resourceType,
+    data,
+    fileName: file.name,
+    name,
+    nodeId,
+    ...(resourceIndex !== undefined ? { resourceIndex } : {}),
+    category: "Local",
+    metadata: { provider: "local" },
+  });
+}
+
 
 function resolveResourceBrowserTone3000CategoryFilter(
   node: GraphNode,
@@ -3409,6 +3533,16 @@ function bindNodeClickHandlers(preset: Preset): void {
         if (e.dataTransfer) {
           e.dataTransfer.dropEffect = (fxEffectType || fxBlendType || fxCustomEffectType || fxResourceGroup) ? "copy" : "move";
         }
+      } else if (nodeId && Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+        // Accept file drops for NAM/IR nodes
+        const node = preset.graph?.nodes.find((n) => n.id === nodeId);
+        if (node && isNamOrCabIrNode(node)) {
+          dragOverNodeId = nodeId;
+          el.classList.add("drag-over");
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = "copy";
+          }
+        }
       }
     });
     
@@ -3477,6 +3611,20 @@ function bindNodeClickHandlers(preset: Preset): void {
         if (draggedNode && targetNode && !blockedTypes.has(draggedNode.type) && !blockedTypes.has(targetNode.type)) {
           nodeDragDropHandled = true;
           sendSignalPathNodeReorder(draggedNodeId, targetNodeId);
+        }
+      } else if (targetNodeId && preset.graph) {
+        // File drop on NAM/IR node
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length > 0) {
+          const targetNode = preset.graph.nodes.find((n) => n.id === targetNodeId);
+          if (targetNode && isNamOrCabIrNode(targetNode)) {
+            const file = files[0];
+            const resourceType = inferResourceTypeFromFile(file);
+            if (resourceType && nodeAcceptsResourceType(targetNode, resourceType)) {
+              nodeDragDropHandled = true;
+              void handleNamIrFileDrop(file, targetNodeId);
+            }
+          }
         }
       }
       
@@ -4060,7 +4208,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         });
 
         return `
-          <div class="node-resource-selector" data-node-id="${node.id}">
+          <div class="node-resource-selector" data-node-id="${node.id}" data-resource-index="${resourceIndex}" data-resource-type="${resourceType}">
             <label>${escapeHtml(exposedResource.displayName || exposedResource.resourceId)}</label>
             <div class="resource-controls">
               ${isLibraryPicker ? `
@@ -4132,6 +4280,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             ${isPluginPicker ? buildHostedPluginListHtml(node, resourceIndex, exposedResource.resourceId) : ""}
             ${hostedPluginLoadError}
             ${current.filePath && !isPluginPicker ? `<div class="resource-path-info" title="${current.filePath}">${current.filePath}</div>` : ""}
+            ${isLibraryPicker ? `<div class="resource-drop-hint">Click to browse, or drag and drop a file here</div>` : ""}
           </div>
         `;
       })
@@ -4239,7 +4388,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       });
 
       return `
-        <div class="node-resource-selector">
+        <div class="node-resource-selector" data-node-id="${node.id}" data-resource-index="${index}" data-resource-type="${resourceType}">
           <label>${label}</label>
           <div class="resource-controls">
             ${isLibraryPicker ? `
@@ -4307,6 +4456,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${isPluginPicker ? buildHostedPluginListHtml(node, index) : ""}
           ${hostedPluginLoadError}
           ${current.filePath && !isPluginPicker ? `<div class="resource-path-info" title="${current.filePath}">${current.filePath}</div>` : ""}
+          ${isLibraryPicker ? `<div class="resource-drop-hint">Click to browse, or drag and drop a file here</div>` : ""}
         </div>
       `;
     };
@@ -4349,6 +4499,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // When useDefaultControls is true the layout provides only the visual backdrop; the
   // standard auto-generated controls are rendered on top rather than positioned controls.
   const useDefaultControls = customLayout?.useDefaultControls === true;
+  const hasCustomLayoutPresentation = Boolean(customLayout);
 
   const customLayoutHtml = customLayout && !useDefaultControls
     ? renderCustomLayout(node, customLayout, paramDefs, customLayoutResourceControls)
@@ -4429,7 +4580,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   ` : "";
   // The 3D amp is its own product shot, so the static equipment image is
   // dropped and the viewport takes the full shell width.
-  const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit;
+  const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit && !hasCustomLayoutPresentation;
   const shellEquipmentPanel = showEquipmentImage ? `
     <aside class="default-effect-shell-equipment-panel" aria-hidden="true">
       <img class="default-effect-shell-equipment-image" src="${equipmentImage}" alt="" loading="lazy" decoding="async" />
@@ -4509,7 +4660,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   nodeParamsPanelElement.innerHTML = `
     
     <div class="node-params-body">
-      <section class="default-effect-shell${isNeuralModel ? " neural-model-effect" : ""}${isNodeBypassed(node) ? " is-bypassed" : ""}">
+      <section class="default-effect-shell${isNeuralModel ? " neural-model-effect" : ""}${isNodeBypassed(node) ? " is-bypassed" : ""}${hasCustomLayoutPresentation ? " has-custom-layout" : ""}">
         <div class="default-effect-shell-header">
           <div class="default-effect-shell-identity">
             <span class="default-effect-shell-led" aria-hidden="true"></span>
@@ -5683,6 +5834,48 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       if (nodeId && resourceIndex !== undefined && !Number.isNaN(value)) {
         sendNodeResourceUpdate(nodeId, "nam", "", "", resourceIndex, value);
       }
+    });
+  });
+
+  // Bind per-slot file drop on NAM/IR resource selector rows
+  const resourceSelectorEls = nodeParamsPanelElement?.querySelectorAll<HTMLElement>(
+    ".node-resource-selector[data-resource-index][data-resource-type]",
+  ) ?? [];
+  resourceSelectorEls.forEach((selectorEl) => {
+    const elResourceType = selectorEl.dataset.resourceType as "nam" | "ir" | undefined;
+    const elResourceIndex = selectorEl.dataset.resourceIndex !== undefined
+      ? parseInt(selectorEl.dataset.resourceIndex, 10)
+      : undefined;
+    const elNodeId = selectorEl.dataset.nodeId;
+    if (!elNodeId || (elResourceType !== "nam" && elResourceType !== "ir") || elResourceIndex === undefined) {
+      return;
+    }
+
+    selectorEl.addEventListener("dragover", (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      selectorEl.classList.add("drag-over");
+    });
+
+    selectorEl.addEventListener("dragleave", (e: DragEvent) => {
+      if (!selectorEl.contains(e.relatedTarget as Node | null)) {
+        selectorEl.classList.remove("drag-over");
+      }
+    });
+
+    selectorEl.addEventListener("drop", (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectorEl.classList.remove("drag-over");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const file = files[0];
+      if (!file) return;
+      const resourceType = inferResourceTypeFromFile(file);
+      if (resourceType !== elResourceType) return;
+      void handleNamIrFileDrop(file, elNodeId, elResourceIndex);
     });
   });
 }
@@ -6989,3 +7182,32 @@ export function initSignalPathResize(): void {
   scheduleSignalPathLayoutAdapt();
 }
 
+/**
+ * Returns a global file-drop handler for NAM/IR resource files.
+ * When a .nam or IR (.wav / .ir) file is dropped anywhere in the app while a
+ * compatible NAM or cab-IR node is selected, the file is saved to the local
+ * resource library and loaded into that node.  This should be registered with
+ * registerGlobalFileDropHandler at a priority below preset-pack drops.
+ */
+export function createNamIrGlobalFileDropHandler(): (files: File[], event: DragEvent) => Promise<boolean> {
+  return async (files: File[]): Promise<boolean> => {
+    const preset = getSignalPathPreset();
+    if (!preset?.graph || !selectedNodeId) {
+      return false;
+    }
+    const node = preset.graph.nodes.find((n) => n.id === selectedNodeId);
+    if (!node || !isNamOrCabIrNode(node)) {
+      return false;
+    }
+    const file = files[0];
+    if (!file) {
+      return false;
+    }
+    const resourceType = inferResourceTypeFromFile(file);
+    if (!resourceType || !nodeAcceptsResourceType(node, resourceType)) {
+      return false;
+    }
+    await handleNamIrFileDrop(file, node.id);
+    return true;
+  };
+}
