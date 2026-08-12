@@ -26,6 +26,7 @@
 #include "util/Base64.h"
 #include "util/FileIO.h"
 #include "util/PathSanitizer.h"
+#include "util/PathEncoding.h"
 #include "util/Wav.h"
 
 #include <miniz.h>
@@ -4580,7 +4581,7 @@ void PluginController::HandleGetSharedSyncStateRequest()
         entry["category"] = resource.category;
         entry["description"] = resource.description;
         entry["tags"] = resource.tags;
-        entry["filePath"] = resource.filePath.empty() ? "" : resource.filePath.string();
+        entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
         entry["hash"] = resource.hash;
         if (!resource.metadata.empty())
             entry["metadata"] = resource.metadata;
@@ -4933,7 +4934,7 @@ void PluginController::HandleBrowseModelRequest()
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["path"] = result.path.string();
+                payload["path"] = util::PathToUtf8(result.path);
                 HandleLoadModelRequest(payload);
             }
         });
@@ -4947,7 +4948,7 @@ void PluginController::HandleBrowseIRRequest()
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["path"] = result.path.string();
+                payload["path"] = util::PathToUtf8(result.path);
                 HandleLoadIRRequest(payload);
             }
         });
@@ -5247,7 +5248,7 @@ void PluginController::HandleLoadModelRequest(const nlohmann::json& payload)
         path = payload.value("filePath", "");
     if (path.empty()) return;
 
-    std::filesystem::path filePath(path);
+    std::filesystem::path filePath = util::PathFromUtf8(path);
     if (!std::filesystem::exists(filePath))
     {
         ReportErrorToUI("Model file not found", path);
@@ -5258,8 +5259,8 @@ void PluginController::HandleLoadModelRequest(const nlohmann::json& payload)
     const auto savedResource = SaveLocalLibraryResource(
         nlohmann::json{
             {"resourceType", "nam"},
-            {"filePath", filePath.string()},
-            {"name", filePath.stem().string()},
+            {"filePath", util::PathToUtf8(filePath)},
+            {"name", util::PathToUtf8(filePath.stem())},
             {"category", "Local"},
             {"metadata", nlohmann::json::object({{"provider", kLocalResourceProvider}})}
         },
@@ -5279,12 +5280,12 @@ void PluginController::HandleLoadModelRequest(const nlohmann::json& payload)
 
     if (updatedNamResource)
     {
-        mAppSettings["lastModelPath"] = filePath.parent_path().string();
+        mAppSettings["lastModelPath"] = util::PathToUtf8(filePath.parent_path());
         SaveAppSettings();
 
         nlohmann::json message;
         message["type"] = "modelLoaded";
-        message["path"] = filePath.generic_string();
+        message["path"] = util::PathToUtf8(filePath);
         SendMessageToUI(message.dump());
     }
 }
@@ -5296,7 +5297,7 @@ void PluginController::HandleLoadIRRequest(const nlohmann::json& payload)
         path = payload.value("filePath", "");
     if (path.empty()) return;
 
-    std::filesystem::path filePath(path);
+    std::filesystem::path filePath = util::PathFromUtf8(path);
     if (!std::filesystem::exists(filePath))
     {
         ReportErrorToUI("IR file not found", path);
@@ -5305,12 +5306,12 @@ void PluginController::HandleLoadIRRequest(const nlohmann::json& payload)
 
     if (UpdateResourceForNodeType(EffectGuids::kCabIr, "ir", filePath))
     {
-        mAppSettings["lastIRPath"] = filePath.parent_path().string();
+        mAppSettings["lastIRPath"] = util::PathToUtf8(filePath.parent_path());
         SaveAppSettings();
 
         nlohmann::json message;
         message["type"] = "irLoaded";
-        message["path"] = filePath.generic_string();
+        message["path"] = util::PathToUtf8(filePath);
         SendMessageToUI(message.dump());
     }
 }
@@ -5962,10 +5963,10 @@ void PluginController::HandleBrowseNodeResourceRequest(const nlohmann::json& pay
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["filePath"] = result.path.string();
+                payload["filePath"] = util::PathToUtf8(result.path);
                 payload["resourceType"] = resourceType;
                 payload["nodeId"] = nodeId;
-                payload["name"] = result.path.stem().string();
+                payload["name"] = util::PathToUtf8(result.path.stem());
                 payload["category"] = category.empty() ? std::string{"Local"} : category;
                 payload["metadata"] = nlohmann::json::object({{"provider", kLocalResourceProvider}});
                 if (resourceIndex >= 0)
@@ -6561,7 +6562,7 @@ void PluginController::HandleImportRemoteResourceRequest(const nlohmann::json& p
     msg["resourceType"] = resourceType;
     msg["id"] = resourceId;
     msg["name"] = name;
-    msg["filePath"] = targetPath.string();
+    msg["filePath"] = util::PathToUtf8(targetPath);
     SendMessageToUI(msg.dump());
     AppendSessionLog("Imported resource " + resourceType + ":" + resourceId + " (" + targetPath.string() + ")");
 }
@@ -6633,7 +6634,7 @@ std::optional<LibraryResource> PluginController::SaveLocalLibraryResource(const 
 
     if (hasFilePath)
     {
-        resolvedPath = std::filesystem::path(filePathValue);
+        resolvedPath = util::PathFromUtf8(filePathValue);
         if (!std::filesystem::exists(resolvedPath))
         {
             error = "Selected file does not exist";
@@ -6923,7 +6924,7 @@ void PluginController::HandleSaveLocalLibraryResourceRequest(const nlohmann::jso
     msg["resourceType"] = saved->type;
     msg["id"] = saved->id;
     msg["name"] = saved->name;
-    msg["filePath"] = saved->filePath.string();
+    msg["filePath"] = util::PathToUtf8(saved->filePath);
     SendMessageToUI(msg.dump());
 }
 
@@ -7331,7 +7332,7 @@ void PluginController::HandleUpdateLibraryResourceRequest(const nlohmann::json& 
     AppendUserLibraryResource(updated);
     BroadcastState();
     TouchSharedSyncState({"resourceLibrary"});
-    SendMessageToUI(nlohmann::json{{"type", "resourceImported"}, {"resourceType", updated.type}, {"id", updated.id}, {"name", updated.name}, {"filePath", updated.filePath.string()}}.dump());
+    SendMessageToUI(nlohmann::json{{"type", "resourceImported"}, {"resourceType", updated.type}, {"id", updated.id}, {"name", updated.name}, {"filePath", util::PathToUtf8(updated.filePath)}}.dump());
 }
 
 void PluginController::HandleBrowseLibraryResourcePathRequest(const nlohmann::json& payload)
@@ -7354,7 +7355,7 @@ void PluginController::HandleBrowseLibraryResourcePathRequest(const nlohmann::js
             nlohmann::json updatePayload = payload;
             updatePayload["resourceType"] = resourceType;
             updatePayload["resourceId"] = resourceId;
-            updatePayload["filePath"] = result.path.string();
+            updatePayload["filePath"] = util::PathToUtf8(result.path);
             HandleUpdateLibraryResourceRequest(updatePayload);
         });
 }
@@ -7404,7 +7405,33 @@ void PluginController::HandleListResourceFolderRequest(const nlohmann::json& pay
         std::thread worker(
             [this, rawPath, libraryPaths = std::move(libraryPaths), generation]() mutable
             {
-                ScanResourceFolderWorker(std::move(rawPath), std::move(libraryPaths), generation);
+                const std::string requestedPath = rawPath;
+                try
+                {
+                    ScanResourceFolderWorker(std::move(rawPath), std::move(libraryPaths), generation);
+                }
+                catch (const std::exception& exception)
+                {
+                    if (mFolderScanGeneration.load(std::memory_order_relaxed) == generation)
+                    {
+                        SendMessageToUI(nlohmann::json{
+                            {"type", "resourceFolderListingFailed"},
+                            {"path", requestedPath},
+                            {"message", std::string{"Unable to scan folder: "} + exception.what()}
+                        }.dump());
+                    }
+                }
+                catch (...)
+                {
+                    if (mFolderScanGeneration.load(std::memory_order_relaxed) == generation)
+                    {
+                        SendMessageToUI(nlohmann::json{
+                            {"type", "resourceFolderListingFailed"},
+                            {"path", requestedPath},
+                            {"message", "Unable to scan folder"}
+                        }.dump());
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(mFolderScanDoneMutex);
                     mActiveFolderScans.fetch_sub(1, std::memory_order_relaxed);
@@ -7440,7 +7467,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     // collapse of "."/".."/redundant separators. Unlike weakly_canonical this
     // never touches the disk, so it can't stall on a slow/disconnected drive.
     const auto normalizePath = [](const std::filesystem::path& p) -> std::string {
-        std::string s = p.lexically_normal().generic_string();
+        std::string s = util::PathToUtf8(p.lexically_normal());
         if (!s.empty() && s.back() == '/')
             s.pop_back();
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -7464,7 +7491,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         return;
     }
 
-    std::filesystem::path dir(requestPath);
+    const std::filesystem::path dir = util::PathFromUtf8(requestPath);
     std::error_code dec;
     if (!std::filesystem::is_directory(dir, dec) || dec)
     {
@@ -7530,7 +7557,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         const auto& entryPath = entry.path();
         if (entry.is_directory(eec) && !eec)
         {
-            dirs.push_back(nlohmann::json{{"name", entryPath.filename().string()}, {"path", entryPath.generic_string()}});
+            dirs.push_back(nlohmann::json{{"name", util::PathToUtf8(entryPath.filename())}, {"path", util::PathToUtf8(entryPath)}});
             continue;
         }
         if (!entry.is_regular_file(eec) || eec)
@@ -7541,8 +7568,8 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
             continue;
 
         nlohmann::json file;
-        file["name"] = entryPath.filename().string();
-        file["path"] = entryPath.generic_string();
+        file["name"] = util::PathToUtf8(entryPath.filename());
+        file["path"] = util::PathToUtf8(entryPath);
         file["resourceType"] = resourceType;
 
         std::error_code sec;
@@ -7583,16 +7610,16 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     const auto parentPath = dir.parent_path();
     std::string parentStr;
     if (!parentPath.empty() && parentPath != dir)
-        parentStr = parentPath.generic_string();
+        parentStr = util::PathToUtf8(parentPath);
 
-    const std::string folderPath = dir.generic_string();
+    const std::string folderPath = util::PathToUtf8(dir);
 
     nlohmann::json msg;
     msg["type"] = "resourceFolderListing";
     msg["path"] = folderPath;
     msg["parent"] = parentStr;
     const auto leaf = dir.filename();
-    msg["name"] = leaf.empty() ? folderPath : leaf.string();
+    msg["name"] = leaf.empty() ? folderPath : util::PathToUtf8(leaf);
     msg["dirs"] = dirs;
     msg["files"] = files;
     msg["truncated"] = truncated;
@@ -7657,7 +7684,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         }
 
         batch.push_back(nlohmann::json{
-            {"path", pending.path.generic_string()},
+            {"path", util::PathToUtf8(pending.path)},
             {"metadata", std::move(metadata)}
         });
 
@@ -7837,7 +7864,7 @@ void PluginController::HandlePreviewRemoteResourceRequest(const nlohmann::json& 
         updatePayload["nodeId"] = nodeId;
         updatePayload["resourceType"] = resourceType;
         updatePayload["resourceId"] = "";
-        updatePayload["filePath"] = tempPath.string();
+        updatePayload["filePath"] = util::PathToUtf8(tempPath);
         updatePayload["resourceIndex"] = resourceIndex;
         HandleUpdateNodeResourceRequest(updatePayload);
     }
@@ -7858,7 +7885,7 @@ void PluginController::HandleCancelPreviewResourceRequest(const nlohmann::json& 
         updatePayload["nodeId"] = mPreviewState.nodeId;
         updatePayload["resourceType"] = mPreviewState.resourceType;
         updatePayload["resourceId"] = original.resourceId;
-        updatePayload["filePath"] = original.filePath.string();
+        updatePayload["filePath"] = util::PathToUtf8(original.filePath);
         updatePayload["resourceIndex"] = mPreviewState.resourceIndex;
         HandleUpdateNodeResourceRequest(updatePayload);
     }
@@ -8032,7 +8059,7 @@ void PluginController::HandleSaveCurrentCustomEffectRequest(const nlohmann::json
     {
         nlohmann::json savePayload;
         savePayload["resourceType"] = moduleRef.resourceType;
-        savePayload["filePath"] = moduleRef.filePath.string();
+        savePayload["filePath"] = util::PathToUtf8(moduleRef.filePath);
         savePayload["name"] = requestedNameOpt && !requestedNameOpt->empty()
             ? *requestedNameOpt
             : (!std::filesystem::path(moduleRef.filePath).stem().string().empty()
@@ -8678,6 +8705,7 @@ void PluginController::HandleSaveCompositePresetRequest(const nlohmann::json& pa
     if (name.empty()) { ReportErrorToUI("Save Multi-Rig failed", "A name is required"); return; }
 
     const std::string description = payload.value("description", "");
+    const nlohmann::json tagsPayload = payload.value("tags", nlohmann::json::array());
 
     // Build CompositePreset from current mixer state
     CompositePreset cp;
@@ -8701,6 +8729,27 @@ void PluginController::HandleSaveCompositePresetRequest(const nlohmann::json& pa
     }
 
     if (cp.slots.empty()) { ReportErrorToUI("Save Multi-Rig failed", "No active presets in mixer"); return; }
+
+    if (tagsPayload.is_array())
+    {
+        for (const auto& tagValue : tagsPayload)
+        {
+            if (!tagValue.is_string())
+                continue;
+            std::string tag = tagValue.get<std::string>();
+            const auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+            tag.erase(tag.begin(), std::find_if(tag.begin(), tag.end(), [&](char ch)
+            {
+                return !isSpace(static_cast<unsigned char>(ch));
+            }));
+            tag.erase(std::find_if(tag.rbegin(), tag.rend(), [&](char ch)
+            {
+                return !isSpace(static_cast<unsigned char>(ch));
+            }).base(), tag.end());
+            if (!tag.empty())
+                cp.tags.push_back(tag);
+        }
+    }
 
     // Assign id and timestamps
     const std::string existingId = payload.value("id", "");
@@ -9655,15 +9704,15 @@ void PluginController::HandleSetRiffLibraryPathRequest(const nlohmann::json& pay
 
     try
     {
-        const std::filesystem::path libraryPath = std::filesystem::path(requestedPath);
+        const std::filesystem::path libraryPath = util::PathFromUtf8(requestedPath);
         std::filesystem::create_directories(libraryPath);
-        mAppSettings[kRiffLibraryPathSettingKey] = libraryPath.string();
+            mAppSettings[kRiffLibraryPathSettingKey] = util::PathToUtf8(libraryPath);
         SaveAppSettings();
 
         {
             std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
             mRiffLibraryIndex = LoadRiffLibraryIndex();
-            mRiffLibraryIndex["path"] = libraryPath.string();
+            mRiffLibraryIndex["path"] = util::PathToUtf8(libraryPath);
             if (!mRiffLibraryIndex.contains("riffs") || !mRiffLibraryIndex["riffs"].is_array())
                 mRiffLibraryIndex["riffs"] = nlohmann::json::array();
             SaveRiffLibraryIndex(mRiffLibraryIndex);
@@ -10152,7 +10201,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
 
     nlohmann::json takeJson;
     takeJson["id"] = capture.takeId;
-    takeJson["filePath"] = wavPath.string();
+    takeJson["filePath"] = util::PathToUtf8(wavPath);
     takeJson["durationSec"] = capture.sampleRate > 0.0
         ? static_cast<double>(capture.left.size()) / capture.sampleRate
         : 0.0;
@@ -10179,7 +10228,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
         if (!mRiffLibraryIndex.is_object())
             mRiffLibraryIndex = nlohmann::json::object();
 
-        mRiffLibraryIndex["path"] = libraryPath.string();
+        mRiffLibraryIndex["path"] = util::PathToUtf8(libraryPath);
         if (!mRiffLibraryIndex.contains("riffs") || !mRiffLibraryIndex["riffs"].is_array())
             mRiffLibraryIndex["riffs"] = nlohmann::json::array();
 
@@ -10243,7 +10292,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
     msg["type"] = "riffSaved";
     msg["riffId"] = riffId;
     msg["takeId"] = capture.takeId;
-    msg["path"] = wavPath.string();
+    msg["path"] = util::PathToUtf8(wavPath);
     msg["library"] = updatedLibrary;
     SendMessageToUI(msg.dump());
     SendRiffLibraryStateToUI();
@@ -10276,7 +10325,7 @@ void PluginController::HandleDeleteRiffRequest(const nlohmann::json& payload)
                 {
                     if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                         continue;
-                    const auto runtimePath = std::filesystem::path(take["filePath"].get<std::string>());
+                    const auto runtimePath = util::PathFromUtf8(take["filePath"].get<std::string>());
                     if (!runtimePath.empty())
                         takeFiles.push_back(runtimePath);
                 }
@@ -11301,7 +11350,7 @@ void PluginController::BroadcastState()
         entry["category"] = resource.category;
         entry["description"] = resource.description;
         entry["tags"] = resource.tags;
-        entry["filePath"] = resource.filePath.empty() ? "" : resource.filePath.string();
+        entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
         entry["hash"] = resource.hash;
         if (!resource.metadata.empty())
         {
@@ -11488,9 +11537,9 @@ bool PluginController::ReportHostedPluginResourceLoadFailure(const std::string& 
     if (!ref.resourceId.empty())
         message["resourceId"] = ref.resourceId;
     if (!ref.filePath.empty())
-        message["filePath"] = ref.filePath.string();
+        message["filePath"] = util::PathToUtf8(ref.filePath);
     else if (auto resolvedPath = ResolveResourceRef(ref))
-        message["filePath"] = resolvedPath->string();
+        message["filePath"] = util::PathToUtf8(*resolvedPath);
 
     SendMessageToUI(message.dump());
     return true;
@@ -13832,7 +13881,7 @@ std::filesystem::path PluginController::ResolveRiffLibraryPath() const
 {
     if (mAppSettings.contains(kRiffLibraryPathSettingKey) && mAppSettings[kRiffLibraryPathSettingKey].is_string())
     {
-        const auto configured = std::filesystem::path(mAppSettings[kRiffLibraryPathSettingKey].get<std::string>());
+        const auto configured = util::PathFromUtf8(mAppSettings[kRiffLibraryPathSettingKey].get<std::string>());
         if (!configured.empty())
             return configured;
     }
@@ -13870,7 +13919,7 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
         index = nlohmann::json::object();
     }
 
-    index["path"] = path.string();
+    index["path"] = util::PathToUtf8(path);
     if (!index.contains("riffs") || !index["riffs"].is_array())
         index["riffs"] = nlohmann::json::array();
 
@@ -13884,7 +13933,7 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
             if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                 continue;
 
-            const auto storedPath = std::filesystem::path(take["filePath"].get<std::string>());
+            const auto storedPath = util::PathFromUtf8(take["filePath"].get<std::string>());
             if (storedPath.empty())
                 continue;
 
@@ -13893,9 +13942,9 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
             const bool storedExists = std::filesystem::exists(storedPath);
 
             if (resolvedExists)
-                take["filePath"] = resolvedPath.string();
+                take["filePath"] = util::PathToUtf8(resolvedPath);
             else if (!storedExists && !resolvedPath.empty())
-                take["filePath"] = resolvedPath.string();
+                take["filePath"] = util::PathToUtf8(resolvedPath);
         }
     }
 
@@ -13908,7 +13957,7 @@ bool PluginController::SaveRiffLibraryIndex(const nlohmann::json& payload) const
     const auto libraryPath = ResolveRiffLibraryPath();
     nlohmann::json normalizedPayload = payload;
 
-    normalizedPayload["path"] = libraryPath.string();
+    normalizedPayload["path"] = util::PathToUtf8(libraryPath);
     if (!normalizedPayload.contains("riffs") || !normalizedPayload["riffs"].is_array())
         normalizedPayload["riffs"] = nlohmann::json::array();
 
@@ -13922,9 +13971,9 @@ bool PluginController::SaveRiffLibraryIndex(const nlohmann::json& payload) const
             if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                 continue;
 
-            const auto runtimePath = std::filesystem::path(take["filePath"].get<std::string>());
+            const auto runtimePath = util::PathFromUtf8(take["filePath"].get<std::string>());
             const auto storedPath = BuildRiffTakePathForStorage(runtimePath, libraryPath);
-            take["filePath"] = storedPath.string();
+            take["filePath"] = util::PathToUtf8(storedPath);
         }
     }
 

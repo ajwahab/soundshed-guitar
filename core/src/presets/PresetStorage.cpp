@@ -2,6 +2,7 @@
 #include "presets/PresetTypesJson.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "util/PathEncoding.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -69,7 +70,7 @@ namespace guitarfx
       if (!ref.resourceId.empty())
         json["resourceId"] = ref.resourceId;
       if (!ref.filePath.empty())
-        json["filePath"] = BuildPathForStorage(ref.filePath, baseDirectory).generic_string();
+        json["filePath"] = util::PathToUtf8(BuildPathForStorage(ref.filePath, baseDirectory));
       if (!ref.embeddedId.empty())
         json["embeddedId"] = ref.embeddedId;
       if (!ref.parameterId.empty())
@@ -95,7 +96,7 @@ namespace guitarfx
       ref.resourceType = json.value("resourceType", json.value("type", ""));
       ref.resourceId = json.value("resourceId", json.value("id", ""));
       ref.filePath = ResolveStoredPathForRuntime(
-        std::filesystem::path(json.value("filePath", "")),
+        util::PathFromUtf8(json.value("filePath", "")),
         baseDirectory);
       ref.embeddedId = json.value("embeddedId", "");
       ref.parameterId = json.value("parameterId", "");
@@ -259,7 +260,7 @@ namespace guitarfx
       if (!res.data.empty())
         json["data"] = res.data;
       if (!res.originalPath.empty())
-        json["originalPath"] = BuildPathForStorage(res.originalPath, baseDirectory).generic_string();
+        json["originalPath"] = util::PathToUtf8(BuildPathForStorage(res.originalPath, baseDirectory));
       return json;
     }
 
@@ -273,7 +274,7 @@ namespace guitarfx
       res.hash = json.value("hash", "");
       res.data = json.value("data", "");
       res.originalPath = ResolveStoredPathForRuntime(
-        std::filesystem::path(json.value("originalPath", "")),
+        util::PathFromUtf8(json.value("originalPath", "")),
         baseDirectory);
       return res;
     }

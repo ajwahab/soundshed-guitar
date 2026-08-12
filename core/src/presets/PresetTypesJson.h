@@ -1,6 +1,7 @@
 #pragma once
 
 #include "presets/PresetTypes.h"
+#include "util/PathEncoding.h"
 
 #include <cmath>
 
@@ -16,7 +17,7 @@ namespace guitarfx
     if (!ref.resourceId.empty())
       json["resourceId"] = ref.resourceId;
     if (!ref.filePath.empty())
-      json["filePath"] = ref.filePath.string();
+      json["filePath"] = util::PathToUtf8(ref.filePath);
     if (!ref.embeddedId.empty())
       json["embeddedId"] = ref.embeddedId;
     if (!ref.parameterId.empty())
@@ -39,7 +40,7 @@ namespace guitarfx
     ResourceRef ref;
     ref.resourceType = json.value("resourceType", json.value("type", ""));
     ref.resourceId = json.value("resourceId", json.value("id", ""));
-    ref.filePath = json.value("filePath", "");
+    ref.filePath = util::PathFromUtf8(json.value("filePath", ""));
     ref.embeddedId = json.value("embeddedId", "");
     ref.parameterId = json.value("parameterId", "");
     if (json.contains("parameterValue") && json["parameterValue"].is_number())
