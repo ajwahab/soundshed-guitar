@@ -230,13 +230,19 @@
   cursor: not-allowed;
 }
 
-/* ── Inline mixer panel (shown when Mix tab active) ────────────────── */
+/* ── Inline mixer panel (shown when Mix tab active) ──────────────────
+ * Channel strips reuse the app's normal knob (.knob-control) and toggle
+ * (.toggle-switch) components — see components.css / controls.css — so this
+ * file only adds layout/positioning on top, per the canonical-components
+ * convention. Strips are fixed-width and packed left rather than stretched,
+ * so 1-2 active presets don't balloon into huge slabs of empty card. */
 .inline-mixer-panel {
   flex: 0 0 auto;
   height: var(--signal-path-scroll-height, 96px);
-  min-height: 48px;
+  min-height: 96px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
   overflow: hidden;
   background: var(--bg-primary);
 }
@@ -244,96 +250,107 @@
 .iml-strips {
   display: flex;
   flex-direction: row;
-  flex: 1;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
 }
 
 .iml-strip {
-  flex: 1;
-  min-width: 170px;
-  max-width: 260px;
-  padding: 6px 10px 6px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent, #666) 28%, var(--border-medium));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #666) 12%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent, #666) 9%, transparent) 0%, transparent 42%),
-    var(--bg-secondary);
-  border-radius: 8px;
-}
-.iml-strip + .iml-strip {
+  flex: 0 0 auto;
+  width: 172px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 6px 12px;
   border-right: 1px solid var(--border-medium);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent, #666) 60%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent, #666) 8%, transparent) 0%, transparent 46%),
+    var(--bg-secondary);
+}
+.iml-strip:first-child {
+  border-left: 1px solid var(--border-medium);
 }
 
 .iml-strip-name {
-  font-size: 11px;
+  flex-shrink: 0;
+  line-height: 1;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
-.iml-strip-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.iml-label {
+.iml-strip-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
+  gap: 12px;
 }
-.iml-label input[type="range"] {
-  flex: 1;
-  height: 4px;
-  min-width: 60px;
+
+.iml-knobs {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* Tighten the knob's label/value line-boxes so a strip's title + knob row
+ * fits the full-size signal-chain height (96px) without either clipping. */
+.iml-knob .knob-label,
+.iml-knob .knob-value {
+  line-height: 1;
 }
 
 .iml-toggles {
   display: flex;
-  gap: 4px;
-  margin-top: 2px;
+  flex-direction: column;
+  gap: 5px;
 }
 
-.iml-mute-btn,
-.iml-solo-btn {
-  padding: 2px 7px;
-  border-radius: 3px;
-  border: 1px solid var(--border-medium);
-  background: var(--overlay-medium);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+.iml-toolbar {
+  display: flex;
+  gap: 4px;
 }
-.iml-mute-btn.active  { background: #c44; border-color: #c44; color: #fff; }
-.iml-solo-btn.active  { background: #c94; border-color: #c94; color: #fff; }
+
+.iml-toolbar-btn {
+  padding: 3px 9px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Preserve the mute=red / solo=amber convention from the old buttons on
+ * top of the normal toggle-switch look. */
+.iml-mute-toggle .toggle-switch input:checked + .toggle-slider {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(0, 0, 0, 0.2) 100%), #c0453f;
+  border-color: #c0453f;
+}
+.iml-solo-toggle .toggle-switch input:checked + .toggle-slider {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(0, 0, 0, 0.2) 100%), #c9962f;
+  border-color: #c9962f;
+}
 
 .iml-master {
+  flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 4px 12px;
-  border-top: 1px solid var(--border-medium);
+  flex-direction: column;
+  justify-content: flex-start;
+  /* No extra `gap` here — .iml-strip-name's own margin-bottom already
+   * spaces it from .iml-strip-row, matching .iml-strip. A container gap on
+   * top of that margin was pushing content past the 96px budget and
+   * squashing the "Master" title down to a sliver (flex items with
+   * overflow:hidden get an automatic min-height of 0, so they're what
+   * shrinks first when a flex column runs out of room). */
+  padding: 6px 14px;
+  border-left: 1px solid var(--border-medium);
   background: var(--bg-secondary);
-  flex-shrink: 0;
 }
 
-.iml-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
+.iml-master .iml-save-multi-rig-btn {
+  white-space: nowrap;
 }
 
 /* ── end inline mixer ───────────────────────────────────────────────── */
@@ -343,6 +360,14 @@
   flex: 0 0 auto;
   height: var(--signal-path-scroll-height, 96px);
   min-height: 48px;
+}
+
+/* Hiding .signal-path-scroll (via the `hidden` attribute) only hides the
+ * chain's scroll viewport — its wrapper, .signal-path-visualizer, keeps its
+ * own height regardless, so without this the inline mixer panel renders
+ * *below* an empty, invisible chain-height box instead of replacing it. */
+.signal-path-bar.mix-tab-active .signal-path-visualizer {
+  display: none;
 }
 
 .signal-path-scroll {
@@ -2653,6 +2678,17 @@ body.signal-path-resizing * {
   height: 15px;
   display: block;
   opacity: 0.92;
+  /* renderIcon() supplies the glyph as --icon-url; without the mask these
+     buttons render as empty squares. */
+  background-color: currentColor;
+  -webkit-mask-image: var(--icon-url);
+  mask-image: var(--icon-url);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
 .node-param-tabs {
@@ -4093,4 +4129,304 @@ body.signal-path-resizing * {
   background: var(--accent-primary);
   cursor: pointer;
   border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Effect layout picker popover
+
+   Standard-vs-custom layout switching plus per-keyword / per-preset
+   layout rules. Appended to <body> because .default-effect-shell
+   clips its own overflow.
+   ───────────────────────────────────────────────────────────── */
+
+.layout-picker-popover {
+  position: fixed;
+  z-index: 4000;
+  width: 320px;
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.16));
+  border-radius: 10px;
+  background: var(--bg-elevated, #1b1f2a);
+  color: var(--text-primary, #e8ecf6);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.layout-picker-header {
+  position: relative;
+  padding: 10px 34px 8px 12px;
+  border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+}
+
+.layout-picker-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.layout-picker-subtitle {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.7));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-picker-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layout-picker-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.layout-picker-body {
+  padding: 10px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.layout-picker-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.7));
+}
+
+.layout-picker-section-title {
+  margin-bottom: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.62));
+}
+
+.layout-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.layout-picker-option {
+  display: grid;
+  grid-template-columns: auto 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.layout-picker-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.layout-picker-option.is-active {
+  border-color: color-mix(in srgb, var(--accent-primary, #6ea8ff) 55%, transparent);
+  background: rgba(110, 168, 255, 0.1);
+}
+
+.layout-picker-option-thumb {
+  display: block;
+  width: 44px;
+  height: 30px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.layout-picker-option-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.layout-picker-option-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.layout-picker-option-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-picker-option-meta {
+  font-size: 9px;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.62));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-picker-badge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.layout-picker-scope {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.layout-picker-scope.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.layout-picker-keyword {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.24);
+  color: inherit;
+  font-size: 11px;
+}
+
+.layout-picker-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.layout-picker-suggestion {
+  padding: 2px 7px;
+  border: 1px solid var(--border-light, rgba(255, 255, 255, 0.14));
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.layout-picker-suggestion:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.layout-picker-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.layout-picker-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 10px;
+}
+
+.layout-picker-rule-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.layout-picker-rule-text span,
+.layout-picker-rule-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layout-picker-rule-remove {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layout-picker-rule-remove:hover {
+  background: rgba(255, 120, 120, 0.22);
+}
+
+.layout-picker-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+}
+
+.layout-picker-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.layout-picker-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.layout-picker-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.layout-picker-btn.is-primary {
+  border-color: color-mix(in srgb, var(--accent-primary, #6ea8ff) 60%, transparent);
+  background: color-mix(in srgb, var(--accent-primary, #6ea8ff) 26%, transparent);
+}
+
+.effect-visualization-toolbar-btn.node-layout-switch-btn.is-active {
+  border-color: color-mix(in srgb, var(--accent-primary, #6ea8ff) 55%, var(--border-medium, rgba(255, 255, 255, 0.18)));
 }

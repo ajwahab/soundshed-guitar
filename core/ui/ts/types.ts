@@ -611,6 +611,10 @@ export interface UiState {
   focusedMixerPresetId?: string | null;
   /** Saved composite (multi-rig) presets. */
   compositePresets?: CompositePreset[];
+  /** Id of the composite (Multi-Rig) preset the current mixer session was loaded from or
+   * last saved as, if any — drives the mixer toolbar's Save-as-edit/Delete behavior. Cleared
+   * whenever the active mixer's preset membership changes (add/remove a slot). */
+  activeCompositePresetId?: string | null;
   /** Available software update, populated when update check finds a newer version. */
   availableUpdate?: { version: string; downloadUrl: string; releaseNotes: string } | null;
   /** Automation & MIDI mapping state */

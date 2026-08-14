@@ -288,6 +288,7 @@ export const uiState: UiState = {
   compositeEditPreset: null,
   focusedMixerPresetId: null,
   compositePresets: [],
+  activeCompositePresetId: null,
   automation: { slots: [], registry: [], maxCustomSlots: 16 },
 };
 

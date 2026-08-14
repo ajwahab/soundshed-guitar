@@ -122,6 +122,13 @@ namespace guitarfx
     bool AddActivePreset(const Preset &preset, const std::string &presetId, const std::string &name);
     void RemoveActivePreset(const std::string &presetId);
 
+    // Rebuilds a single already-active instance's executor graph in place (e.g. after a
+    // scene switch or in-place edit of a preset that happens to be one of several active
+    // mixer slots), preserving that slot's mix/pan/mute/solo. Unlike PreparePresetSwap()/
+    // CommitPresetSwap(), this does NOT touch any other active instance. Returns false
+    // (no-op) if presetId is not currently active.
+    bool ReplaceActivePresetInPlace(const Preset &preset, const std::string &presetId, const std::string &name);
+
     // Seamless preset swap: build the new executor off the DSP lock, then commit atomically.
     // PreparePresetSwap does the expensive work (effect creation, resource loading, Prepare).
     // CommitPresetSwap installs the pre-built instance and schedules a brief fade-in.

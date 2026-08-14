@@ -1,6 +1,6 @@
 import { renderDemoAudioControls, bindDemoAudioControls } from "./demoAudio.js";
 import { uiState, setFocusedMixerPresetId } from "./state.js";
-import { addActivePreset, removeActivePreset, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled } from "./bridge.js";
+import { addActivePreset, removeActivePreset, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, focusMixerPreset } from "./bridge.js";
 import { escapeHtml, idAccentColor } from "./utils.js";
 import { updateSignalPathClipIndicators, renderSignalPathBar } from "./signalPath.js";
 import { renderIcon, getCheckmarkSvg, getXMarkSvg, getPlaySvg } from "./iconAssets.js";
@@ -212,6 +212,7 @@ function bindMixerControls(container: HTMLElement): void {
     if (viewBtn) {
       viewBtn.addEventListener("click", () => {
         setFocusedMixerPresetId(pid);
+        focusMixerPreset(pid);
         renderSignalPathBar();
         renderMixerPanel();
       });
@@ -266,7 +267,9 @@ function bindMixerControls(container: HTMLElement): void {
 }
 
 export function renderMixerPanel(): void {
-  const panel = document.getElementById("mixer-panel");
+  // Note: buildMixerMarkup() renders into ".mixer-panel-host" (see renderPresetDetails);
+  // there is no element with id="mixer-panel".
+  const panel = document.querySelector<HTMLElement>(".mixer-panel-host");
   if (!panel) return;
   panel.innerHTML = buildMixerMarkup();
   bindMixerControls(panel);
@@ -486,6 +489,9 @@ export function renderPresetList(
         const pid = addBtn.dataset.presetId ?? "";
         if (!pid) return;
         const alreadyIn = uiState.mixer?.activePresetIds.includes(pid) ?? false;
+        // Changing mixer membership means it no longer matches whatever
+        // Multi-Rig preset it was loaded from/saved as, if any.
+        uiState.activeCompositePresetId = null;
         if (alreadyIn) {
           removeActivePreset(pid);
           if (uiState.mixer) {
@@ -511,7 +517,8 @@ export function renderPresetList(
           if (uiState.mixer) {
             uiState.mixer.activePresetIds.push(pid);
             if (!uiState.mixer.presets[pid]) {
-              uiState.mixer.presets[pid] = { id: pid, mix: 1.0, pan: 0.0, mute: false, solo: false };
+              const fromList = uiState.presets.find((p) => p.id === pid);
+              uiState.mixer.presets[pid] = { id: pid, name: fromList?.name ?? pid, mix: 1.0, pan: 0.0, mute: false, solo: false };
             }
           }
           addBtn.innerHTML = `${getCheckmarkSvg()} In Mixer`;

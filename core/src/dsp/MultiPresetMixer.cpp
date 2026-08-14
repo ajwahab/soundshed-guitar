@@ -328,6 +328,41 @@ namespace guitarfx
     mPendingInstance = std::move(inst);
   }
 
+  bool MultiPresetMixer::ReplaceActivePresetInPlace(const Preset &preset, const std::string &presetId, const std::string &name)
+  {
+    PresetInstance *existing = FindInstance(presetId);
+    if (!existing)
+      return false;
+
+    // Preserve this slot's mixer-level settings across the rebuild.
+    const InstanceConfig savedCfg = existing->cfg;
+
+    PresetInstance inst;
+    inst.cfg = savedCfg;
+    inst.cfg.name = name;
+
+    Preset normalizedPreset = preset;
+    EnsurePresetBoundaryGainNodes(normalizedPreset);
+
+    inst.executor.SetResourceLibrary(mResourceLibrary);
+    inst.executor.SetGraph(normalizedPreset.graph);
+    inst.executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
+    inst.executor.SetNamInputModeMono(mMonoMode);
+    inst.complexityScore = EstimateGraphComplexityScore(inst.executor.GetNodeTypes());
+
+    if (mPrepared)
+    {
+      inst.executor.Prepare(mSampleRate, mMaxBlockSize);
+      AllocateInstanceBuffers(inst, mMaxBlockSize);
+    }
+
+    inst.outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst.outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+
+    *existing = std::move(inst);
+    return true;
+  }
+
   void MultiPresetMixer::CommitPresetSwap()
   {
     // Fast atomic swap: install the pre-built instance and clear the old one.

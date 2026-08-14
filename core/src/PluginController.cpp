@@ -4418,6 +4418,52 @@ void PluginController::RemoveActivePreset(const std::string& presetId)
     UpdateHostLatency();
 }
 
+void PluginController::FocusMixerPreset(const std::string& presetId)
+{
+    if (presetId.empty() || presetId == mActivePresetId)
+        return;
+
+    const auto it = mMixerPresetJsonCache.find(presetId);
+    if (it == mMixerPresetJsonCache.end())
+    {
+        AppendSessionLog("FocusMixerPreset: no cached preset data for slot=" + presetId);
+        return;
+    }
+
+    auto presetOpt = PresetStorage::DeserializeFromJson(it->second);
+    if (!presetOpt)
+    {
+        AppendSessionLog("FocusMixerPreset: failed to deserialize cached preset for slot=" + presetId);
+        return;
+    }
+
+    // Switch the editing/display target only. The DSP mixer instances keep running
+    // untouched so audio is unaffected — this just makes graph edits and the
+    // broadcast "preset" state target the mixer slot the user is currently viewing.
+    NormalizePresetScenes(*presetOpt);
+    mActiveSceneId = GetDefaultPresetSceneId(*presetOpt);
+    mActivePreset = std::move(presetOpt);
+    mActivePresetId = presetId;
+    mActivePresetJson = PresetStorage::SerializeToJson(*mActivePreset);
+    mMixerPresetJsonCache[presetId] = mActivePresetJson;
+
+    mPendingStateBroadcast = true;
+}
+
+bool PluginController::ReplaceActiveMixerPresetInPlace(const Preset& preset, const std::string& presetId, const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(mDSPMutex);
+    const bool replaced = mPresetMixer.ReplaceActivePresetInPlace(preset, presetId, name);
+    if (replaced)
+    {
+        AttachRuntimeConfigCallbacks(presetId, preset);
+        try { mMixerPresetJsonCache[presetId] = PresetStorage::SerializeToJson(preset); }
+        catch (...) {}
+        UpdateHostLatency();
+    }
+    return replaced;
+}
+
 void PluginController::SetActivePresetMix(const std::string& presetId, double value)
 {
     mPresetMixer.SetPresetMix(presetId, value);
@@ -4729,7 +4775,25 @@ void PluginController::HandlePresetLoadRequest(const nlohmann::json& payload)
             + ", final=" + SummarizeHostedPluginState(preset));
 
         mActivePresetId = requestedPresetId.empty() ? preset.id : requestedPresetId;
-        ApplyPreset(preset); // SetGlobalChainConfig is called inside ApplyPreset under mDSPMutex
+
+        // If this preset is already one of several active mixer slots (e.g. the user is
+        // switching scenes on a preset that's part of a multi-preset mix), rebuild just
+        // that slot in place. ApplyPreset()'s PreparePresetSwap()/CommitPresetSwap() swap
+        // the *entire* mixer down to a single instance, which would silently drop every
+        // other active mixer preset.
+        const auto activeMixerIds = mPresetMixer.GetActivePresetIds();
+        const bool isActiveMixerSlot = activeMixerIds.size() > 1
+            && std::find(activeMixerIds.begin(), activeMixerIds.end(), mActivePresetId) != activeMixerIds.end();
+
+        if (isActiveMixerSlot && ReplaceActiveMixerPresetInPlace(preset, mActivePresetId, preset.name))
+        {
+            mActivePreset = preset;
+            mActivePresetJson = PresetStorage::SerializeToJson(preset);
+        }
+        else
+        {
+            ApplyPreset(preset); // SetGlobalChainConfig is called inside ApplyPreset under mDSPMutex
+        }
 
         mPendingStateBroadcast = true;
 

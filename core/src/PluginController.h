@@ -181,6 +181,13 @@ public:
     void SetMasterGain(double value);
     void SetLimiterEnabled(bool enabled);
     void SetMultiThreadedProcessingEnabled(bool enabled);
+    /// Switches the editing focus (mActivePreset) to an already-active mixer slot without
+    /// touching the running DSP instances, so signal-chain edits target the correct preset.
+    void FocusMixerPreset(const std::string& presetId);
+    /// Rebuilds one already-active mixer slot in place (e.g. a scene switch on a preset
+    /// that is one of several active mixer presets) without disturbing any other slot.
+    /// Returns false if presetId is not currently an active mixer slot.
+    bool ReplaceActiveMixerPresetInPlace(const Preset& preset, const std::string& presetId, const std::string& name);
 
     // ── Signal path test ───────────────────────────────────────────
     struct SignalPathTestResult

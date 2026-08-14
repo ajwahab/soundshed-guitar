@@ -8,7 +8,7 @@ import { buildArchiveFileNameWithHash, generateResourceId, requestResourceData, 
 import type { Preset, Attachment, BlendDefinition, ResourceRef, LibraryResource, PresetFolder, Setlist, GraphNode, SignalGraph, ToneSharingOriginMetadata, PresetArchiveSessionState } from "./types.js";
 import { createEmptyPresetV2, generateUserPresetId, migratePresetNodeTypes } from "./presetV2.js";
 import { bindDemoAudioControls } from "./demoAudio.js";
-import { postMessage, setAppSetting } from "./bridge.js";
+import { postMessage, setAppSetting, getCompositePresetList } from "./bridge.js";
 import { renderSignalPathBar } from "./signalPath.js";
 import { showConfirm } from "./dialogs.js";
 import { isToneSharingSignedIn, openToneSharingPublishPresetModal, openToneSharingSignInModal, registerInstalledToneSharingPack, syncToneSharingFavoriteForPreset, syncToneSharingRatingForPreset } from "./toneSharingPanel.js";
@@ -24,6 +24,7 @@ import { activateLibraryTab } from "./settings.js";
 import { updateUiSettings } from "./windowSettings.js";
 import { normalizePresetScenes } from "./presetScenes.js";
 import { FEATURE_FLAGS_CHANGED_EVENT, Features, isFeatureEnabled } from "./featureFlags.js";
+import { STANDARD_TAGS, renderTagChips } from "./presetTags.js";
 
 const presetChooserLabel = document.getElementById("preset-chooser-label") as HTMLButtonElement | null;
 const presetFavoriteToggle = document.getElementById("preset-favorite");
@@ -764,6 +765,13 @@ function openPresetLibraryPopover(): void {
   }
   closePresetExtraActionsMenu();
   syncPresetLibraryFeatureVisibility();
+  // Refresh the Multi-Rig list on every open (not just once at app boot,
+  // when app settings — and therefore the MultiRig feature flag — may not
+  // have finished loading yet) so the tab reliably shows up for anyone with
+  // saved Multi-Rig presets, and stays in sync with other sessions/windows.
+  if (isFeatureEnabled(Features.MultiRig)) {
+    getCompositePresetList();
+  }
   const controlBar = presetLibraryPopover.closest<HTMLElement>(".control-bar");
   controlBar?.classList.remove("is-collapsed");
   const collapseButton = document.getElementById("control-bar-collapse-btn");
@@ -845,23 +853,38 @@ function togglePresetExtraActionsMenu(): void {
   }
 }
 
+/** Setlists only make sense against the regular preset library, not the Multi-Rig list. */
+export function setSetlistPanelVisible(visible: boolean): void {
+  if (setlistCollapsible) {
+    setlistCollapsible.hidden = !visible;
+  }
+}
+
 export function syncPresetLibraryFeatureVisibility(): void {
   const multiRigEnabled = isFeatureEnabled(Features.MultiRig);
+  // The Multi-Rig tab only earns its place in the header once there's
+  // something to show there — otherwise it's a permanently-empty tab for
+  // users who've never saved a Multi-Rig preset.
+  const hasCompositePresets = (uiState.compositePresets?.length ?? 0) > 0;
+  const showMultiRigTab = multiRigEnabled && hasCompositePresets;
 
-  presetLibraryPopover?.classList.toggle("preset-library-popover-simple", !multiRigEnabled);
+  presetLibraryPopover?.classList.toggle("preset-library-popover-simple", !showMultiRigTab);
 
   if (presetLibraryTabs) {
-    presetLibraryTabs.hidden = !multiRigEnabled;
-    presetLibraryTabs.setAttribute("aria-hidden", String(!multiRigEnabled));
+    presetLibraryTabs.hidden = !showMultiRigTab;
+    presetLibraryTabs.setAttribute("aria-hidden", String(!showMultiRigTab));
   }
 
   if (presetLibraryMultiRigTab) {
-    presetLibraryMultiRigTab.hidden = !multiRigEnabled;
-    presetLibraryMultiRigTab.setAttribute("aria-hidden", String(!multiRigEnabled));
-    presetLibraryMultiRigTab.tabIndex = multiRigEnabled ? 0 : -1;
+    presetLibraryMultiRigTab.hidden = !showMultiRigTab;
+    presetLibraryMultiRigTab.setAttribute("aria-hidden", String(!showMultiRigTab));
+    presetLibraryMultiRigTab.tabIndex = showMultiRigTab ? 0 : -1;
   }
 
-  if (!multiRigEnabled) {
+  // Whenever the tab itself isn't shown, force the view back to the normal
+  // Presets panel — this is what stops a since-removed/never-fetched
+  // Multi-Rig tab from leaving the preset list stuck hidden behind it.
+  if (!showMultiRigTab) {
     presetLibraryPresetsTab?.classList.add("active");
     presetLibraryPresetsTab?.setAttribute("aria-selected", "true");
     presetLibraryMultiRigTab?.classList.remove("active");
@@ -872,6 +895,7 @@ export function syncPresetLibraryFeatureVisibility(): void {
     if (presetLibraryMultiRigPanel) {
       presetLibraryMultiRigPanel.hidden = true;
     }
+    setSetlistPanelVisible(true);
   }
 }
 
@@ -2759,10 +2783,14 @@ export function initializeSavePresetModal(): void {
   const confirmBtn = document.getElementById("save-preset-confirm");
   const modal = document.getElementById("save-preset-modal");
 
-  // Wire tag chip toggle clicks
-  document.getElementById("preset-tags-picker")?.querySelectorAll<HTMLButtonElement>(".preset-tag-chip").forEach((btn) => {
-    btn.addEventListener("click", () => btn.classList.toggle("active"));
-  });
+  // Populate from the standard tag list, then wire tag chip toggle clicks
+  const tagsPicker = document.getElementById("preset-tags-picker");
+  if (tagsPicker) {
+    renderTagChips(tagsPicker, STANDARD_TAGS, "preset-tag-chip");
+    tagsPicker.querySelectorAll<HTMLButtonElement>(".preset-tag-chip").forEach((btn) => {
+      btn.addEventListener("click", () => btn.classList.toggle("active"));
+    });
+  }
 
   if (closeBtn) {
     closeBtn.addEventListener("click", closeSavePresetModal);

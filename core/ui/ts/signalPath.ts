@@ -11,7 +11,7 @@ import type {
   BlendMode,
   CustomEffectLibraryEntry,
 } from "./types.js";
-import { postMessage, setAppSetting, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, removeActivePreset } from "./bridge.js";
+import { postMessage, setAppSetting, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, removeActivePreset, focusMixerPreset } from "./bridge.js";
 import { requestResourceData } from "./archiveUtils.js";
 import { escapeHtml, idAccentColor, base64ToArrayBuffer, arrayBufferToBase64, findResourceById } from "./utils.js";
 import { showNotification } from "./notifications.js";
@@ -52,6 +52,8 @@ import {
 import { resourceBrowserModal } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
 import { hasCustomLayout, getCustomLayout, renderCustomLayout, renderCustomLayoutBackdrop, formatParamValue, type LayoutResourceControlDef } from "./layoutRenderer.js";
+import { buildLayoutMatchText, resolveLayoutForNode } from "./layoutPreferences.js";
+import { closeLayoutPicker, hasSelectableLayouts, openLayoutPicker } from "./layoutPicker.js";
 import { layoutDesigner } from "./layoutDesigner.js";
 import {
   type BlendParamSpec,
@@ -209,8 +211,19 @@ let chain3dMountToken = 0;
 /** True while the params panel is showing the chain stage for the current selection. */
 let chain3dPanelActive = false;
 
+/**
+ * Master switch for the experimental 3D chain stage.
+ *
+ * The stage is disabled: effect visualisation is served entirely by the standard
+ * controls and custom layouts, which the user picks between from the effect
+ * header (see `layoutPicker.ts`). The scene code in `amp3d/` is kept — it is only
+ * reachable through a dynamic import — so the experiment can be revived by
+ * flipping this flag, but nothing loads it while it is false.
+ */
+const CHAIN_3D_VIEW_ENABLED = false;
+
 function canOfferChain3dView(): boolean {
-  return isWebglSupported();
+  return CHAIN_3D_VIEW_ENABLED && isWebglSupported();
 }
 
 function shouldRenderChain3dView(hasPositionedLayout: boolean): boolean {
@@ -372,6 +385,7 @@ function disposeChain3dView(): void {
 /** Hides the node params panel and releases any live 3D chain resources. */
 function hideNodeParamsPanel(): void {
   nodeParamsPanelElement?.classList.remove("visible");
+  closeLayoutPicker();
   setAmp3dImmersiveMode(false);
   disposeChain3dView();
 }
@@ -518,6 +532,59 @@ function bindChain3dView(node: GraphNode, preset: Preset): void {
       container.innerHTML = `<div class="amp3d-placeholder">3D chain view unavailable. Switch back to the standard controls.</div>`;
     }
   })();
+}
+
+// ── Standard / custom layout switching ──────────────────────────────────────
+
+/**
+ * Header control for choosing how this effect is presented: the standard
+ * auto-generated controls or one of the custom layouts available for it.
+ * Hidden when the effect has no custom layouts to switch to.
+ */
+function renderLayoutSwitchButtonHtml(node: GraphNode, blendId: string, usingCustomLayout: boolean): string {
+  if (!hasSelectableLayouts(node.type, blendId || undefined)) {
+    return "";
+  }
+  const state = usingCustomLayout ? "custom layout" : "standard controls";
+  const label = `Effect layout: ${state}`;
+  return `
+    <button
+      class="effect-visualization-toolbar-btn node-layout-switch-btn${usingCustomLayout ? " is-active" : ""}"
+      data-node-id="${escapeHtml(node.id)}"
+      data-effect-type="${escapeHtml(node.type)}"
+      data-blend-id="${escapeHtml(blendId)}"
+      type="button"
+      aria-haspopup="dialog"
+      aria-expanded="false"
+      title="${label} — choose layout"
+      aria-label="${label}. Choose effect layout"
+    >
+      ${renderIcon(usingCustomLayout ? "package" : "sliders", "effect-visualization-toolbar-icon layout-switch-icon")}
+    </button>
+  `;
+}
+
+function bindLayoutSwitchButton(node: GraphNode, preset: Preset): void {
+  const button = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".node-layout-switch-btn");
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openLayoutPicker(button, {
+      effectType: button.dataset.effectType || node.type,
+      blendId: button.dataset.blendId || undefined,
+      nodeLabel: getNodeDisplayName(node),
+      matchText: buildNodeLayoutMatchText(node),
+      presetId: uiState.activePresetId,
+      presetName: preset.name || "",
+      onApplied: () => {
+        refreshSelectedNodeParams();
+        renderSignalPathBar();
+      },
+    });
+  });
 }
 
 function renderAmp3dToggleButtonHtml(_node?: GraphNode): string {
@@ -1373,6 +1440,20 @@ function getNodeResourceSummary(node: GraphNode): string {
   }
 
   return getNodeResourceDisplayName(node, 0);
+}
+
+/**
+ * Lower-cased make/model text a node is matched against by keyword layout rules:
+ * its display name, any loaded resource (amp model / IR / plugin) names, and the
+ * effect's own display name.
+ */
+function buildNodeLayoutMatchText(node: GraphNode): string {
+  const typeInfo = getNodeEffectInfo(node) ?? EffectTypeRegistry.get(node.type);
+  return buildLayoutMatchText([
+    getNodeDisplayName(node),
+    getNodeResourceSummary(node),
+    typeInfo?.displayName,
+  ]);
 }
 
 function isNeuralModelNode(node: GraphNode): boolean {
@@ -2321,6 +2402,12 @@ function renderSignalPathBarContent(): void {
     if (sceneToolbarHost) sceneToolbarHost.innerHTML = "";
     toolbarRow?.classList.add("scene-toolbar-empty");
     updateSignalPathAddMenuAvailability(false);
+    // Pin the mixer to the same height as the full-size signal chain,
+    // independent of whichever compact/full density was active before
+    // switching to Mix (updateSignalPathLayoutAdapt() skips recomputing
+    // --signal-path-scroll-height while mixTabActive, so without this it
+    // would otherwise keep a stale, possibly-compact height).
+    signalPathBar?.style.setProperty("--signal-path-scroll-height", `${SIGNAL_PATH_FULL_HEIGHT}px`);
     renderInlineMixer();
     return;
   }
@@ -3275,9 +3362,14 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
     const params = node.params as Record<string, unknown> | undefined;
     return typeof params?.blend === "string" ? params.blend : "";
   })();
-  const nodeLayout = blendId
-    ? (getCustomLayout(node.type, blendId) ?? getCustomLayout(node.type))
-    : getCustomLayout(node.type);
+  // Honour the user's layout preference so the avatar matches what the params
+  // panel will actually render for this node.
+  const nodeLayout = resolveLayoutForNode({
+    effectType: node.type,
+    blendId: blendId || undefined,
+    matchText: buildNodeLayoutMatchText(node),
+    presetId: uiState.activePresetId,
+  });
   const thumbUrl = nodeLayout?.thumbnailDataUrl ?? nodeTypeInfo?.thumbnailDataUrl ?? null;
   const thumbAvatar = thumbUrl
     ? `<img class="node-layout-thumb" src="${thumbUrl.replace(/"/g, "&quot;")}" alt="" aria-hidden="true" />` 
@@ -4490,11 +4582,17 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     }
   }
 
-  // Check for custom layout (blend-aware: per-blend first, then fall back to effect type)
+  // Resolve the layout to render. Preference rules (preset > keyword > effect type)
+  // decide between the standard controls and any available custom layout; without
+  // rules this falls back to the layout library default, i.e. previous behaviour.
   const nodeBlendId = blendState?.blend?.id || "";
-  const customLayout = nodeBlendId
-    ? (getCustomLayout(node.type, nodeBlendId) ?? getCustomLayout(node.type))
-    : getCustomLayout(node.type);
+  const nodeLayoutMatchText = buildNodeLayoutMatchText(node);
+  const customLayout = resolveLayoutForNode({
+    effectType: node.type,
+    blendId: nodeBlendId || undefined,
+    matchText: nodeLayoutMatchText,
+    presetId: uiState.activePresetId,
+  });
 
   // When useDefaultControls is true the layout provides only the visual backdrop; the
   // standard auto-generated controls are rendered on top rather than positioned controls.
@@ -4543,6 +4641,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     </button>
   ` : "";
   const equipmentImage = getEffectVisualizationEquipmentImage(node);
+  const layoutSwitchButton = renderLayoutSwitchButtonHtml(node, shellBlendId, Boolean(customLayout));
   const amp3dToggleButton = renderAmp3dToggleButtonHtml(node);
     const useAmp3dView = shouldRenderChain3dView(Boolean(customLayoutHtml));
   const amp3dSplit = useAmp3dView ? splitAmp3dParamDefs(paramDefs) : null;
@@ -4695,6 +4794,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               title="${shellBypassTitle}"
               aria-label="${shellBypassTitle}"
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
+            ${layoutSwitchButton}
             ${shellLayoutButton}
             ${amp3dToggleButton}
           </div>
@@ -4729,6 +4829,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindBypassButton(node, preset);
   bindSelectedNodeDspStatusToggle();
   bindCustomizeLayoutButton(node);
+  bindLayoutSwitchButton(node, preset);
   bindAmp3dToggleButton();
   setAmp3dImmersiveMode(Boolean(amp3dSplit));
   if (amp3dSplit) {
@@ -6494,46 +6595,44 @@ function renderMixerPresetTabs(): void {
   const signalPathBar = document.getElementById("signal-path-bar");
   const mixer = uiState.mixer;
 
-  const renderedPreset = getSignalPathPreset();
-  const shouldShowTabs = !isCompositeEditMode()
-    && !!renderedPreset
+  // Show tabs whenever there are 2+ active mixer slots — do NOT require the
+  // preset to be in the cache first, because "+Mixer" list items are stubs
+  // without graph data and getSignalPathPreset() returns null until the C++
+  // round-trip completes.
+  const multiPresetMode = !isCompositeEditMode()
     && !!mixer
     && mixer.activePresetIds.length > 1;
 
-  if (!shouldShowTabs) {
+  if (!multiPresetMode) {
     if (tabBar) tabBar.remove();
     mixTabActive = false;
     return;
   }
 
-  const multiPresetMode = !!mixer && mixer.activePresetIds.length > 1;
-  const activePreset = getEditableSignalPathPreset(renderedPreset);
-
   if (!tabBar) {
     tabBar = document.createElement("div");
     tabBar.id = "mixer-preset-tabs";
     tabBar.className = "mixer-preset-tabs";
-    const scroll = signalPathBar?.querySelector(".signal-path-scroll");
-    if (scroll) {
-      signalPathBar!.insertBefore(tabBar, scroll);
+    // Insert as a sibling immediately before ".signal-path-visualizer" — NOT
+    // necessarily a direct child of #signal-path-bar. The current layout wraps
+    // everything in ".signal-path-body", so insertBefore() must target the
+    // actual parent of the reference node or it throws NotFoundError.
+    const visualizer = signalPathBar?.querySelector(".signal-path-visualizer");
+    if (visualizer?.parentElement) {
+      visualizer.parentElement.insertBefore(tabBar, visualizer);
     } else if (signalPathBar) {
       signalPathBar.prepend(tabBar);
     }
   }
 
-  const presetIds = multiPresetMode ? [...(mixer?.activePresetIds ?? [])] : [activePreset.id];
-  if (multiPresetMode) {
-    presetIds.sort((leftId, rightId) => {
-      const leftName = uiState.presetCache.get(leftId)?.name ?? mixer?.presets[leftId]?.name ?? leftId;
-      const rightName = uiState.presetCache.get(rightId)?.name ?? mixer?.presets[rightId]?.name ?? rightId;
-      const nameComparison = mixerPresetTabCollator.compare(leftName, rightName);
-      if (nameComparison !== 0) {
-        return nameComparison;
-      }
-      return mixerPresetTabCollator.compare(leftId, rightId);
-    });
-  }
-  const focusedId = multiPresetMode ? (uiState.focusedMixerPresetId ?? presetIds[0]) : activePreset.id;
+  const presetIds = [...mixer.activePresetIds];
+  // Determine the focused tab: prefer the explicitly focused slot, then the
+  // currently active preset if it's in the mixer, then the first slot.
+  const focusedId = (uiState.focusedMixerPresetId && presetIds.includes(uiState.focusedMixerPresetId))
+    ? uiState.focusedMixerPresetId
+    : (uiState.activePresetId && presetIds.includes(uiState.activePresetId))
+      ? uiState.activePresetId
+      : presetIds[0];
 
   const presetTabsHtml = presetIds.map((id) => {
     const name = uiState.presetCache.get(id)?.name ?? mixer?.presets[id]?.name ?? id;
@@ -6545,15 +6644,11 @@ function renderMixerPresetTabs(): void {
       muted ? `<span class="tab-indicator muted" title="Muted">M</span>` : "",
       soloed ? `<span class="tab-indicator soloed" title="Solo">S</span>` : "",
     ].join("");
-    const closeBtn = multiPresetMode
-      ? `<span class="mixer-tab-close" data-close-preset-id="${escapeHtml(id)}" title="Remove from mixer" role="button" aria-label="Remove ${escapeHtml(name)}">×</span>`
-      : "";
+    const closeBtn = `<span class="mixer-tab-close" data-close-preset-id="${escapeHtml(id)}" title="Remove from mixer" role="button" aria-label="Remove ${escapeHtml(name)}">×</span>`;
     return `<button class="mixer-preset-tab${active ? " active" : ""}" data-preset-id="${escapeHtml(id)}" type="button">${escapeHtml(name)}${indicators}${closeBtn}</button>`;
   }).join("");
 
-  const mixTabHtml = multiPresetMode
-    ? `<button class="mixer-preset-tab mixer-tab-mix${mixTabActive ? " active" : ""}" data-mix-tab="1" type="button">⚖ Mix</button>`
-    : "";
+  const mixTabHtml = `<button class="mixer-preset-tab mixer-tab-mix${mixTabActive ? " active" : ""}" data-mix-tab="1" type="button">⚖ Mix</button>`;
 
   tabBar.innerHTML = `<div class="mixer-preset-tab-row">${presetTabsHtml}${mixTabHtml}</div>`;
 
@@ -6566,6 +6661,7 @@ function renderMixerPresetTabs(): void {
         mixTabActive = false;
         uiState.activePresetId = pid;
         setFocusedMixerPresetId(pid);
+        focusMixerPreset(pid);
         document.dispatchEvent(new CustomEvent("mixerPresetTabSelected", {
           detail: { presetId: pid },
         }));
@@ -6588,6 +6684,10 @@ function renderMixerPresetTabs(): void {
       if (uiState.focusedMixerPresetId === pid) {
         uiState.focusedMixerPresetId = uiState.mixer?.activePresetIds[0] ?? null;
       }
+      // The mixer's membership no longer matches whatever Multi-Rig preset it
+      // was loaded from/saved as, if any — a subsequent Save should create a
+      // new one rather than silently overwrite the old one.
+      uiState.activeCompositePresetId = null;
       // Update any "✓ In Mixer" button in the preset list for this preset
       document.querySelectorAll<HTMLButtonElement>(`.preset-add-to-mixer-btn[data-preset-id="${CSS.escape(pid)}"]`).forEach((btn) => {
         btn.textContent = "+ Mixer";
@@ -6614,6 +6714,7 @@ function getEditableSignalPathPreset(sourcePreset: Preset): Preset {
   const draft = clonePreset(sourcePreset);
   uiState.activePresetId = sourcePreset.id;
   setFocusedMixerPresetId(sourcePreset.id);
+  focusMixerPreset(sourcePreset.id);
   uiState.activePresetSceneId = normalizePresetScenes(draft, uiState.activePresetSceneId ?? undefined);
   setActivePresetDraft(draft);
   return uiState.activePresetDraft ?? draft;
@@ -6632,22 +6733,58 @@ function pushScenePresetToBackend(preset: Preset): void {
   });
 }
 
+/** Matches the L/C/R pan convention used by node-param knobs elsewhere in the app. */
+function formatMixerPanValue(value: number): string {
+  if (Math.abs(value) < 0.01) return "C";
+  return value < 0 ? `L${Math.abs(value * 100).toFixed(0)}` : `R${(value * 100).toFixed(0)}`;
+}
+
+function formatMixerPercentValue(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
 function buildInlineMixerHtml(): string {
   const mixer = uiState.mixer;
   if (!mixer || !mixer.activePresetIds.length) return "";
 
-  const strips = mixer.activePresetIds.map((id) => {
+  const presetIds = [...mixer.activePresetIds].sort((leftId, rightId) => {
+    const leftName = uiState.presetCache.get(leftId)?.name ?? mixer.presets[leftId]?.name ?? leftId;
+    const rightName = uiState.presetCache.get(rightId)?.name ?? mixer.presets[rightId]?.name ?? rightId;
+    const nameComparison = mixerPresetTabCollator.compare(leftName, rightName);
+    if (nameComparison !== 0) {
+      return nameComparison;
+    }
+    return mixerPresetTabCollator.compare(leftId, rightId);
+  });
+
+  const strips = presetIds.map((id) => {
     const name = uiState.presetCache.get(id)?.name ?? mixer.presets[id]?.name ?? id;
     const ps = mixer.presets[id] ?? { id, mix: 1.0, pan: 0.0, mute: false, solo: false };
     return `
       <div class="iml-strip" data-preset-id="${escapeHtml(id)}" style="--accent:${idAccentColor(id)}">
-        <div class="iml-strip-name">${escapeHtml(name)}</div>
-        <div class="iml-strip-controls">
-          <label class="iml-label">Mix<input type="range" class="iml-mix" min="0" max="1" step="0.01" value="${ps.mix}"/></label>
-          <label class="iml-label">Pan<input type="range" class="iml-pan" min="-1" max="1" step="0.01" value="${ps.pan}"/></label>
+        <div class="iml-strip-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+        <div class="iml-strip-row">
+          <div class="iml-knobs">
+            <div class="knob-control iml-knob">
+              <span class="knob-label">Mix</span>
+              <div class="knob iml-mix-knob" data-value="${ps.mix}"><div class="knob-indicator"></div></div>
+              <span class="knob-value">${formatMixerPercentValue(ps.mix)}</span>
+            </div>
+            <div class="knob-control iml-knob">
+              <span class="knob-label">Pan</span>
+              <div class="knob iml-pan-knob" data-value="${ps.pan}"><div class="knob-indicator"></div></div>
+              <span class="knob-value">${formatMixerPanValue(ps.pan)}</span>
+            </div>
+          </div>
           <div class="iml-toggles">
-            <button type="button" class="iml-mute-btn${ps.mute ? " active" : ""}" title="Mute">M</button>
-            <button type="button" class="iml-solo-btn${ps.solo ? " active" : ""}" title="Solo">S</button>
+            <div class="toggle-control mini-toggle-control iml-mute-toggle">
+              <span class="toggle-label">Mute</span>
+              <label class="toggle-switch"><input type="checkbox" class="iml-mute"${ps.mute ? " checked" : ""}/><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-control mini-toggle-control iml-solo-toggle">
+              <span class="toggle-label">Solo</span>
+              <label class="toggle-switch"><input type="checkbox" class="iml-solo"${ps.solo ? " checked" : ""}/><span class="toggle-slider"></span></label>
+            </div>
           </div>
         </div>
       </div>`;
@@ -6656,9 +6793,26 @@ function buildInlineMixerHtml(): string {
   return `
     <div class="iml-strips">${strips}</div>
     <div class="iml-master">
-      <label class="iml-label">Master Gain<input type="range" id="iml-master-gain" min="0" max="2" step="0.01" value="${mixer.masterGain}"/></label>
-      <label class="iml-toggle"><input type="checkbox" id="iml-limiter" ${mixer.limiterEnabled ? "checked" : ""}/> Limiter</label>
-      <button type="button" id="iml-save-multi-rig" class="secondary-btn iml-save-multi-rig-btn" title="Save current mixer as a Multi-Rig preset">Save Multi-Rig…</button>
+      <div class="iml-strip-name">Master</div>
+      <div class="iml-strip-row">
+        <div class="iml-knobs">
+          <div class="knob-control iml-knob">
+            <span class="knob-label">Gain</span>
+            <div class="knob" id="iml-master-gain-knob" data-value="${mixer.masterGain}"><div class="knob-indicator"></div></div>
+            <span class="knob-value">${formatMixerPercentValue(mixer.masterGain)}</span>
+          </div>
+        </div>
+        <div class="iml-toggles">
+          <div class="toggle-control mini-toggle-control">
+            <span class="toggle-label">Limiter</span>
+            <label class="toggle-switch"><input type="checkbox" id="iml-limiter"${mixer.limiterEnabled ? " checked" : ""}/><span class="toggle-slider"></span></label>
+          </div>
+          <div class="iml-toolbar">
+            <button type="button" id="iml-save-multi-rig" class="btn btn-secondary btn-sm iml-toolbar-btn" title="Save current mixer as a Multi-Rig preset">Save</button>
+            <button type="button" id="iml-delete-multi-rig" class="btn btn-secondary btn-sm iml-toolbar-btn"${uiState.activeCompositePresetId ? "" : " disabled"} title="Delete this Multi-Rig preset">Delete</button>
+          </div>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -6671,8 +6825,10 @@ function renderInlineMixer(): void {
     panel.id = "inline-mixer-panel";
     panel.className = "inline-mixer-panel";
     // Place mixer where the scroll area sits (above the resize handle).
-    if (signalPathBar && resizeHandle) {
-      signalPathBar.insertBefore(panel, resizeHandle);
+    // resizeHandle lives inside ".signal-path-body", not directly inside
+    // #signal-path-bar, so insertBefore() must target its real parent.
+    if (resizeHandle?.parentElement) {
+      resizeHandle.parentElement.insertBefore(panel, resizeHandle);
     } else {
       signalPathBar?.appendChild(panel);
     }
@@ -6685,54 +6841,78 @@ function removeInlineMixer(): void {
   document.getElementById("inline-mixer-panel")?.remove();
 }
 
+/** Drag sensitivity matching the convention used for node-param knobs: full range over ~200px. */
+function knobSensitivity(minValue: number, maxValue: number): number {
+  return (maxValue - minValue) / 200;
+}
+
 function bindInlineMixerControls(panel: HTMLElement): void {
   panel.querySelectorAll<HTMLElement>(".iml-strip").forEach((strip) => {
     const pid = strip.dataset.presetId ?? "";
     if (!pid) return;
 
-    const mixInput = strip.querySelector<HTMLInputElement>(".iml-mix");
-    if (mixInput) {
-      enhanceRangeInput(mixInput);
-      mixInput.addEventListener("input", (e) => {
-        const v = parseFloat((e.target as HTMLInputElement).value);
-        setPresetMix(pid, isFinite(v) ? v : 1.0);
+    const mixKnob = strip.querySelector<HTMLElement>(".iml-mix-knob");
+    if (mixKnob) {
+      new GenericKnob({
+        knobElement: mixKnob,
+        paramId: `mixer_${pid}_mix`,
+        minValue: 0,
+        maxValue: 1,
+        defaultValue: 1,
+        displayFormat: formatMixerPercentValue,
+        valueDisplay: mixKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+        sensitivity: knobSensitivity(0, 1),
+        sendParameter: false,
+        onValueChange: (v) => setPresetMix(pid, v),
       });
     }
 
-    const panInput = strip.querySelector<HTMLInputElement>(".iml-pan");
-    if (panInput) {
-      enhanceRangeInput(panInput);
-      panInput.addEventListener("input", (e) => {
-        const v = parseFloat((e.target as HTMLInputElement).value);
-        setPresetPan(pid, isFinite(v) ? v : 0.0);
+    const panKnob = strip.querySelector<HTMLElement>(".iml-pan-knob");
+    if (panKnob) {
+      new GenericKnob({
+        knobElement: panKnob,
+        paramId: `mixer_${pid}_pan`,
+        minValue: -1,
+        maxValue: 1,
+        defaultValue: 0,
+        displayFormat: formatMixerPanValue,
+        valueDisplay: panKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+        sensitivity: knobSensitivity(-1, 1),
+        sendParameter: false,
+        onValueChange: (v) => setPresetPan(pid, v),
       });
     }
 
-    const muteBtn = strip.querySelector<HTMLButtonElement>(".iml-mute-btn");
-    muteBtn?.addEventListener("click", () => {
-      const nowMuted = !muteBtn.classList.contains("active");
+    const muteToggle = strip.querySelector<HTMLInputElement>(".iml-mute");
+    muteToggle?.addEventListener("change", () => {
+      const nowMuted = muteToggle.checked;
       setPresetMute(pid, nowMuted);
-      muteBtn.classList.toggle("active", nowMuted);
       if (uiState.mixer?.presets[pid]) uiState.mixer.presets[pid].mute = nowMuted;
       renderMixerPresetTabs(); // refresh M/S indicators in tabs
     });
 
-    const soloBtn = strip.querySelector<HTMLButtonElement>(".iml-solo-btn");
-    soloBtn?.addEventListener("click", () => {
-      const nowSolo = !soloBtn.classList.contains("active");
+    const soloToggle = strip.querySelector<HTMLInputElement>(".iml-solo");
+    soloToggle?.addEventListener("change", () => {
+      const nowSolo = soloToggle.checked;
       setPresetSolo(pid, nowSolo);
-      soloBtn.classList.toggle("active", nowSolo);
       if (uiState.mixer?.presets[pid]) uiState.mixer.presets[pid].solo = nowSolo;
       renderMixerPresetTabs();
     });
   });
 
-  const masterGainInput = panel.querySelector<HTMLInputElement>("#iml-master-gain");
-  if (masterGainInput) {
-    enhanceRangeInput(masterGainInput);
-    masterGainInput.addEventListener("input", (e) => {
-      const v = parseFloat((e.target as HTMLInputElement).value);
-      setMasterGain(isFinite(v) ? v : 1.0);
+  const masterGainKnob = panel.querySelector<HTMLElement>("#iml-master-gain-knob");
+  if (masterGainKnob) {
+    new GenericKnob({
+      knobElement: masterGainKnob,
+      paramId: "mixer_master_gain",
+      minValue: 0,
+      maxValue: 2,
+      defaultValue: 1,
+      displayFormat: formatMixerPercentValue,
+      valueDisplay: masterGainKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+      sensitivity: knobSensitivity(0, 2),
+      sendParameter: false,
+      onValueChange: (v) => setMasterGain(v),
     });
   }
 
@@ -6742,6 +6922,10 @@ function bindInlineMixerControls(panel: HTMLElement): void {
 
   panel.querySelector<HTMLButtonElement>("#iml-save-multi-rig")?.addEventListener("click", () => {
     document.dispatchEvent(new CustomEvent("mixerSaveMultiRig"));
+  });
+
+  panel.querySelector<HTMLButtonElement>("#iml-delete-multi-rig")?.addEventListener("click", () => {
+    document.dispatchEvent(new CustomEvent("mixerDeleteMultiRig"));
   });
 }
 
