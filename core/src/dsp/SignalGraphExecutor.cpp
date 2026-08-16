@@ -621,6 +621,16 @@ namespace guitarfx
     }
   }
 
+  bool SignalGraphExecutor::AnyNodeRequiresMainThreadLoad() const
+  {
+    for (const auto &entry : mNodeStates)
+    {
+      if (entry.second.processor && entry.second.processor->RequiresMainThreadLoad())
+        return true;
+    }
+    return false;
+  }
+
   std::vector<std::string> SignalGraphExecutor::GetNodeTypes() const
   {
     std::vector<std::string> types;
@@ -646,12 +656,43 @@ namespace guitarfx
 
     AllocateBuffers(maxBlockSize);
 
+    // Node Prepare() is a large share of preset-switch latency — NAM prewarm and IR
+    // partition building both land here — and nodes are independent at this point, so it
+    // is dispatched the same way resource loading is in CreateProcessors(). Effects that
+    // require the main thread (plugin hosts marshalling through JUCE's MessageManager)
+    // stay on the calling thread; everything else runs concurrently.
+    std::vector<EffectProcessor *> mainThreadPrepare;
+    std::vector<EffectProcessor *> parallelPrepare;
     for (auto &[id, state] : mNodeStates)
     {
-      if (state.processor)
+      if (!state.processor)
+        continue;
+      if (state.processor->RequiresMainThreadLoad())
+        mainThreadPrepare.push_back(state.processor.get());
+      else
+        parallelPrepare.push_back(state.processor.get());
+    }
+
+    for (auto *processor : mainThreadPrepare)
+      processor->Prepare(sampleRate, maxBlockSize);
+
+    if (parallelPrepare.size() > 1)
+    {
+      std::vector<std::future<void>> futures;
+      futures.reserve(parallelPrepare.size());
+      for (auto *processor : parallelPrepare)
       {
-        state.processor->Prepare(sampleRate, maxBlockSize);
+        futures.push_back(std::async(std::launch::async, [processor, sampleRate, maxBlockSize]()
+        {
+          processor->Prepare(sampleRate, maxBlockSize);
+        }));
       }
+      for (auto &f : futures)
+        f.get();
+    }
+    else if (parallelPrepare.size() == 1)
+    {
+      parallelPrepare[0]->Prepare(sampleRate, maxBlockSize);
     }
 
     std::size_t maxLevelWidth = 0;

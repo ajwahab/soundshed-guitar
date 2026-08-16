@@ -490,6 +490,8 @@ set(GUITARFX_CORE_SOURCES
     src/dsp/IRTypes.h
     src/dsp/IRWavLoader.h
     src/dsp/NAMFactoryForce.cpp
+    src/dsp/NamModelCache.h
+    src/dsp/NamModelCache.cpp
 
     # SIMD optimizations
     src/dsp/simd/SimdMath.h

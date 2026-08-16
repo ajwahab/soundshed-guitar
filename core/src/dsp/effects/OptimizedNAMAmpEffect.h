@@ -13,6 +13,7 @@
 #include "dsp/LevelTargets.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "dsp/NamModelCache.h"
 #include "dsp/RealtimeParallel.h"
 #include "dsp/effects/NAMSampleRate.h"
 #include "dsp/effects/NAMSlimmableSettings.h"
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstdint>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -142,6 +144,7 @@ public:
   {
     mSampleRate = sampleRate;
     mMaxBlockSize = maxBlockSize;
+    mPrepared = true;
 
     mInputBufferL.resize(static_cast<size_t>(maxBlockSize));
     mInputBufferR.resize(static_cast<size_t>(maxBlockSize));
@@ -549,8 +552,11 @@ private:
         return false;
       }
 
-      auto modelLeft = ::nam::get_dsp(resourcePath);
-      auto modelRight = ::nam::get_dsp(resourcePath);
+      // Both channels run their own model instance, but the parse behind them is shared:
+      // the cache turns the second construction into a struct copy instead of a second
+      // file read and JSON parse. See dsp/NamModelCache.h.
+      auto modelLeft = nammodelcache::GetModel(resourcePath);
+      auto modelRight = nammodelcache::GetModel(resourcePath);
       if (!modelLeft || !modelRight)
       {
         std::cerr << "[OptimizedNAMAmpEffect] ERROR: Failed to parse NAM model file: " << resourcePath << "\n";
@@ -563,6 +569,7 @@ private:
       mModelLeft = std::move(modelLeft);
       mModelRight = std::move(modelRight);
       mModelPath = resourcePath;
+      mModelsNeedReset = true; // Fresh model objects; the next configure must reset them.
       ConfigureModelProcessing();
 
       mModelInputLevel = mModelLeft->HasInputLevel()
@@ -592,6 +599,12 @@ private:
   bool mResamplingActive = false;
   double mModelSampleRate = 44100.0;
   int mMaxModelBlockSize = 512;
+
+  // Model prewarm bookkeeping — see ResetModelsIfNeeded().
+  bool mPrepared = false;
+  bool mModelsNeedReset = false;
+  double mResetModelSampleRate = 0.0;
+  int mResetModelBlockSize = 0;
 
   // Host-domain buffers (NAM_SAMPLE). Input holds post-input-gain signal;
   // output holds model output. When no resampling is needed the model
@@ -744,10 +757,53 @@ private:
     mPostDcBlocker[0].SetHighPass(kNamPostDcBlockerFrequencyHz, kNamPostDcBlockerQ, mSampleRate);
     mPostDcBlocker[1].SetHighPass(kNamPostDcBlockerFrequencyHz, kNamPostDcBlockerQ, mSampleRate);
 
-    if (mModelLeft)
+    ResetModelsIfNeeded();
+  }
+
+  /// nam::DSP::Reset() prewarms the model to settle its initial conditions, which costs
+  /// several milliseconds per model and so lands twice per channel on every preset switch:
+  /// once when the resource loads and again from Prepare(). Both are avoidable.
+  ///
+  /// Before Prepare() the effect does not yet know the real sample rate, so a reset then
+  /// would be undone by the reset Prepare() forces anyway — skip it and let Prepare() do
+  /// the single authoritative pass. After Prepare(), a reset only runs when the resolved
+  /// model rate or block size actually changed, or when the model objects were replaced.
+  void ResetModelsIfNeeded()
+  {
+    if (!mPrepared)
+      return;
+
+    if (!mModelsNeedReset
+        && mResetModelSampleRate == mModelSampleRate
+        && mResetModelBlockSize == mMaxModelBlockSize)
+    {
+      return;
+    }
+
+    // The two channel models are independent objects, and prewarm is the single most
+    // expensive step left in a preset switch, so run them concurrently. Always off the
+    // audio thread: Prepare() is only ever called from the build/message thread.
+    if (mModelLeft && mModelRight)
+    {
+      auto right = std::async(std::launch::async, [this]()
+      {
+        mModelRight->Reset(mModelSampleRate, mMaxModelBlockSize);
+      });
       mModelLeft->Reset(mModelSampleRate, mMaxModelBlockSize);
-    if (mModelRight)
+      right.get();
+    }
+    else if (mModelLeft)
+    {
+      mModelLeft->Reset(mModelSampleRate, mMaxModelBlockSize);
+    }
+    else if (mModelRight)
+    {
       mModelRight->Reset(mModelSampleRate, mMaxModelBlockSize);
+    }
+
+    mResetModelSampleRate = mModelSampleRate;
+    mResetModelBlockSize = mMaxModelBlockSize;
+    mModelsNeedReset = false;
   }
 
   [[nodiscard]] int GetModelFrameCount(int numSamples) const

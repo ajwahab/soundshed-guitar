@@ -1,6 +1,6 @@
 # Gapless Preset & Scene Switching
 
-Status: **Phase 1 implemented**; Phases 2–5 proposed. Covers crossfaded preset switching,
+Status: **Phases 1–2 implemented**; Phases 3–5 proposed. Covers crossfaded preset switching,
 optional delay/reverb tail preservation, and the resource-loading work needed to make
 instance construction fast enough that switching is perceptually instant.
 
@@ -321,10 +321,70 @@ Covered by `core/tests/GaplessSwitchingTests.cpp`: crossfade continuity, retirin
 hidden from queries, unchanged-config rebuild skip, in-place replace preserving other slots,
 and rapid switching staying bounded and finite.
 
-**Phase 2 — resource caches**
-5. NAM `dspData` cache; drop the double parse; stereo-aware right-model construction.
-6. IR partitioned-impulse cache and `SetImpulseShared()`.
-7. Preset JSON cache. Benchmark cold vs warm build for a representative preset.
+**Phase 2 — build cost** — **DONE**. See "Measured build cost" below for the numbers.
+
+5. ✅ NAM `dspData` cache (`core/src/dsp/NamModelCache.h/.cpp`), keyed by canonical path +
+   size + mtime, LRU against a byte budget. Both NAM amp effects go through it, so the
+   second per-node model construction is a struct copy rather than a second file parse.
+   Stereo-aware right-model construction turned out to be unnecessary: with the cache the
+   second construction costs ~0.1 ms, so the only thing worth avoiding was its prewarm.
+6. ✅ Redundant model prewarm removed. `nam::DSP::Reset()` prewarms, and it ran twice per
+   channel per switch: once from `LoadModelResource()` and again from `Prepare()`. The
+   load-time pass is skipped entirely (the effect does not know the real sample rate yet,
+   so `Prepare()` would redo it), and `Prepare()` re-prewarms only when the resolved model
+   rate or block size actually changed. Safe because `SignalGraphExecutor::Process()`
+   refuses to run unless prepared, and `SetGraph()` re-prepares when already prepared.
+7. ✅ Node `Prepare()` parallelised across the graph in `SignalGraphExecutor::Prepare()`,
+   mirroring the existing dispatch in `CreateProcessors()` (main-thread-required effects
+   stay serial). The remaining left/right model prewarm inside `OptimizedNAMAmpEffect`
+   runs the two channels concurrently, since a single-amp preset is the common case.
+8. ✅ `CompositeEffectProcessor` now reports `RequiresMainThreadLoad()` by asking its inner
+   graph (`SignalGraphExecutor::AnyNodeRequiresMainThreadLoad()`). Without this a composite
+   wrapping a plugin host looked thread-safe to the parent and would have been dispatched
+   to a worker by the new parallel `Prepare()` — the exact deadlock the main-thread
+   carve-out exists to prevent. Also closes the same gap on the pre-existing load path.
+
+Deferred from Phase 2, on measurement:
+
+- **IR partition cache / `SetImpulseShared()`** — measured at 0.33-0.89 ms per `SetImpulse()`,
+  and IR loading already overlaps NAM loading on the parallel dispatch, so it is currently
+  hidden entirely. Not worth the shared-ownership complexity until NAM prewarm stops
+  dominating.
+- **Preset JSON cache** — not yet measured as significant next to the ~4.5 ms prewarm floor.
+
+### Measured build cost
+
+`core/tests/ResourceLoadBenchmark.cpp` (labelled `benchmark`, excluded from default runs)
+reports these. Rig: `input -> NAM(411 KB) -> IR cab -> delay -> reverb -> output`, 48 kHz,
+512-sample blocks, Release, warm OS file cache.
+
+| | Before Phase 2 | After Phase 2 |
+|---|---|---|
+| `SetGraph` (create + load resources) | 21.6 ms | 4.3 ms |
+| ↳ NAM node alone | 22.4 ms | 1.3 ms |
+| `Prepare` (prewarm + buffers) | 9.2 ms | 6.6 ms |
+| **Total switch latency** | **32.0 ms** | **11.4 ms** |
+
+Where the original 32 ms went, and what happened to it:
+
+| Cost | Before | After | Fix |
+|---|---|---|---|
+| `get_dsp(path)` × 2 (file read + JSON parse) | 11.3 ms | 0.15 ms | dspData cache |
+| Prewarm × 2 at load time | 9.6 ms | 0 ms | skipped; `Prepare()` owns it |
+| Prewarm × 2 in `Prepare()` | 9.6 ms | ~4.5 ms | run concurrently |
+| IR decode + partition | ~1.5 ms | hidden | already parallel with NAM |
+
+Answers to two open questions in this document:
+
+- **`nam::DSP` prewarm cost** (risk 2) is ~4.2-4.8 ms per model and is *not* part of
+  `get_dsp()` — `DspLoadOptions::prewarm` made no measurable difference, because the
+  prewarm happens on `Reset()`. It is now the floor on a cold switch.
+- The dspData cache does **not** need to key on slimmable size:
+  `ApplyGlobalNamSlimmableSize()` is applied to the constructed model, not to `dspData`.
+
+**Phase 2b — beating the prewarm floor.** ~4.5 ms of unavoidable per-model prewarm now
+dominates a cold switch. Only speculative prebuild (Phase 5) removes it from the critical
+path, which raises its priority relative to Phase 3.
 
 **Phase 3 — instance lifecycle and crossfade**
 8. Per-instance `inputGain`/`outputGain` ramps and `phase`; command ring + reaper; lock-free install.

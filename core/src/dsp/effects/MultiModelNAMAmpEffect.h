@@ -14,6 +14,7 @@
 #include "dsp/LevelTargets.h"
 #include "dsp/EffectRegistry.h"
 #include "dsp/EffectGuids.h"
+#include "dsp/NamModelCache.h"
 #include "dsp/RealtimeParallel.h"
 #include "dsp/effects/NAMSampleRate.h"
 #include "dsp/effects/NAMSlimmableSettings.h"
@@ -487,8 +488,9 @@ private:
   {
     try
     {
-      instance.fallbackLeft = ::nam::get_dsp(instance.path);
-      instance.fallbackRight = ::nam::get_dsp(instance.path);
+      // Shared parse behind two per-channel model instances. See dsp/NamModelCache.h.
+      instance.fallbackLeft = nammodelcache::GetModel(instance.path);
+      instance.fallbackRight = nammodelcache::GetModel(instance.path);
       if (instance.fallbackLeft && instance.fallbackRight)
       {
         ApplyGlobalNamSlimmableSize(instance.fallbackLeft.get());

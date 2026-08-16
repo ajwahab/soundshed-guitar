@@ -51,6 +51,14 @@ namespace guitarfx
     [[nodiscard]] bool RequiresResource() const override { return false; }
     [[nodiscard]] bool HasResource() const override { return true; }
 
+    // A composite is only as thread-safe to load and prepare as the graph it wraps: if it
+    // contains a plugin host, the parent must keep it on the main thread rather than
+    // dispatching it to a worker.
+    [[nodiscard]] bool RequiresMainThreadLoad() const noexcept override
+    {
+      return mInnerExecutor.AnyNodeRequiresMainThreadLoad();
+    }
+
     /// Set the resource library for inner resource resolution.
     void SetResourceLibrary(ResourceLibrary *library);
 

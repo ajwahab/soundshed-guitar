@@ -11,6 +11,7 @@ set(TEST_SOURCES
     IRConvolutionTests.cpp
     MultiPresetMixerTests.cpp
     NamCalibrationProbe.cpp
+    NamModelCacheTests.cpp
     NAMPerformanceBenchmark.cpp
     PresetDSPLoadingTests.cpp
     PresetManagementWorkflowTests.cpp
@@ -18,6 +19,7 @@ set(TEST_SOURCES
     ResourceLibraryDeleteWorkflowTests.cpp
     ResourcePreviewWorkflowTests.cpp
     RealtimeConvolverTests.cpp
+    ResourceLoadBenchmark.cpp
     SampleRateConverterTests.cpp
     SignalChainMutationStressTest.cpp
     SignalChainThreadingBenchmark.cpp
@@ -107,7 +109,7 @@ foreach(test_source IN LISTS TEST_SOURCES)
     add_test(NAME ${test_name} COMMAND ${test_name})
 
     # Label slow benchmarks so they are excluded from default test runs
-    if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest" OR test_name STREQUAL "TransposeBenchmark")
+    if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest" OR test_name STREQUAL "TransposeBenchmark" OR test_name STREQUAL "ResourceLoadBenchmark")
         set_tests_properties(${test_name} PROPERTIES LABELS "benchmark")
     endif()
 endforeach()
