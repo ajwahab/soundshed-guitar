@@ -47,6 +47,7 @@
 - From core/build (Debug only):
 	powershell: ctest -C Debug --output-on-failure
 - Key suites are defined in core/tests/CMakeLists.txt; common targets include PresetDSPLoadingTests, PresetManagementWorkflowTests, ResourcePreviewWorkflowTests, and SignalGraphExecutorTests.
+- For UI-facing changes, a clean build/typecheck is not sufficient proof of correctness — layout/DOM regressions (e.g. insertBefore() against a node that moved parent) throw at runtime with no compile error. Verify against the live, backend-connected app: launch the Standalone build with WebView2's remote-debugging port and drive it via Chrome DevTools Protocol (browser-automation tools cannot see this native window). See tools/agent-ui-debug/README.md and docs/agent-quickstart.md ("Live UI Testing").
 
 ## Coding Conventions
 - Namespace guitarfx::; require C++20.
@@ -78,6 +79,7 @@
 - Assumptions stated and confirmed where needed.
 - Error paths covered; log actionable messages.
 - Build or relevant tests executed (note which ones). For UI changes, run npm build.
+- For UI-facing changes, verified in the live running app (see Testing → live UI verification), not just typecheck/build.
 - Backward compatibility considered for presets, resources, and UI messages.
 - Docs or comments updated when behavior changes.
 

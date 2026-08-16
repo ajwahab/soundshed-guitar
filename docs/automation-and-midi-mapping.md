@@ -287,6 +287,8 @@ Standalone: JUCE's `AudioDeviceManager` (already used via `juce_showStandaloneAu
 
 Each slot row has a "Learn" button. When armed, the next matching MIDI event becomes that slot's `MidiControlMap`. The engine forwards the raw event to the UI as `midiLearnCapture {slotId, eventType, channel, controller}` so the UI can show the captured values and let the user confirm/cancel.
 
+`channel` is 0-based everywhere in the engine, storage, and messaging (0-15, or -1 for "any"), matching the MIDI status byte. The UI displays it 1-based (1-16, or "any") — the convention users see on hardware — via `formatMidiChannel()` in `core/ui/ts/automationPanel.ts`. Keep the conversion at the display boundary only.
+
 ## 5b. Keyboard Handling
 
 Keyboard input arrives at the WebView as DOM `KeyboardEvent`s — it never enters the audio thread or the JUCE `MidiBuffer`. The keyboard mapping layer is therefore **UI-resident**: a document-level `keydown` listener (capture phase, mirroring the existing pattern in `core/ui/ts/signalPath.ts:1530`) intercepts keys and sends `setAutomationValue` messages to the engine, which reconciles them as UI-source writes (see §6).

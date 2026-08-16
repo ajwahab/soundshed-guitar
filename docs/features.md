@@ -281,6 +281,8 @@ Integration with the Tone3000 cloud amp model library.
 - **Import**: Download individual NAM models or IR files into the local resource library.
 - **Blend creation**: Import multiple models from a single tone entry and combine into a blend definition.
 - **Content shown**: Title, description, tags, image, gear info, download count.
+- **Capture artwork**: The tone image is stored as `imageUrl` in the imported resource's metadata and shown in the effect visualisation panel in place of the generic category artwork. Resources imported before this was recorded are backfilled opportunistically whenever a tone listing is fetched; the stock image is used if the remote image cannot be loaded.
+- **Next/previous over a result set**: Selecting a model from the Tone3000 tab hands that result set to the node's next/previous resource controls (`core/ui/ts/tone3000Navigation.ts`). They then walk the search results model by model, tone by tone, in result order and wrapping at the ends. Each tone's model list is fetched, and the model itself downloaded and imported, only when navigation reaches it; anything already in the library is reused rather than re-downloaded. Browsing the Library or Folder tab again hands navigation back to that list.
 - **External API**: `https://www.tone3000.com/api/v1`.
 
 ---

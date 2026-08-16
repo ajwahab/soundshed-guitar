@@ -59,3 +59,29 @@ If you only load a few files, use these:
 - Build JUCE standalone debug: cmake --build juce/builds --config Debug --target SoundshedGuitar_Standalone
 - UI build: cd core/ui && npm run build
 - Tests (Debug): cd core/build && ctest -C Debug --output-on-failure
+
+## Live UI Testing (Computer-Use Debugging)
+
+Static code review misses regressions that only show up at runtime — e.g. a DOM
+`insertBefore()` against a node that moved to a different parent during a layout
+rework, which throws and silently kills the rest of that render pass with no
+compile error. Before declaring a UI-facing fix (especially in `core/ui/ts/signalPath.ts`,
+mixer/tab rendering, or anything touching layout structure) actually done, run it.
+
+The app's UI is WebView2 (Chromium) — a **different surface** from a normal browser
+tab. Browser-automation/"computer use" tools cannot see or click this native window.
+Instead, launch the Standalone build with WebView2's remote-debugging port enabled
+and drive the *live, backend-connected* UI via Chrome DevTools Protocol:
+
+```bash
+cmake --build juce/builds --config Release --target SoundshedGuitar_Standalone --parallel
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9333" \
+  "juce/builds/SoundshedGuitar_artefacts/Release/Standalone/Soundshed Guitar.exe" &
+curl -s http://127.0.0.1:9333/json/list   # -> webSocketDebuggerUrl
+node tools/agent-ui-debug/cdp-tool.mjs "$WS" --eval "<js>" --screenshot out.png
+```
+
+Full workflow, gotchas, and how to verify backend-truth (not just optimistic
+client UI state) via the in-app debug-state snapshot: `tools/agent-ui-debug/README.md`.
+Always `taskkill //F //IM "Soundshed Guitar.exe"` and remove any test presets
+from `%APPDATA%\Soundshed Guitar\` when done — it's the real user profile.
