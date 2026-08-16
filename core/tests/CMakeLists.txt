@@ -7,6 +7,7 @@ set(TEST_SOURCES
     DefaultPresetIntegrityTests.cpp
     DSPPerformanceTests.cpp
     EffectProcessorTests.cpp
+    GaplessSwitchingTests.cpp
     IRConvolutionTests.cpp
     MultiPresetMixerTests.cpp
     NamCalibrationProbe.cpp

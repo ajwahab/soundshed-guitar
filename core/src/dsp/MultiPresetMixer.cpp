@@ -177,37 +177,87 @@ namespace guitarfx
   } // namespace
   bool MultiPresetMixer::AddActivePreset(const Preset &preset, const std::string &presetId, const std::string &name)
   {
-    // Avoid duplicate IDs
+    // Avoid duplicate IDs. Instances that are fading out after a swap do not count —
+    // their ID may legitimately match the one being added back.
     for (const auto &inst : mInstances)
     {
-      if (inst.cfg.id == presetId)
+      if (!inst->IsRetiring() && inst->cfg.id == presetId)
         return false;
     }
 
-    PresetInstance inst;
-    inst.cfg.id = presetId;
-    inst.cfg.name = name;
+    auto inst = std::make_unique<PresetInstance>();
+    inst->cfg.id = presetId;
+    inst->cfg.name = name;
 
     Preset normalizedPreset = preset;
     EnsurePresetBoundaryGainNodes(normalizedPreset);
 
-    inst.executor.SetResourceLibrary(mResourceLibrary);
-    inst.executor.SetGraph(normalizedPreset.graph);
-    inst.executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
-    inst.executor.SetNamInputModeMono(mMonoMode);
-    inst.complexityScore = EstimateGraphComplexityScore(inst.executor.GetNodeTypes());
+    inst->executor.SetResourceLibrary(mResourceLibrary);
+    inst->executor.SetGraph(normalizedPreset.graph);
+    inst->executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
+    inst->executor.SetNamInputModeMono(mMonoMode);
+    inst->complexityScore = EstimateGraphComplexityScore(inst->executor.GetNodeTypes());
 
     if (mPrepared)
     {
-      inst.executor.Prepare(mSampleRate, mMaxBlockSize);
-      AllocateInstanceBuffers(inst, mMaxBlockSize);
+      inst->executor.Prepare(mSampleRate, mMaxBlockSize);
+      AllocateInstanceBuffers(*inst, mMaxBlockSize);
     }
 
-    inst.outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
-    inst.outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
 
     mInstances.push_back(std::move(inst));
     return true;
+  }
+
+  float MultiPresetMixer::PresetInstance::CurrentFadeGain() const
+  {
+    if (phase == InstancePhase::Active || fadeTotalSamples <= 0)
+      return 1.0f;
+
+    const float fraction = static_cast<float>(fadeSamplesRemaining) / static_cast<float>(fadeTotalSamples);
+    return (phase == InstancePhase::FadingOut) ? fraction : (1.0f - fraction);
+  }
+
+  void MultiPresetMixer::PresetInstance::BeginFadeOut(int fadeSamples)
+  {
+    // Resume the ramp from the gain we are actually at, so a switch landing mid-fade-in
+    // continues smoothly downward instead of jumping to unity first.
+    const float gain = CurrentFadeGain();
+    phase = InstancePhase::FadingOut;
+    fadeTotalSamples = std::max(1, fadeSamples);
+    fadeSamplesRemaining = std::clamp(
+      static_cast<int>(std::lround(gain * static_cast<double>(fadeTotalSamples))),
+      0, fadeTotalSamples);
+  }
+
+  void MultiPresetMixer::PresetInstance::GetFadeGains(int numSamples, float &startGain, float &endGain) const
+  {
+    if (phase == InstancePhase::Active || fadeTotalSamples <= 0)
+    {
+      startGain = 1.0f;
+      endGain = 1.0f;
+      return;
+    }
+
+    const float total = static_cast<float>(fadeTotalSamples);
+    const int endRemaining = std::max(0, fadeSamplesRemaining - numSamples);
+    const float startFraction = static_cast<float>(fadeSamplesRemaining) / total;
+    const float endFraction = static_cast<float>(endRemaining) / total;
+
+    if (phase == InstancePhase::FadingOut)
+    {
+      // remaining/total: 1 -> 0
+      startGain = startFraction;
+      endGain = endFraction;
+    }
+    else
+    {
+      // 1 - remaining/total: 0 -> 1
+      startGain = 1.0f - startFraction;
+      endGain = 1.0f - endFraction;
+    }
   }
 
   MultiPresetMixer::MultiPresetMixer(MultiPresetMixer &&other) noexcept
@@ -222,6 +272,8 @@ namespace guitarfx
       return *this;
     }
 
+    // The reaper thread and its retire queue stay with the object that owns them (as do the
+    // parallel worker threads); only the DSP state moves.
     mResourceLibrary = other.mResourceLibrary;
     mInstances = std::move(other.mInstances);
     mSampleRate = other.mSampleRate;
@@ -289,8 +341,9 @@ namespace guitarfx
   {
     for (auto it = mInstances.begin(); it != mInstances.end(); ++it)
     {
-      if (it->cfg.id == presetId)
+      if (!(*it)->IsRetiring() && (*it)->cfg.id == presetId)
       {
+        RetireInstance(std::move(*it));
         mInstances.erase(it);
         break;
       }
@@ -303,79 +356,136 @@ namespace guitarfx
     // creation and resource loading (e.g. NAM model loading from disk) which can take
     // hundreds of milliseconds. The audio thread continues processing the current
     // instance in mInstances untouched while this runs.
-    PresetInstance inst;
-    inst.cfg.id = id;
-    inst.cfg.name = name;
+    auto inst = std::make_unique<PresetInstance>();
+    inst->cfg.id = id;
+    inst->cfg.name = name;
 
     Preset normalizedPreset = preset;
     EnsurePresetBoundaryGainNodes(normalizedPreset);
 
-    inst.executor.SetResourceLibrary(mResourceLibrary);
-    inst.executor.SetGraph(normalizedPreset.graph); // CreateProcessors + LoadResources here
-    inst.executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
-    inst.executor.SetNamInputModeMono(mMonoMode);
-    inst.complexityScore = EstimateGraphComplexityScore(inst.executor.GetNodeTypes());
+    inst->executor.SetResourceLibrary(mResourceLibrary);
+    inst->executor.SetGraph(normalizedPreset.graph); // CreateProcessors + LoadResources here
+    inst->executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
+    inst->executor.SetNamInputModeMono(mMonoMode);
+    inst->complexityScore = EstimateGraphComplexityScore(inst->executor.GetNodeTypes());
 
     if (mPrepared)
     {
-      inst.executor.Prepare(mSampleRate, mMaxBlockSize); // Effect Prepare() (NAM init, IR load) here
-      AllocateInstanceBuffers(inst, mMaxBlockSize);
+      inst->executor.Prepare(mSampleRate, mMaxBlockSize); // Effect Prepare() (NAM init, IR load) here
+      AllocateInstanceBuffers(*inst, mMaxBlockSize);
     }
 
-    inst.outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
-    inst.outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
 
     mPendingInstance = std::move(inst);
   }
 
   bool MultiPresetMixer::ReplaceActivePresetInPlace(const Preset &preset, const std::string &presetId, const std::string &name)
   {
-    PresetInstance *existing = FindInstance(presetId);
-    if (!existing)
+    auto existing = std::find_if(mInstances.begin(), mInstances.end(),
+      [&](const std::unique_ptr<PresetInstance> &candidate)
+      {
+        return !candidate->IsRetiring() && candidate->cfg.id == presetId;
+      });
+    if (existing == mInstances.end())
       return false;
 
     // Preserve this slot's mixer-level settings across the rebuild.
-    const InstanceConfig savedCfg = existing->cfg;
+    const InstanceConfig savedCfg = (*existing)->cfg;
 
-    PresetInstance inst;
-    inst.cfg = savedCfg;
-    inst.cfg.name = name;
+    auto inst = std::make_unique<PresetInstance>();
+    inst->cfg = savedCfg;
+    inst->cfg.name = name;
 
     Preset normalizedPreset = preset;
     EnsurePresetBoundaryGainNodes(normalizedPreset);
 
-    inst.executor.SetResourceLibrary(mResourceLibrary);
-    inst.executor.SetGraph(normalizedPreset.graph);
-    inst.executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
-    inst.executor.SetNamInputModeMono(mMonoMode);
-    inst.complexityScore = EstimateGraphComplexityScore(inst.executor.GetNodeTypes());
+    inst->executor.SetResourceLibrary(mResourceLibrary);
+    inst->executor.SetGraph(normalizedPreset.graph);
+    inst->executor.SetSignalDiagnosticsEnabled(mSignalDiagnosticsEnabled.load(std::memory_order_acquire));
+    inst->executor.SetNamInputModeMono(mMonoMode);
+    inst->complexityScore = EstimateGraphComplexityScore(inst->executor.GetNodeTypes());
 
     if (mPrepared)
     {
-      inst.executor.Prepare(mSampleRate, mMaxBlockSize);
-      AllocateInstanceBuffers(inst, mMaxBlockSize);
+      inst->executor.Prepare(mSampleRate, mMaxBlockSize);
+      AllocateInstanceBuffers(*inst, mMaxBlockSize);
     }
 
-    inst.outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
-    inst.outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outL.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
+    inst->outR.resize(static_cast<size_t>(mMaxBlockSize), 0.0f);
 
-    *existing = std::move(inst);
+    // Crossfade rather than cutting: leave the old slot in place, ramping down, and add
+    // the replacement alongside it ramping up. Lookups skip retiring instances, so the
+    // shared preset ID still resolves to the new slot from here on.
+    inst->phase = InstancePhase::FadingIn;
+    inst->fadeTotalSamples = kPresetFadeSamples;
+    inst->fadeSamplesRemaining = kPresetFadeSamples;
+
+    if ((*existing)->cfg.mute)
+    {
+      // Nothing to fade; retire it outright rather than running a silent chain.
+      RetireInstance(std::move(*existing));
+      *existing = std::move(inst);
+    }
+    else
+    {
+      auto &outgoing = **existing;
+      outgoing.BeginFadeOut(kPresetFadeSamples);
+      outgoing.cfg.solo = false;
+      mInstances.push_back(std::move(inst));
+    }
     return true;
   }
 
   void MultiPresetMixer::CommitPresetSwap()
   {
-    // Fast atomic swap: install the pre-built instance and clear the old one.
-    // Must be called while holding the DSP lock.
-    if (!mPendingInstance.has_value())
+    // Fast swap: install the pre-built instance and start fading the old ones out.
+    // Must be called while holding the DSP lock. Everything here is O(instances) pointer
+    // work — no allocation beyond the vector push, no resource loading, no destruction.
+    if (!mPendingInstance)
       return;
 
-    mInstances.clear();
-    mInstances.push_back(std::move(*mPendingInstance));
-    mPendingInstance.reset();
+    // Start (or continue) a fade-out on everything currently live. An instance already
+    // fading from an earlier switch keeps its remaining count so it carries on from where
+    // it is rather than jumping back to full gain.
+    for (auto it = mInstances.begin(); it != mInstances.end();)
+    {
+      auto &inst = **it;
 
-    // Schedule a brief output fade-in to mask the hard cut at the transition point.
-    mPresetFadeInRemaining.store(kPresetFadeInSamples, std::memory_order_release);
+      if (inst.cfg.mute)
+      {
+        // Contributes nothing to fade out; retire it outright.
+        RetireInstance(std::move(*it));
+        it = mInstances.erase(it);
+        continue;
+      }
+
+      if (!inst.IsRetiring())
+      {
+        inst.BeginFadeOut(kPresetFadeSamples);
+        // A retiring instance must not influence the live solo decision.
+        inst.cfg.solo = false;
+      }
+      ++it;
+    }
+
+    // Bound simultaneous fade-outs: rapid successive switches drop the oldest stragglers
+    // (nearest the end of their ramp, so quietest) rather than stacking a full chain's
+    // CPU cost per switch.
+    while (mInstances.size() > kMaxFadingOutInstances)
+    {
+      RetireInstance(std::move(mInstances.front()));
+      mInstances.erase(mInstances.begin());
+    }
+
+    mPendingInstance->phase = InstancePhase::FadingIn;
+    mPendingInstance->fadeTotalSamples = kPresetFadeSamples;
+    mPendingInstance->fadeSamplesRemaining = kPresetFadeSamples;
+
+    mInstances.push_back(std::move(mPendingInstance));
+    mPendingInstance.reset();
   }
 
   void MultiPresetMixer::SetPresetMix(const std::string &presetId, double value)
@@ -435,7 +545,7 @@ namespace guitarfx
   {
     for (auto &inst : mInstances)
     {
-      inst.executor.SetInputTrim(dB);
+      inst->executor.SetInputTrim(dB);
     }
   }
 
@@ -443,7 +553,7 @@ namespace guitarfx
   {
     for (auto &inst : mInstances)
     {
-      inst.executor.SetOutputTrim(dB);
+      inst->executor.SetOutputTrim(dB);
     }
   }
 
@@ -495,31 +605,128 @@ namespace guitarfx
   // Global Signal Chain Configuration
   // ==========================================================================
 
-  void MultiPresetMixer::SetGlobalChainConfig(const GlobalSignalChainConfig& config)
+  void MultiPresetMixer::NormalizeGlobalChainConfig(GlobalSignalChainConfig& config)
   {
-    mGlobalChainConfig = config;
-    if ((mGlobalChainConfig.preChainGraph.nodes.empty() && mGlobalChainConfig.preChainGraph.edges.empty())
-        || !GraphHasNodeType(mGlobalChainConfig.preChainGraph, EffectGuids::kDynamicsGate)
-        || !GraphHasNodeType(mGlobalChainConfig.preChainGraph, EffectGuids::kTranspose))
+    if ((config.preChainGraph.nodes.empty() && config.preChainGraph.edges.empty())
+        || !GraphHasNodeType(config.preChainGraph, EffectGuids::kDynamicsGate)
+        || !GraphHasNodeType(config.preChainGraph, EffectGuids::kTranspose))
     {
-      mGlobalChainConfig.preChainGraph = GlobalSignalChainConfig::BuildDefaultPreChainGraph();
+      config.preChainGraph = GlobalSignalChainConfig::BuildDefaultPreChainGraph();
     }
-    if ((mGlobalChainConfig.postChainGraph.nodes.empty() && mGlobalChainConfig.postChainGraph.edges.empty())
-        || !GraphHasNodeType(mGlobalChainConfig.postChainGraph, EffectGuids::kEqParametric)
-        || !GraphHasNodeType(mGlobalChainConfig.postChainGraph, EffectGuids::kDelayDoubler))
+    if ((config.postChainGraph.nodes.empty() && config.postChainGraph.edges.empty())
+        || !GraphHasNodeType(config.postChainGraph, EffectGuids::kEqParametric)
+        || !GraphHasNodeType(config.postChainGraph, EffectGuids::kDelayDoubler))
     {
-      mGlobalChainConfig.postChainGraph = GlobalSignalChainConfig::BuildDefaultPostChainGraph();
+      config.postChainGraph = GlobalSignalChainConfig::BuildDefaultPostChainGraph();
     }
-    mGlobalChainNeedsRebuild.store(true, std::memory_order_release);
+  }
 
-    // Apply input/output settings
+  void MultiPresetMixer::ApplyGlobalChainScalars(const GlobalSignalChainConfig& config)
+  {
     mAutoLevelInput = config.autoLevelInput;
     mAutoLevelOutput = config.autoLevelOutput;
     mMonoMode = mHostControlledInput ? false : config.monoMode;
     mInputChannel = config.inputChannel;
     mLimiterEnabled = config.limiterEnabled;
+    mMasterGain = std::pow(10.0, config.outputGain / 20.0);
+    mPreChainExecutor.SetInputTrim(config.inputGain);
+  }
+
+  void MultiPresetMixer::SetGlobalChainConfig(const GlobalSignalChainConfig& config)
+  {
+    GlobalSignalChainConfig normalized = config;
+    NormalizeGlobalChainConfig(normalized);
+
+    // Rebuilding tears down and recreates both global executors — construction, resource
+    // loading and allocation. Skip it entirely when the graphs are unchanged, which is the
+    // common case: global settings are per-instance state and do not come from presets, so
+    // most preset loads pass through a config identical to the one already running.
+    const bool graphsChanged = normalized.preChainGraph != mGlobalChainConfig.preChainGraph
+                            || normalized.postChainGraph != mGlobalChainConfig.postChainGraph;
+
+    mGlobalChainConfig = std::move(normalized);
+    ApplyGlobalChainScalars(mGlobalChainConfig);
+
+    if (graphsChanged)
+      mGlobalChainNeedsRebuild.store(true, std::memory_order_release);
 
     EnsureGlobalChainsUpToDate();
+  }
+
+  bool MultiPresetMixer::PrepareGlobalChainSwap(const GlobalSignalChainConfig& config)
+  {
+    GlobalSignalChainConfig normalized = config;
+    NormalizeGlobalChainConfig(normalized);
+
+    const bool graphsChanged = normalized.preChainGraph != mGlobalChainConfig.preChainGraph
+                            || normalized.postChainGraph != mGlobalChainConfig.postChainGraph;
+    const bool rebuildNeeded = mPrepared
+                            && (graphsChanged || mGlobalChainNeedsRebuild.load(std::memory_order_acquire));
+
+    mPendingPreChainExecutor.reset();
+    mPendingPostChainExecutor.reset();
+    mPendingGlobalChainConfig = normalized;
+
+    if (!rebuildNeeded)
+      return false;
+
+    // Expensive part: runs on the caller's thread with no DSP lock held.
+    const bool diagnostics = mSignalDiagnosticsEnabled.load(std::memory_order_acquire);
+
+    SignalGraphExecutor preChain;
+    preChain.SetResourceLibrary(mResourceLibrary);
+    preChain.SetGraph(normalized.preChainGraph);
+    preChain.SetInputTrim(normalized.inputGain);
+    preChain.SetSignalDiagnosticsEnabled(diagnostics);
+    preChain.Prepare(mSampleRate, mMaxBlockSize);
+
+    SignalGraphExecutor postChain;
+    postChain.SetResourceLibrary(mResourceLibrary);
+    postChain.SetGraph(normalized.postChainGraph);
+    postChain.SetSignalDiagnosticsEnabled(diagnostics);
+    postChain.Prepare(mSampleRate, mMaxBlockSize);
+
+    mPendingPreChainExecutor.emplace(std::move(preChain));
+    mPendingPostChainExecutor.emplace(std::move(postChain));
+    return true;
+  }
+
+  void MultiPresetMixer::CommitGlobalChainSwap()
+  {
+    if (!mPendingGlobalChainConfig.has_value())
+      return;
+
+    mGlobalChainConfig = std::move(*mPendingGlobalChainConfig);
+    mPendingGlobalChainConfig.reset();
+
+    if (mPendingPreChainExecutor.has_value() && mPendingPostChainExecutor.has_value())
+    {
+      // Hand the outgoing executors to the reaper rather than destroying them here: the
+      // audio thread try_locks the DSP mutex and outputs silence when it cannot take it,
+      // so freeing node state under that lock is an audible dropout.
+      //
+      // Residual: the move-assignment below stops any worker threads the outgoing executor
+      // owned, and SignalGraphExecutor's move does not transfer them, so that join happens
+      // under the caller's DSP lock. It is a wake-and-join of parked threads (bounded, tens
+      // of microseconds) and is zero for the linear default chains, which never start
+      // workers. Preset instances avoid this entirely by being held via unique_ptr.
+      {
+        std::lock_guard<std::mutex> lock(mRetireMutex);
+        mRetireExecutors.push_back(std::move(mPreChainExecutor));
+        mRetireExecutors.push_back(std::move(mPostChainExecutor));
+      }
+      mRetireCv.notify_one();
+
+      mPreChainExecutor = std::move(*mPendingPreChainExecutor);
+      mPostChainExecutor = std::move(*mPendingPostChainExecutor);
+      mGlobalChainNeedsRebuild.store(false, std::memory_order_release);
+    }
+
+    mPendingPreChainExecutor.reset();
+    mPendingPostChainExecutor.reset();
+
+    // After the swap so the input trim lands on the executor that is now live.
+    ApplyGlobalChainScalars(mGlobalChainConfig);
   }
 
   void MultiPresetMixer::SetGlobalGateEnabled(bool enabled)
@@ -786,10 +993,10 @@ namespace guitarfx
   {
     for (auto &inst : mInstances)
     {
-      const auto nodeId = FindFirstNamNodeId(inst.executor);
+      const auto nodeId = FindFirstNamNodeId(inst->executor);
       if (!nodeId.empty())
       {
-        inst.executor.SetNodeParam(nodeId, "inputGain", value);
+        inst->executor.SetNodeParam(nodeId, "inputGain", value);
       }
     }
   }
@@ -798,14 +1005,14 @@ namespace guitarfx
   {
     for (auto &inst : mInstances)
     {
-      auto nodeId = inst.executor.FindFirstNodeOfType(EffectGuids::kCabIr);
+      auto nodeId = inst->executor.FindFirstNodeOfType(EffectGuids::kCabIr);
       if (nodeId.empty())
       {
-        nodeId = inst.executor.FindFirstNodeOfType(EffectGuids::kCabIr);
+        nodeId = inst->executor.FindFirstNodeOfType(EffectGuids::kCabIr);
       }
       if (!nodeId.empty())
       {
-        inst.executor.SetNodeParam(nodeId, "quality", value);
+        inst->executor.SetNodeParam(nodeId, "quality", value);
       }
     }
   }
@@ -835,10 +1042,10 @@ namespace guitarfx
   {
     for (auto &inst : mInstances)
     {
-      const auto nodeId = FindFirstNamNodeId(inst.executor);
+      const auto nodeId = FindFirstNamNodeId(inst->executor);
       if (!nodeId.empty())
       {
-        inst.executor.SetNodeParam(nodeId, "tone", value);
+        inst->executor.SetNodeParam(nodeId, "tone", value);
       }
     }
   }
@@ -871,7 +1078,7 @@ namespace guitarfx
   void MultiPresetMixer::SetNodeConfigForType(const std::string &type, const std::string &key, const std::string &value)
   {
     for (auto &inst : mInstances)
-      inst.executor.SetNodeConfigForType(type, key, value);
+      inst->executor.SetNodeConfigForType(type, key, value);
 
     mPreChainExecutor.SetNodeConfigForType(type, key, value);
     mPostChainExecutor.SetNodeConfigForType(type, key, value);
@@ -882,9 +1089,11 @@ namespace guitarfx
   {
     for (const auto &inst : mInstances)
     {
-      const auto nodeIds = inst.executor.FindNodesOfType(effectType, false);
+      if (inst->IsRetiring())
+        continue;
+      const auto nodeIds = inst->executor.FindNodesOfType(effectType, false);
       if (!nodeIds.empty())
-        return std::make_pair(inst.cfg.id, nodeIds.front());
+        return std::make_pair(inst->cfg.id, nodeIds.front());
     }
     return std::nullopt;
   }
@@ -917,7 +1126,10 @@ namespace guitarfx
 
     collect(mPreChainExecutor, "pre", std::string{});
     for (const auto &inst : mInstances)
-      collect(inst.executor, "preset", inst.cfg.id);
+    {
+      if (!inst->IsRetiring())
+        collect(inst->executor, "preset", inst->cfg.id);
+    }
     collect(mPostChainExecutor, "post", std::string{});
 
     return readouts;
@@ -928,10 +1140,12 @@ namespace guitarfx
     bool updated = false;
     for (const auto &inst : mInstances)
     {
-      const auto nodeIds = inst.executor.FindNodesOfType(effectType, true);
+      if (inst->IsRetiring())
+        continue;
+      const auto nodeIds = inst->executor.FindNodesOfType(effectType, true);
       for (const auto &nodeId : nodeIds)
       {
-        SetNodeEnabled(inst.cfg.id, nodeId, enabled);
+        SetNodeEnabled(inst->cfg.id, nodeId, enabled);
         updated = true;
       }
     }
@@ -979,7 +1193,7 @@ namespace guitarfx
   void MultiPresetMixer::SetTempo(double bpm)
   {
     for (auto &inst : mInstances)
-      inst.executor.SetTempo(bpm);
+      inst->executor.SetTempo(bpm);
     mPreChainExecutor.SetTempo(bpm);
     mPostChainExecutor.SetTempo(bpm);
   }
@@ -1001,6 +1215,123 @@ namespace guitarfx
   {
     StopTunerWorker();
     StopWorkers();
+    StopReaper();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Deferred destruction (reaper)
+  // ---------------------------------------------------------------------------
+
+  void MultiPresetMixer::StartReaper()
+  {
+    if (mReaperThread.joinable())
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mRetireMutex);
+      mReaperQuit = false;
+      // Reserve up front so the audio thread's retire path never reallocates.
+      mRetireQueue.reserve(kRetireQueueCapacity);
+      mRetireExecutors.reserve(kRetireQueueCapacity);
+    }
+
+    mReaperThread = std::thread([this] { ReaperLoop(); });
+  }
+
+  void MultiPresetMixer::StopReaper()
+  {
+    if (!mReaperThread.joinable())
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mRetireMutex);
+      mReaperQuit = true;
+    }
+    mRetireCv.notify_all();
+    mReaperThread.join();
+
+    // Destroy anything still queued now that the worker is gone.
+    std::lock_guard<std::mutex> lock(mRetireMutex);
+    mRetireQueue.clear();
+    mRetireExecutors.clear();
+  }
+
+  void MultiPresetMixer::ReaperLoop()
+  {
+    while (true)
+    {
+      std::vector<std::unique_ptr<PresetInstance>> instances;
+      std::vector<SignalGraphExecutor> executors;
+
+      {
+        std::unique_lock<std::mutex> lock(mRetireMutex);
+        // Poll rather than relying solely on notification: the audio thread retires
+        // finished fade-outs without signalling the condition variable (notify_one is
+        // not something we want on the realtime path), so a periodic wake is needed.
+        mRetireCv.wait_for(lock, std::chrono::milliseconds(250), [this]
+        {
+          return mReaperQuit || !mRetireQueue.empty() || !mRetireExecutors.empty();
+        });
+
+        if (mReaperQuit)
+          return;
+
+        // Move the work out and clear in place — clear() keeps the reserved capacity the
+        // audio thread's allocation-free retire path depends on. Destruction of the moved
+        // elements happens below, outside the lock, so a producer never waits on it.
+        instances.reserve(mRetireQueue.size());
+        for (auto &inst : mRetireQueue)
+          instances.push_back(std::move(inst));
+        mRetireQueue.clear();
+
+        executors.reserve(mRetireExecutors.size());
+        for (auto &exec : mRetireExecutors)
+          executors.push_back(std::move(exec));
+        mRetireExecutors.clear();
+      }
+
+      // instances/executors destruct here, off both the audio and message threads.
+    }
+  }
+
+  void MultiPresetMixer::RetireInstance(std::unique_ptr<PresetInstance> inst)
+  {
+    if (!inst)
+      return;
+
+    StartReaper();
+    {
+      std::lock_guard<std::mutex> lock(mRetireMutex);
+      mRetireQueue.push_back(std::move(inst));
+    }
+    mRetireCv.notify_one();
+  }
+
+  bool MultiPresetMixer::TryRetireInstanceRealtime(std::unique_ptr<PresetInstance> &inst)
+  {
+    // Audio thread: never block, never allocate. If the reaper happens to be draining the
+    // queue, or the queue is at capacity, leave the instance in place — it is fully faded
+    // out by this point, so carrying it for another block costs a silent chain and nothing
+    // audible. The next block tries again.
+    std::unique_lock<std::mutex> lock(mRetireMutex, std::try_to_lock);
+    if (!lock.owns_lock())
+      return false;
+    if (mRetireQueue.size() >= mRetireQueue.capacity())
+      return false;
+
+    mRetireQueue.push_back(std::move(inst));
+    return true;
+  }
+
+  void MultiPresetMixer::CollectFinishedFadeOuts()
+  {
+    for (auto it = mInstances.begin(); it != mInstances.end();)
+    {
+      if ((*it)->IsRetiring() && (*it)->fadeSamplesRemaining <= 0 && TryRetireInstanceRealtime(*it))
+        it = mInstances.erase(it); // unique_ptr moves only — no executor moves, no joins
+      else
+        ++it;
+    }
   }
 
   void MultiPresetMixer::StartTunerWorker()
@@ -1152,6 +1483,10 @@ namespace guitarfx
     mMaxBlockSize = maxBlockSize;
     mPrepared = true;
 
+    // Bring the reaper up before any swap can happen, so retiring never has to spawn a
+    // thread while the DSP lock is held.
+    StartReaper();
+
     // Allocate global temp buffers
     mTempInL.resize(static_cast<size_t>(maxBlockSize), 0.0f);
     mTempInR.resize(static_cast<size_t>(maxBlockSize), 0.0f);
@@ -1171,8 +1506,8 @@ namespace guitarfx
 
     for (auto &inst : mInstances)
     {
-      inst.executor.Prepare(sampleRate, maxBlockSize);
-      AllocateInstanceBuffers(inst, maxBlockSize);
+      inst->executor.Prepare(sampleRate, maxBlockSize);
+      AllocateInstanceBuffers(*inst, maxBlockSize);
     }
 
     // Start worker threads for parallel preset processing.
@@ -1196,7 +1531,7 @@ namespace guitarfx
     mPostChainExecutor.Reset();
     for (auto &inst : mInstances)
     {
-      inst.executor.Reset();
+      inst->executor.Reset();
     }
   }
 
@@ -1358,16 +1693,64 @@ namespace guitarfx
     // PRESET PROCESSING: Process each active preset and mix
     // ==========================================================================
 
-    // Detect solo mode
+    // Detect solo mode. Instances fading out after a swap never participate in the solo
+    // decision — they are on their way out and must stay audible for the whole ramp.
     bool anySolo = false;
     for (const auto &inst : mInstances)
     {
-      if (inst.cfg.solo)
+      if (!inst->IsRetiring() && inst->cfg.solo)
       {
         anySolo = true;
         break;
       }
     }
+
+    const auto isAudible = [&](const PresetInstance &inst)
+    {
+      if (inst.cfg.mute)
+        return false;
+      if (inst.IsRetiring())
+      {
+        // Fully faded out but not yet handed to the reaper (the queue was busy last
+        // block). It contributes nothing, so skip the chain entirely.
+        return inst.fadeSamplesRemaining > 0;
+      }
+      return !anySolo || inst.cfg.solo;
+    };
+
+    // Mix one processed instance into the accumulator, applying its mixer gain, pan and
+    // (when it is mid-swap) a linear fade ramp across the block.
+    const auto mixInstance = [&](const PresetInstance &inst)
+    {
+      float gL = 1.0f, gR = 1.0f;
+      ComputePanGains(inst.cfg.pan, gL, gR);
+      const float baseL = static_cast<float>(inst.cfg.mix) * gL;
+      const float baseR = static_cast<float>(inst.cfg.mix) * gR;
+
+      if (inst.phase == InstancePhase::Active)
+      {
+        for (int i = 0; i < numSamples; ++i)
+        {
+          if (outputs[0]) outputs[0][i] += inst.outL[static_cast<size_t>(i)] * baseL;
+          if (outputs[1]) outputs[1][i] += inst.outR[static_cast<size_t>(i)] * baseR;
+        }
+        return;
+      }
+
+      float fadeStart = 1.0f, fadeEnd = 1.0f;
+      inst.GetFadeGains(numSamples, fadeStart, fadeEnd);
+      // Divide by numSamples, not numSamples-1: the last sample of this block lands one
+      // step short of fadeEnd, which is exactly where the next block starts. Using
+      // numSamples-1 would repeat that value and put a one-sample flat spot in the ramp.
+      const float step = (fadeEnd - fadeStart) / static_cast<float>(numSamples);
+
+      float fade = fadeStart;
+      for (int i = 0; i < numSamples; ++i, fade += step)
+      {
+        if (outputs[0]) outputs[0][i] += inst.outL[static_cast<size_t>(i)] * baseL * fade;
+        if (outputs[1]) outputs[1][i] += inst.outR[static_cast<size_t>(i)] * baseR * fade;
+      }
+    };
 
     // Clear preset mix accumulator (use outputs as accumulator)
     if (outputs[0])
@@ -1378,7 +1761,7 @@ namespace guitarfx
     // Count active instances to decide whether to use parallel dispatch.
     int activeCount = 0;
     for (const auto &inst : mInstances)
-      if (!inst.cfg.mute && (!anySolo || inst.cfg.solo))
+      if (isAudible(*inst))
         ++activeCount;
 
     int totalWorkUnits = 0;
@@ -1386,9 +1769,9 @@ namespace guitarfx
     {
       for (const auto &inst : mInstances)
       {
-        if (inst.cfg.mute || (anySolo && !inst.cfg.solo))
+        if (!isAudible(*inst))
           continue;
-        totalWorkUnits += inst.complexityScore * numSamples;
+        totalWorkUnits += inst->complexityScore * numSamples;
       }
     }
 
@@ -1401,17 +1784,18 @@ namespace guitarfx
     // Avoid nested parallelism: if mixer-level fan-out is active, run each preset graph serially.
     for (auto &inst : mInstances)
     {
-      inst.executor.SetNamInputModeMono(namInputModeMono);
-      inst.executor.SetParallelLevelsEnabled(!useParallel);
+      inst->executor.SetNamInputModeMono(namInputModeMono);
+      inst->executor.SetParallelLevelsEnabled(!useParallel);
     }
 
     if (useParallel)
     {
       // Pack work items (up to kMaxWorkItems); any extras fall through to serial below.
       int wi = 0;
-      for (auto &inst : mInstances)
+      for (auto &instPtr : mInstances)
       {
-        if (inst.cfg.mute || (anySolo && !inst.cfg.solo))
+        auto &inst = *instPtr;
+        if (!isAudible(inst))
           continue;
 
         if (wi < kMaxWorkItems)
@@ -1424,14 +1808,7 @@ namespace guitarfx
           // Overflow beyond kMaxWorkItems: process serially and mix immediately.
           float *presetOutPtrs[2] = {inst.outL.data(), inst.outR.data()};
           inst.executor.Process(preChainOutputs, presetOutPtrs, numSamples);
-          float gL = 1.0f, gR = 1.0f;
-          ComputePanGains(inst.cfg.pan, gL, gR);
-          const float mixGain = static_cast<float>(inst.cfg.mix);
-          for (int i = 0; i < numSamples; ++i)
-          {
-            if (outputs[0]) outputs[0][i] += inst.outL[static_cast<size_t>(i)] * mixGain * gL;
-            if (outputs[1]) outputs[1][i] += inst.outR[static_cast<size_t>(i)] * mixGain * gR;
-          }
+          mixInstance(inst);
         }
       }
 
@@ -1466,43 +1843,39 @@ namespace guitarfx
 
       // Mix all parallel outputs into the accumulator.
       for (int i = 0; i < wi; ++i)
-      {
-        const auto &item = mWorkItems[static_cast<size_t>(i)];
-        float gL = 1.0f, gR = 1.0f;
-        ComputePanGains(item.inst->cfg.pan, gL, gR);
-        const float mixGain = static_cast<float>(item.inst->cfg.mix);
-        for (int s = 0; s < numSamples; ++s)
-        {
-          if (outputs[0]) outputs[0][s] += item.inst->outL[static_cast<size_t>(s)] * mixGain * gL;
-          if (outputs[1]) outputs[1][s] += item.inst->outR[static_cast<size_t>(s)] * mixGain * gR;
-        }
-      }
+        mixInstance(*mWorkItems[static_cast<size_t>(i)].inst);
     }
     else
     {
       // Serial path: single active preset or no worker threads available.
-      for (auto &inst : mInstances)
+      for (auto &instPtr : mInstances)
       {
-        const bool include = (!inst.cfg.mute) && (!anySolo || inst.cfg.solo);
-        if (!include)
+        auto &inst = *instPtr;
+        if (!isAudible(inst))
           continue;
 
         float *presetOutPtrs[2] = {inst.outL.data(), inst.outR.data()};
         inst.executor.Process(preChainOutputs, presetOutPtrs, numSamples);
-
-        float gL = 1.0f, gR = 1.0f;
-        ComputePanGains(inst.cfg.pan, gL, gR);
-        const float mixGain = static_cast<float>(inst.cfg.mix);
-
-        for (int i = 0; i < numSamples; ++i)
-        {
-          if (outputs[0])
-            outputs[0][i] += inst.outL[static_cast<size_t>(i)] * mixGain * gL;
-          if (outputs[1])
-            outputs[1][i] += inst.outR[static_cast<size_t>(i)] * mixGain * gR;
-        }
+        mixInstance(inst);
       }
     }
+
+    // Advance swap ramps once per block, after every mix site, then drop any instance that
+    // has finished fading out. Instances excluded from the mix above still advance so a
+    // muted fade-out cannot get stuck holding its resources forever.
+    for (auto &inst : mInstances)
+    {
+      if (inst->phase == InstancePhase::Active)
+        continue;
+
+      inst->fadeSamplesRemaining = std::max(0, inst->fadeSamplesRemaining - numSamples);
+      if (inst->fadeSamplesRemaining == 0 && inst->phase == InstancePhase::FadingIn)
+      {
+        inst->phase = InstancePhase::Active;
+        inst->fadeTotalSamples = 0;
+      }
+    }
+    CollectFinishedFadeOuts();
 
     // ==========================================================================
     // GLOBAL POST-CHAIN: EQ → Doubler
@@ -1516,23 +1889,10 @@ namespace guitarfx
     if (outputs[1])
       std::copy(mPostChainOutR.begin(), mPostChainOutR.begin() + numSamples, outputs[1]);
 
-    // Apply preset-swap fade-in: ramps output from 0→1 over kPresetFadeInSamples samples
-    // after CommitPresetSwap() to mask the hard cut at the instance transition.
-    {
-      const int fadeRemaining = mPresetFadeInRemaining.load(std::memory_order_acquire);
-      if (fadeRemaining > 0)
-      {
-        const int fadeSamples = std::min(numSamples, fadeRemaining);
-        const float fadeTotal = static_cast<float>(kPresetFadeInSamples);
-        for (int i = 0; i < fadeSamples; ++i)
-        {
-          const float gain = 1.0f - static_cast<float>(fadeRemaining - i) / fadeTotal;
-          if (outputs[0]) outputs[0][i] *= gain;
-          if (outputs[1]) outputs[1][i] *= gain;
-        }
-        mPresetFadeInRemaining.store(fadeRemaining - fadeSamples, std::memory_order_release);
-      }
-    }
+    // NOTE: preset swaps used to be masked by fading the master output up from zero here.
+    // That could not hide the step down to silence when the outgoing chain was cut, and it
+    // also ducked the global post-chain's own tail. The swap is now crossfaded per instance
+    // in the preset mix above, so nothing is needed at this point.
 
     // ==========================================================================
     // FINAL OUTPUT STAGE: Master gain, auto-level, limiter
@@ -1622,7 +1982,7 @@ namespace guitarfx
     mPostChainExecutor.SetSignalDiagnosticsEnabled(enabled);
     for (auto &inst : mInstances)
     {
-      inst.executor.SetSignalDiagnosticsEnabled(enabled);
+      inst->executor.SetSignalDiagnosticsEnabled(enabled);
     }
   }
 
@@ -1688,12 +2048,14 @@ namespace guitarfx
 
     for (const auto &inst : mInstances)
     {
-      const auto levels = inst.executor.GetNodeSignalLevels();
+      if (inst->IsRetiring())
+        continue;
+      const auto levels = inst->executor.GetNodeSignalLevels();
       for (const auto &entry : levels)
       {
         NodeSignalLevel node;
         node.scope = "preset";
-        node.presetId = inst.cfg.id;
+        node.presetId = inst->cfg.id;
         node.nodeId = entry.nodeId;
         node.nodeType = entry.nodeType;
         node.channelCount = entry.channelCount;
@@ -1779,7 +2141,10 @@ namespace guitarfx
     std::vector<std::string> ids;
     ids.reserve(mInstances.size());
     for (const auto &inst : mInstances)
-      ids.push_back(inst.cfg.id);
+    {
+      if (!inst->IsRetiring())
+        ids.push_back(inst->cfg.id);
+    }
     return ids;
   }
 
@@ -1800,10 +2165,13 @@ namespace guitarfx
 
   MultiPresetMixer::PresetInstance *MultiPresetMixer::FindInstance(const std::string &id)
   {
+    // Retiring instances are invisible to lookups. Their ID often matches the incoming
+    // one (a scene switch reuses the preset ID), so returning one would route parameter
+    // updates into the chain that is on its way out.
     for (auto &inst : mInstances)
     {
-      if (inst.cfg.id == id)
-        return &inst;
+      if (!inst->IsRetiring() && inst->cfg.id == id)
+        return inst.get();
     }
     return nullptr;
   }
@@ -1812,19 +2180,30 @@ namespace guitarfx
   {
     for (const auto &inst : mInstances)
     {
-      if (inst.cfg.id == id)
-        return &inst;
+      if (!inst->IsRetiring() && inst->cfg.id == id)
+        return inst.get();
     }
     return nullptr;
+  }
+
+  size_t MultiPresetMixer::GetPresetCount() const
+  {
+    size_t count = 0;
+    for (const auto &inst : mInstances)
+    {
+      if (!inst->IsRetiring())
+        ++count;
+    }
+    return count;
   }
 
   void MultiPresetMixer::AllocateBuffers(int maxBlockSize)
   {
     for (auto &inst : mInstances)
     {
-      inst.outL.resize(static_cast<size_t>(maxBlockSize), 0.0f);
-      inst.outR.resize(static_cast<size_t>(maxBlockSize), 0.0f);
-      AllocateInstanceBuffers(inst, maxBlockSize);
+      inst->outL.resize(static_cast<size_t>(maxBlockSize), 0.0f);
+      inst->outR.resize(static_cast<size_t>(maxBlockSize), 0.0f);
+      AllocateInstanceBuffers(*inst, maxBlockSize);
     }
   }
 
@@ -1904,7 +2283,8 @@ namespace guitarfx
 
     for (const auto& instance : mInstances)
     {
-      mergeStats(instance.executor.GetPerformanceStats(), instance.cfg.id + "::");
+      if (!instance->IsRetiring())
+        mergeStats(instance->executor.GetPerformanceStats(), instance->cfg.id + "::");
     }
 
     mergeStats(mPostChainExecutor.GetPerformanceStats(), "post::");
@@ -1924,7 +2304,12 @@ namespace guitarfx
 
     int instanceMax = 0;
     for (const auto& inst : mInstances)
-      instanceMax = std::max(instanceMax, inst.executor.GetTotalLatencySamples());
+    {
+      // A fading-out instance's latency must not leak into the reported figure: it is
+      // about to disappear, and reporting it would make the host renegotiate PDC twice.
+      if (!inst->IsRetiring())
+        instanceMax = std::max(instanceMax, inst->executor.GetTotalLatencySamples());
+    }
 
     return preChain + instanceMax + postChain;
   }

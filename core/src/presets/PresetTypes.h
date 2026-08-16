@@ -32,6 +32,8 @@ namespace guitarfx
     [[nodiscard]] bool IsFilePath() const { return !filePath.empty(); }
     [[nodiscard]] bool IsEmbedded() const { return !embeddedId.empty(); }
     [[nodiscard]] bool IsValid() const { return IsLibraryRef() || IsFilePath() || IsEmbedded(); }
+
+    bool operator==(const ResourceRef&) const = default;
   };
 
   /**
@@ -63,6 +65,8 @@ namespace guitarfx
     std::map<std::string, std::string> config; // String config
 
     std::vector<ResourceRef> resources;       // For effects needing multiple external files
+
+    bool operator==(const GraphNode&) const = default;
   };
 
   /**
@@ -75,6 +79,8 @@ namespace guitarfx
     int fromPort = 0;  // Output port index (for splitters)
     int toPort = 0;    // Input port index (for mixers)
     double gain = 1.0; // Edge gain multiplier
+
+    bool operator==(const GraphEdge&) const = default;
   };
 
   /**
@@ -102,6 +108,8 @@ namespace guitarfx
       }
       return nullptr;
     }
+
+    bool operator==(const SignalGraph&) const = default;
   };
 
   struct PresetScene
@@ -169,6 +177,10 @@ namespace guitarfx
      * Create default global chain configuration.
      */
     [[nodiscard]] static GlobalSignalChainConfig CreateDefault();
+
+    /// Value equality over every configuration field. Used to skip redundant
+    /// global-chain rebuilds, which are expensive and must not run under the DSP lock.
+    bool operator==(const GlobalSignalChainConfig&) const = default;
   };
 
   /**

@@ -3254,9 +3254,13 @@ void PluginController::ApplyGlobalFxSettingsFromAppSettings()
         config.autoLevelInput = false;
         config.autoLevelOutput = false;
 
+        // Build off the lock, install under it — rebuilding the global executors while the
+        // audio thread is blocked on mDSPMutex is an audible dropout.
+        mPresetMixer.PrepareGlobalChainSwap(config);
+
         {
             std::lock_guard<std::mutex> lock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(config);
+            mPresetMixer.CommitGlobalChainSwap();
             mParamValues[kParamInputTrim] = config.inputGain;
             mParamValues[kParamOutputTrim] = config.outputGain;
             mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
@@ -3837,8 +3841,10 @@ void PluginController::DeserializeState(const std::string& json)
 
         if (state.contains("globalSignalChain") && state["globalSignalChain"].is_object())
         {
+            // Build off the lock, install under it — see PrepareGlobalChainSwap().
+            mPresetMixer.PrepareGlobalChainSwap(state["globalSignalChain"].get<GlobalSignalChainConfig>());
             std::lock_guard<std::mutex> dspLock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(state["globalSignalChain"].get<GlobalSignalChainConfig>());
+            mPresetMixer.CommitGlobalChainSwap();
         }
         if (state.contains("preset"))
         {
@@ -11287,9 +11293,13 @@ void PluginController::HandleSetGlobalChainRequest(const nlohmann::json& payload
     if (payload.contains("config"))
     {
         auto config = payload["config"].get<GlobalSignalChainConfig>();
+
+        // Build off the lock, install under it — see PrepareGlobalChainSwap().
+        mPresetMixer.PrepareGlobalChainSwap(config);
+
         {
             std::lock_guard<std::mutex> dspLock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(config);
+            mPresetMixer.CommitGlobalChainSwap();
             mParamValues[kParamInputTrim] = config.inputGain;
             mParamValues[kParamOutputTrim] = config.outputGain;
             mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
@@ -11827,11 +11837,16 @@ void PluginController::ApplyPreset(const Preset& preset)
     const std::string initialSlotId = normalizedPreset.id.empty() ? "p1" : normalizedPreset.id;
     const std::string newPresetJson = PresetStorage::SerializeToJson(normalizedPreset);
 
-    // === Phase 2: Build the new executor off the DSP lock. ===
+    // === Phase 2: Build the new executors off the DSP lock. ===
     // This is the expensive step: effect processors are created, resources loaded
     // (e.g. NAM model weights read from disk), and Prepare() called on each node.
     // The audio thread continues processing the current preset uninterrupted.
     mPresetMixer.PreparePresetSwap(normalizedPreset, initialSlotId, normalizedPreset.name);
+
+    // Global chains are staged the same way. This is almost always a no-op: global FX are
+    // per-instance state that never comes from a preset, so chainConfig normally matches the
+    // running config exactly and no rebuild is staged at all.
+    mPresetMixer.PrepareGlobalChainSwap(chainConfig);
 
     // === Phase 3: Atomic swap under the DSP lock (fast). ===
     // The lock is held only for lightweight state updates and the instance swap.
@@ -11844,11 +11859,9 @@ void PluginController::ApplyPreset(const Preset& preset)
         mParamValues[kParamOutputTrim] = outputGainDb;
         mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(chainConfig));
 
-        // Apply global signal chain config under the DSP lock so the audio thread
-        // cannot be inside mPreChainExecutor/mPostChainExecutor.Process() while
-        // RebuildGlobalChains() tears down and recreates those executors' node states.
-        // The pre/post chain (gate, transpose, EQ, doubler) rebuilds quickly; no I/O.
-        mPresetMixer.SetGlobalChainConfig(chainConfig);
+        // Install the global chains staged above. Construction already happened off the
+        // lock; this is a pointer-level swap plus the scalar input/output settings.
+        mPresetMixer.CommitGlobalChainSwap();
         mPresetMixer.SetAutoLevelInput(false);
         mPresetMixer.SetAutoLevelOutput(false);
 
