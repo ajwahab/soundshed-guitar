@@ -49,7 +49,7 @@ import {
   type SpatialLiveState,
   type SpatialPosition,
 } from "./spatialPanner.js";
-import { resourceBrowserModal } from "./resourceBrowser.js";
+import { resourceBrowserModal, type ResourceNavigationResult as ResourceNavigationSelection } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
 import { hasCustomLayout, getCustomLayout, renderCustomLayout, renderCustomLayoutBackdrop, formatParamValue, type LayoutResourceControlDef } from "./layoutRenderer.js";
 import { areEffectLayoutsEnabled, buildLayoutMatchText, findLayoutById, resolveLayoutForNode } from "./layoutPreferences.js";
@@ -187,7 +187,64 @@ const EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE: Record<string, string> = {
   
 };
 
-function getEffectVisualizationEquipmentImage(node: GraphNode): string {
+/**
+ * Artwork the capture author supplied for the loaded model (Tone3000 tones ship
+ * a photo of the real gear). Only http(s)/data URLs are accepted so a stray
+ * metadata value can never turn into a local file or script URL.
+ */
+function normalizeResourceArtworkUrl(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.startsWith("https://") || trimmed.startsWith("http://") || trimmed.startsWith("data:image/")
+    ? trimmed
+    : "";
+}
+
+function getNodeResourceArtworkImage(node: GraphNode): string {
+  const typeInfo = getNodeEffectInfo(node);
+  const candidates: Array<{ resourceType: string; resourceIndex: number }> = [];
+
+  (typeInfo?.exposedResources ?? []).forEach((exposedResource, exposedResourceIndex) => {
+    candidates.push({
+      resourceType: exposedResource.resourceType,
+      resourceIndex: exposedResource.resourceIndex ?? exposedResourceIndex,
+    });
+  });
+
+  if (typeInfo?.resourceType) {
+    const resources = Array.isArray((node as unknown as { resources?: unknown[] }).resources)
+      ? (node as unknown as { resources?: unknown[] }).resources ?? []
+      : [];
+    for (let index = 0; index < Math.max(1, resources.length); index += 1) {
+      candidates.push({ resourceType: typeInfo.resourceType, resourceIndex: index });
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (candidate.resourceType !== "nam" && candidate.resourceType !== "ir") {
+      continue;
+    }
+    const current = getNodeResourceAtIndex(node, candidate.resourceIndex);
+    if (!current.id) {
+      continue;
+    }
+    const resource = getLibraryResource(
+      candidate.resourceType,
+      getCanonicalLibraryResourceId(candidate.resourceType, current.id),
+    );
+    const artwork = normalizeResourceArtworkUrl(resource?.metadata?.imageUrl);
+    if (artwork) {
+      return artwork;
+    }
+  }
+
+  return "";
+}
+
+/** The stock artwork for this effect type/category, ignoring any loaded model. */
+function getEffectVisualizationStockImage(node: GraphNode): string {
   const resolvedType = EffectTypeRegistry.resolve(node.type);
   const directTypeMatch = EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE[resolvedType]
     || EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE[node.type];
@@ -196,6 +253,10 @@ function getEffectVisualizationEquipmentImage(node: GraphNode): string {
   }
   const category = getNodeCategory(node);
   return EFFECT_VISUAL_EQUIPMENT_IMAGES[category] || "";
+}
+
+function getEffectVisualizationEquipmentImage(node: GraphNode): string {
+  return getNodeResourceArtworkImage(node) || getEffectVisualizationStockImage(node);
 }
 
 layoutDesigner.onClose(() => {
@@ -1586,6 +1647,20 @@ function resolveResourceNavigationCategoryHint(
   }
 
   return resolveResourceBrowserLibraryCategoryHint(node, resourceType);
+}
+
+/// Identifies the kind of node a resource is being picked for, so folder browsing
+/// and next/prev navigation are remembered per effect role rather than globally.
+/// Deliberately coarser than the category hint: a NAM Amp keeps one remembered
+/// folder whether or not it is currently acting as a full rig.
+function resolveResourceContextKey(node: GraphNode, resourceType: "nam" | "ir"): string {
+  if (resourceType === "nam") {
+    return EffectTypeRegistry.resolve(node.type) === EffectGuids.kFxNam ? "nam-fx" : "nam-amp";
+  }
+
+  return resolveResourceBrowserLibraryCategoryHint(node, resourceType) === "reverb"
+    ? "ir-reverb"
+    : "ir-cab";
 }
 
 function hasCabIrInSameSignalPath(nodeId: string, preset: Preset): boolean {
@@ -4216,23 +4291,25 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // Refresh the resource navigation cache in the background so prev/next buttons
   // become available without opening the browser, but do not block panel render.
   {
-    const navCacheRequests = new Map<string, { resourceType: "nam" | "ir"; categoryHint?: string }>();
+    const navCacheRequests = new Map<string, { resourceType: "nam" | "ir"; categoryHint?: string; contextKey: string }>();
     if (typeInfo?.requiresResource) {
       const rt = typeInfo.resourceType;
       if (rt === "nam" || rt === "ir") {
         const categoryHint = resolveResourceNavigationCategoryHint(node, preset, rt);
-        navCacheRequests.set(`${rt}:${categoryHint ?? ""}`, { resourceType: rt, categoryHint });
+        const contextKey = resolveResourceContextKey(node, rt);
+        navCacheRequests.set(`${rt}:${categoryHint ?? ""}`, { resourceType: rt, categoryHint, contextKey });
       }
     }
     (typeInfo?.exposedResources ?? []).forEach((er) => {
       if (er.resourceType === "nam" || er.resourceType === "ir") {
         const resourceType = er.resourceType as "nam" | "ir";
         const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-        navCacheRequests.set(`${resourceType}:${categoryHint ?? ""}`, { resourceType, categoryHint });
+        const contextKey = resolveResourceContextKey(node, resourceType);
+        navCacheRequests.set(`${resourceType}:${categoryHint ?? ""}`, { resourceType, categoryHint, contextKey });
       }
     });
-    navCacheRequests.forEach(({ resourceType, categoryHint }) => {
-      resourceBrowserModal.preloadLibraryNavigationCache(resourceType, { categoryHint });
+    navCacheRequests.forEach(({ resourceType, categoryHint, contextKey }) => {
+      resourceBrowserModal.preloadLibraryNavigationCache(resourceType, { categoryHint, contextKey });
     });
   }
 
@@ -4264,8 +4341,10 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             : "No resource selected";
         const current = getNodeResourceAtIndex(node, resourceIndex);
         const resolvedCurrentId = resolveResourceIdAlias(current.id ?? "", aliasById);
-        const displayName = current.id
-          ? getNodeResourceDisplayName(node, resourceIndex, resourceType)
+        // Folder navigation lands a file path with no library id, so key the
+        // label off either: id-only would render the empty state for it.
+        const displayName = current.id || current.filePath
+          ? getNodeResourceDisplayName(node, resourceIndex, resourceType) || emptyDisplayName
           : emptyDisplayName;
         const hasCurrentSelection = Boolean(current.id || current.filePath);
         const isMissing = Boolean(current.id)
@@ -4277,6 +4356,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         const isPluginPicker = resourceType === "plugin";
         const navigationCategoryHint = isLibraryPicker
           ? resolveResourceNavigationCategoryHint(node, preset, resourceType)
+          : undefined;
+        const navigationContextKey = isLibraryPicker
+          ? resolveResourceContextKey(node, resourceType)
           : undefined;
         const resourceOptions = resources.map((res: LibraryResource) => {
           const selected = resolvedCurrentId === res.id && !current.filePath ? "selected" : "";
@@ -4302,6 +4384,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           resourceIndex,
           exposedResourceId: exposedResource.resourceId,
           navigationCategoryHint,
+          navigationContextKey,
           allowBrowseFile: canBrowseFile,
           currentResourceId: current.id,
           currentDisplayName: displayName,
@@ -4423,10 +4506,12 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       const indexAttr = includeIndexAttr ? `data-resource-index="${index}"` : "";
       const isLibraryPicker = resourceType === "nam" || resourceType === "ir";
       const isPluginPicker = resourceType === "plugin";
-      const displayName = current.id
-        ? getNodeResourceDisplayName(node, index)
-        : resourceType === "ir" ? "No IR selected" : "No model selected";
       const emptyDisplayName = resourceType === "ir" ? "No IR selected" : "No model selected";
+      // Folder navigation lands a file path with no library id, so key the
+      // label off either: id-only would render the empty state for it.
+      const displayName = current.id || current.filePath
+        ? getNodeResourceDisplayName(node, index) || emptyDisplayName
+        : emptyDisplayName;
       const hasCurrentSelection = Boolean(current.id || current.filePath);
       const isMissing = Boolean(current.id)
         && !current.filePath
@@ -4436,12 +4521,23 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       const navigationCategoryHint = navResourceType
         ? resolveResourceNavigationCategoryHint(node, preset, navResourceType)
         : undefined;
-      const prevSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1, { categoryHint: navigationCategoryHint })
+      const navigationContextKey = navResourceType
+        ? resolveResourceContextKey(node, navResourceType)
+        : undefined;
+      const navOptions = { categoryHint: navigationCategoryHint, contextKey: navigationContextKey };
+      // A Tone3000 result set always has a neighbour to step to (it wraps), but
+      // resolving it means fetching, so the buttons are enabled without asking.
+      const tone3000NavActive = navResourceType
+        ? resourceBrowserModal.isTone3000NavigationActive(navResourceType, navOptions)
+        : false;
+      const prevSelection = navResourceType && !tone3000NavActive
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1, navOptions)
         : null;
-      const nextSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1, { categoryHint: navigationCategoryHint })
+      const nextSelection = navResourceType && !tone3000NavActive
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1, navOptions)
         : null;
+      const canNavPrev = tone3000NavActive || Boolean(prevSelection);
+      const canNavNext = tone3000NavActive || Boolean(nextSelection);
       const navPrevButton = navResourceType ? `
         <button
           type="button"
@@ -4451,7 +4547,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${indexAttr}
           data-nav-direction="prev"
           title="Previous resource"
-          aria-label="Previous resource"${prevSelection ? "" : " disabled"}
+          aria-label="Previous resource"${canNavPrev ? "" : " disabled"}
         >${renderIcon("arrow-left", "resource-nav-icon")}</button>
       ` : "";
       const navNextButton = navResourceType ? `
@@ -4463,7 +4559,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${indexAttr}
           data-nav-direction="next"
           title="Next resource"
-          aria-label="Next resource"${nextSelection ? "" : " disabled"}
+          aria-label="Next resource"${canNavNext ? "" : " disabled"}
         >${renderIcon("arrow-right", "resource-nav-icon")}</button>
       ` : "";
       const hostedPluginOpenButton = resourceType === "plugin"
@@ -4482,6 +4578,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         resourceType,
         resourceIndex: index,
         navigationCategoryHint,
+        navigationContextKey,
         allowBrowseFile: true,
         currentResourceId: current.id,
         currentDisplayName: displayName,
@@ -5603,6 +5700,27 @@ function bindGraphicEqControls(node: GraphNode, preset: Preset): void {  if (Eff
   });
 }
 
+/// Resource loads round-trip through the backend, and the params panel re-renders
+/// from whatever the graph says at that moment. Without this, holding down
+/// next/prev repeatedly recomputes "the one after the old resource" and appears
+/// to stick. Entries are dropped as soon as the graph catches up.
+const pendingResourceNavSelections = new Map<string, { resourceId: string; filePath: string; at: number }>();
+const PENDING_RESOURCE_NAV_TTL_MS = 5000;
+
+/// Navigation keys with a Tone3000 step in flight (fetch + import). Keyed the
+/// same way as the pending selections so prev and next share one guard and
+/// cannot race each other from the same starting resource.
+const inFlightTone3000NavKeys = new Set<string>();
+
+function buildResourceNavKey(
+  nodeId: string,
+  resourceType: string,
+  resourceIndex: number,
+  exposedResourceId: string | undefined,
+): string {
+  return `${nodeId}:${resourceType}:${resourceIndex}:${exposedResourceId ?? ""}`;
+}
+
 /// Remote capture artwork can fail to load (offline, image withdrawn): swap in
 /// the stock equipment image rather than leaving an empty panel.
 function bindEquipmentImageFallback(): void {
@@ -5637,15 +5755,20 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       `.resource-nav-btn[data-node-id="${nodeId}"][data-resource-type="${resourceType}"][data-resource-index="${resourceIndex}"][data-nav-direction="next"]`,
     );
 
+    const navOptions = {
+      categoryHint: resolveResourceNavigationCategoryHint(node, preset, resourceType),
+      contextKey: resolveResourceContextKey(node, resourceType),
+    };
+    const tone3000NavActive = resourceBrowserModal.isTone3000NavigationActive(resourceType, navOptions);
     if (prevButton) {
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const prev = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1, { categoryHint });
+      const prev = tone3000NavActive
+        || Boolean(resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1, navOptions));
       prevButton.disabled = !prev;
       prevButton.setAttribute("aria-disabled", prev ? "false" : "true");
     }
     if (nextButton) {
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const next = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1, { categoryHint });
+      const next = tone3000NavActive
+        || Boolean(resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1, navOptions));
       nextButton.disabled = !next;
       nextButton.setAttribute("aria-disabled", next ? "false" : "true");
     }
@@ -5725,7 +5848,13 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
         exposedResourceId,
         libraryCategoryHint,
         tone3000CategoryFilter,
+        contextKey: resolveResourceContextKey(node, resourceType),
         onSelect: (resourceId) => {
+          // An explicit pick supersedes any in-flight next/prev step.
+          pendingResourceNavSelections.set(
+            buildResourceNavKey(nodeId, resourceType, resourceIndex, exposedResourceId),
+            { resourceId, filePath: "", at: performance.now() },
+          );
           sendNodeResourceUpdate(nodeId, resourceType, resourceId, "", resourceIndex, undefined, exposedResourceId);
           const label = getLibraryResourceName(resourceType, resourceId) || resourceId || "";
           const labelText = label || (resourceType === "ir" ? "No IR selected" : "No model selected");
@@ -5755,28 +5884,39 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
 
   const resourceNavButtons = nodeParamsPanelElement?.querySelectorAll(".resource-nav-btn") as NodeListOf<HTMLButtonElement> | null;
   resourceNavButtons?.forEach((navBtn) => {
-    navBtn.addEventListener("click", () => {
+    // This runs on every panel render, i.e. whenever the graph state we render
+    // from has moved: retire the in-flight selection once it has landed.
+    {
       const nodeId = navBtn.dataset.nodeId;
-      const resourceType = navBtn.dataset.resourceType as "nam" | "ir" | undefined;
+      const resourceType = navBtn.dataset.resourceType;
       const resourceIndex = navBtn.dataset.resourceIndex ? parseInt(navBtn.dataset.resourceIndex, 10) : 0;
-      const exposedResourceId = navBtn.dataset.exposedResourceId;
-      const direction = navBtn.dataset.navDirection === "prev" ? -1 : 1;
-      if (!nodeId || !resourceType || (resourceType !== "nam" && resourceType !== "ir")) {
-        return;
+      if (nodeId && resourceType) {
+        const navKey = buildResourceNavKey(nodeId, resourceType, resourceIndex, navBtn.dataset.exposedResourceId);
+        const pending = pendingResourceNavSelections.get(navKey);
+        if (pending) {
+          const live = getNodeResourceAtIndex(node, resourceIndex);
+          const landed = (pending.resourceId && pending.resourceId === (live.id ?? ""))
+            || (pending.filePath && pending.filePath === (live.filePath ?? ""));
+          if (landed || (performance.now() - pending.at) >= PENDING_RESOURCE_NAV_TTL_MS) {
+            pendingResourceNavSelections.delete(navKey);
+          }
+        }
       }
+    }
 
-      const current = getNodeResourceAtIndex(node, resourceIndex);
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const next = resourceBrowserModal.getAdjacentResourceSelection(
-        resourceType,
-        current.id ?? "",
-        current.filePath ?? "",
-        direction,
-        { categoryHint },
-      );
-      if (!next) {
-        return;
-      }
+    const applyResourceNavSelection = (
+      nodeId: string,
+      resourceType: "nam" | "ir",
+      resourceIndex: number,
+      exposedResourceId: string | undefined,
+      navKey: string,
+      next: ResourceNavigationSelection,
+    ): void => {
+      pendingResourceNavSelections.set(navKey, {
+        resourceId: next.resourceId ?? "",
+        filePath: next.filePath ?? "",
+        at: performance.now(),
+      });
 
       sendNodeResourceUpdate(
         nodeId,
@@ -5791,7 +5931,10 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       const nextResource = next.resourceId
         ? getLibraryResource(resourceType, next.resourceId)
         : undefined;
+      // A just-imported resource is not in the library snapshot yet, so fall
+      // back to the name the navigation step reported.
       const labelText = nextResource?.name
+        || next.displayName
         || (next.resourceId ?? "")
         || (next.filePath?.split(/[\\/]/).pop() ?? "");
 
@@ -5809,9 +5952,76 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       if (labelEl) {
         labelEl.textContent = labelText || (resourceType === "ir" ? "No IR selected" : "No model selected");
         labelEl.title = labelText || "";
-        labelEl.classList.toggle("is-missing", Boolean(next.resourceId) && !nextResource);
+        labelEl.classList.toggle("is-missing", Boolean(next.resourceId) && !nextResource && !next.displayName);
       }
       syncResourceNavigationButtons(nodeId, resourceType, resourceIndex, exposedResourceId, next.resourceId ?? "", next.filePath ?? "");
+    };
+
+    navBtn.addEventListener("click", () => {
+      const nodeId = navBtn.dataset.nodeId;
+      const resourceType = navBtn.dataset.resourceType as "nam" | "ir" | undefined;
+      const resourceIndex = navBtn.dataset.resourceIndex ? parseInt(navBtn.dataset.resourceIndex, 10) : 0;
+      const exposedResourceId = navBtn.dataset.exposedResourceId;
+      const direction = navBtn.dataset.navDirection === "prev" ? -1 : 1;
+      if (!nodeId || !resourceType || (resourceType !== "nam" && resourceType !== "ir")) {
+        return;
+      }
+
+      // Step from the last selection this button requested while it is still in
+      // flight, so repeated clicks keep advancing instead of recomputing the
+      // same neighbour of a resource we already navigated away from.
+      const navKey = buildResourceNavKey(nodeId, resourceType, resourceIndex, exposedResourceId);
+      const snapshot = getNodeResourceAtIndex(node, resourceIndex);
+      const pending = pendingResourceNavSelections.get(navKey);
+      const current = pending && (performance.now() - pending.at) < PENDING_RESOURCE_NAV_TTL_MS
+        ? { id: pending.resourceId, filePath: pending.filePath }
+        : { id: snapshot.id ?? "", filePath: snapshot.filePath ?? "" };
+
+      const navOptions = {
+        categoryHint: resolveResourceNavigationCategoryHint(node, preset, resourceType),
+        contextKey: resolveResourceContextKey(node, resourceType),
+      };
+
+      // Stepping a Tone3000 result set fetches (and imports) the neighbour, so
+      // it runs asynchronously with the button held busy meanwhile.
+      if (resourceBrowserModal.isTone3000NavigationActive(resourceType, navOptions)) {
+        if (inFlightTone3000NavKeys.has(navKey)) {
+          return;
+        }
+        inFlightTone3000NavKeys.add(navKey);
+        navBtn.setAttribute("aria-busy", "true");
+
+        void (async () => {
+          try {
+            const next = await resourceBrowserModal.stepTone3000Resource(
+              resourceType,
+              current.id ?? "",
+              direction,
+              navOptions,
+            );
+            if (next) {
+              applyResourceNavSelection(nodeId, resourceType, resourceIndex, exposedResourceId, navKey, next);
+            }
+          } finally {
+            inFlightTone3000NavKeys.delete(navKey);
+            navBtn.removeAttribute("aria-busy");
+          }
+        })();
+        return;
+      }
+
+      const next = resourceBrowserModal.getAdjacentResourceSelection(
+        resourceType,
+        current.id ?? "",
+        current.filePath ?? "",
+        direction,
+        navOptions,
+      );
+      if (!next) {
+        return;
+      }
+
+      applyResourceNavSelection(nodeId, resourceType, resourceIndex, exposedResourceId, navKey, next);
     });
   });
   
@@ -5862,6 +6072,10 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
         if (!nodeId || !resourceType) {
           return;
         }
+
+        pendingResourceNavSelections.delete(
+          buildResourceNavKey(nodeId, resourceType, resourceIndex ?? 0, exposedResourceId),
+        );
 
         let selectedPluginResourceId = "";
         if (resourceType === "plugin") {
