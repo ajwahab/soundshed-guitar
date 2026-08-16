@@ -18,6 +18,7 @@ import type {
   LayoutRectangleOverlay,
 } from "./layoutTypes.js";
 import { layoutLookupKey } from "./layoutTypes.js";
+import { areEffectLayoutsEnabled } from "./layoutPreferences.js";
 import type { GraphNode } from "./types.js";
 
 export interface LayoutResourceControlDef {
@@ -27,6 +28,7 @@ export interface LayoutResourceControlDef {
   resourceIndex: number;
   exposedResourceId?: string;
   navigationCategoryHint?: string;
+  navigationContextKey?: string;
   allowBrowseFile?: boolean;
   currentResourceId?: string;
   currentDisplayName: string;
@@ -39,6 +41,7 @@ export interface LayoutResourceControlDef {
  * When blendId is provided, checks for a per-blend layout first.
  */
 export function hasCustomLayout(effectType: string, blendId?: string): boolean {
+  if (!areEffectLayoutsEnabled()) return false;
   if (!uiState.layoutLibrary) return false;
   const key = layoutLookupKey(effectType, blendId);
   const defaultId = uiState.layoutLibrary.defaults[key];
@@ -52,6 +55,8 @@ export function hasCustomLayout(effectType: string, blendId?: string): boolean {
  * When blendId is provided, looks up the per-blend layout.
  */
 export function getCustomLayout(effectType: string, blendId?: string): EffectLayout | null {
+  // Master switch off: no layout backdrops or thumbnails anywhere.
+  if (!areEffectLayoutsEnabled()) return null;
   if (!uiState.layoutLibrary) return null;
   const key = layoutLookupKey(effectType, blendId);
   const defaultId = uiState.layoutLibrary.defaults[key];
@@ -429,26 +434,26 @@ function renderControls(
         const isPluginResource = resourceDef?.resourceType === "plugin";
         const currentResourceId = resourceDef?.currentResourceId ?? "";
         const currentFilePath = resourceDef?.currentFilePath ?? "";
-        const prevSelection = resourceDef?.resourceType === "nam" || resourceDef?.resourceType === "ir"
-          ? resourceBrowserModal.getAdjacentResourceSelection(
-            resourceDef.resourceType as "nam" | "ir",
-            currentResourceId,
-            currentFilePath,
-            -1,
-            { categoryHint: resourceDef.navigationCategoryHint },
-          )
+        const navOptions = {
+          categoryHint: resourceDef?.navigationCategoryHint,
+          contextKey: resourceDef?.navigationContextKey,
+        };
+        const navResourceType = resourceDef?.resourceType === "nam" || resourceDef?.resourceType === "ir"
+          ? resourceDef.resourceType as "nam" | "ir"
           : null;
-        const nextSelection = resourceDef?.resourceType === "nam" || resourceDef?.resourceType === "ir"
-          ? resourceBrowserModal.getAdjacentResourceSelection(
-            resourceDef.resourceType as "nam" | "ir",
-            currentResourceId,
-            currentFilePath,
-            1,
-            { categoryHint: resourceDef.navigationCategoryHint },
-          )
+        // Tone3000 result sets wrap, so there is always a step available; the
+        // neighbour itself is only resolved (fetched) once the button is used.
+        const tone3000NavActive = navResourceType
+          ? resourceBrowserModal.isTone3000NavigationActive(navResourceType, navOptions)
+          : false;
+        const prevSelection = navResourceType && !tone3000NavActive
+          ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, currentResourceId, currentFilePath, -1, navOptions)
           : null;
-        const prevDisabled = prevSelection ? "" : " disabled";
-        const nextDisabled = nextSelection ? "" : " disabled";
+        const nextSelection = navResourceType && !tone3000NavActive
+          ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, currentResourceId, currentFilePath, 1, navOptions)
+          : null;
+        const prevDisabled = tone3000NavActive || prevSelection ? "" : " disabled";
+        const nextDisabled = tone3000NavActive || nextSelection ? "" : " disabled";
         const pluginLoadingIndicator = isPluginResource
           ? `
               <div

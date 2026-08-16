@@ -7,6 +7,7 @@ export type IconKey =
   | "speaker"
   | "output"
   | "sliders"
+  | "layout"
   | "wave"
   | "clock"
   | "reverb"

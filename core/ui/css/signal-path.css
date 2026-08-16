@@ -2671,7 +2671,6 @@ body.signal-path-resizing * {
 }
 
 .effect-visualization-toolbar-icon,
-.effect-visualization-toolbar-btn .customize-layout-icon,
 .effect-visualization-toolbar-btn .recalibrate-icon,
 .effect-visualization-toolbar-btn .bypass-icon {
   width: 15px;
@@ -4194,12 +4193,72 @@ body.signal-path-resizing * {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Master "Use Effect Layouts" switch — sits above the tabs and governs everything below. */
+.layout-picker-master {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.layout-picker-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.layout-picker-switch input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.layout-picker-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+}
+
+.layout-picker-tab {
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.62));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.layout-picker-tab:hover {
+  color: inherit;
+}
+
+.layout-picker-tab.is-active {
+  border-bottom-color: var(--accent-primary, #6ea8ff);
+  color: inherit;
+}
+
 .layout-picker-body {
   padding: 10px 12px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.layout-picker-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.layout-picker-tabpanel[hidden] {
+  display: none;
 }
 
 .layout-picker-note {
@@ -4223,7 +4282,15 @@ body.signal-path-resizing * {
   gap: 4px;
 }
 
+.layout-picker-option-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .layout-picker-option {
+  flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: auto 44px minmax(0, 1fr);
   align-items: center;
@@ -4232,6 +4299,137 @@ body.signal-path-resizing * {
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
+}
+
+/* Custom layouts live behind one dropdown — an effect type can have many. */
+.layout-picker-dropdown-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.layout-picker-custom-row {
+  /* Line the dropdown up with the option text, past the radio column. */
+  margin-left: 21px;
+}
+
+.layout-picker-dropdown {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.18));
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.layout-picker-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.layout-picker-dropdown-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.layout-picker-dropdown-trigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.layout-picker-dropdown-selected {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.layout-picker-dropdown-caret {
+  flex: 0 0 auto;
+  padding-right: 2px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.layout-picker-dropdown[open] .layout-picker-dropdown-caret {
+  transform: rotate(180deg);
+}
+
+.layout-picker-dropdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 210px;
+  padding: 4px;
+  border-top: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+  overflow-y: auto;
+}
+
+.layout-picker-dropdown-item {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layout-picker-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.layout-picker-dropdown-item.is-selected {
+  border-color: color-mix(in srgb, var(--accent-primary, #6ea8ff) 55%, transparent);
+  background: rgba(110, 168, 255, 0.1);
+}
+
+.layout-picker-empty {
+  padding: 6px;
+  font-size: 10px;
+  color: var(--text-secondary, rgba(220, 228, 245, 0.62));
+}
+
+/* Inside the layout list, line the empty state up past the radio column. */
+.layout-picker-options .layout-picker-empty {
+  padding-left: 21px;
+}
+
+.layout-picker-option-edit {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.layout-picker-option-edit svg {
+  width: 14px;
+  height: 14px;
+}
+
+.layout-picker-option-edit:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .layout-picker-option:hover {
@@ -4400,6 +4598,12 @@ body.signal-path-resizing * {
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid var(--border-light, rgba(255, 255, 255, 0.1));
+}
+
+.layout-picker-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .layout-picker-btn {

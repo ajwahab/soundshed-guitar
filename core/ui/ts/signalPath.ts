@@ -52,7 +52,8 @@ import {
 import { resourceBrowserModal } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
 import { hasCustomLayout, getCustomLayout, renderCustomLayout, renderCustomLayoutBackdrop, formatParamValue, type LayoutResourceControlDef } from "./layoutRenderer.js";
-import { buildLayoutMatchText, resolveLayoutForNode } from "./layoutPreferences.js";
+import { areEffectLayoutsEnabled, buildLayoutMatchText, findLayoutById, resolveLayoutForNode } from "./layoutPreferences.js";
+import type { EffectLayout } from "./layoutTypes.js";
 import { closeLayoutPicker, hasSelectableLayouts, openLayoutPicker } from "./layoutPicker.js";
 import { layoutDesigner } from "./layoutDesigner.js";
 import {
@@ -538,14 +539,18 @@ function bindChain3dView(node: GraphNode, preset: Preset): void {
 
 /**
  * Header control for choosing how this effect is presented: the standard
- * auto-generated controls or one of the custom layouts available for it.
- * Hidden when the effect has no custom layouts to switch to.
+ * auto-generated controls or one of the custom layouts available for it. Also the
+ * only route into the layout designer, so it stays available while the layout
+ * feature is on even before the effect has any layouts of its own.
  */
 function renderLayoutSwitchButtonHtml(node: GraphNode, blendId: string, usingCustomLayout: boolean): string {
-  if (!hasSelectableLayouts(node.type, blendId || undefined)) {
+  const canDesign = isFeatureEnabled(Features.EffectLayout);
+  if (!canDesign && !hasSelectableLayouts(node.type, blendId || undefined)) {
     return "";
   }
-  const state = usingCustomLayout ? "custom layout" : "standard controls";
+  const state = !areEffectLayoutsEnabled()
+    ? "standard controls (custom layouts turned off)"
+    : usingCustomLayout ? "custom layout" : "standard controls";
   const label = `Effect layout: ${state}`;
   return `
     <button
@@ -559,7 +564,7 @@ function renderLayoutSwitchButtonHtml(node: GraphNode, blendId: string, usingCus
       title="${label} — choose layout"
       aria-label="${label}. Choose effect layout"
     >
-      ${renderIcon(usingCustomLayout ? "package" : "sliders", "effect-visualization-toolbar-icon layout-switch-icon")}
+      ${renderIcon("layout", "effect-visualization-toolbar-icon layout-switch-icon")}
     </button>
   `;
 }
@@ -572,9 +577,11 @@ function bindLayoutSwitchButton(node: GraphNode, preset: Preset): void {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    const effectType = button.dataset.effectType || node.type;
+    const blendId = button.dataset.blendId || "";
     openLayoutPicker(button, {
-      effectType: button.dataset.effectType || node.type,
-      blendId: button.dataset.blendId || undefined,
+      effectType,
+      blendId: blendId || undefined,
       nodeLabel: getNodeDisplayName(node),
       matchText: buildNodeLayoutMatchText(node),
       presetId: uiState.activePresetId,
@@ -583,6 +590,9 @@ function bindLayoutSwitchButton(node: GraphNode, preset: Preset): void {
         refreshSelectedNodeParams();
         renderSignalPathBar();
       },
+      onDesignLayout: isFeatureEnabled(Features.EffectLayout)
+        ? (layoutId) => openLayoutDesignerForNode(node, effectType, blendId, layoutId)
+        : undefined,
     });
   });
 }
@@ -4627,19 +4637,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   const fullRigCabModelNote = shouldShowFullRigCabModelNote(node, preset)
     ? `<div class="default-effect-shell-inline-note" role="status" aria-live="polite">Signal chain already includes a Cabinet Model (a "Full Rig").</div>`
     : "";
-  const shellLayoutButton = isFeatureEnabled(Features.EffectLayout) ? `
-    <button
-      class="effect-visualization-toolbar-btn node-customize-layout-btn"
-      data-node-id="${node.id}"
-      data-effect-type="${node.type}"
-      data-blend-id="${shellBlendId}"
-      type="button"
-      title="Customize layout"
-      aria-label="Customize layout"
-    >
-      ${renderIcon("gear", "effect-visualization-toolbar-icon customize-layout-icon")}
-    </button>
-  ` : "";
   const equipmentImage = getEffectVisualizationEquipmentImage(node);
   const layoutSwitchButton = renderLayoutSwitchButtonHtml(node, shellBlendId, Boolean(customLayout));
   const amp3dToggleButton = renderAmp3dToggleButtonHtml(node);
@@ -4680,9 +4677,15 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // The 3D amp is its own product shot, so the static equipment image is
   // dropped and the viewport takes the full shell width.
   const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit && !hasCustomLayoutPresentation;
+  // Capture artwork is remote, so keep the stock image as a fallback for when it
+  // cannot be fetched (offline, or the author removed it).
+  const stockEquipmentImage = getEffectVisualizationStockImage(node);
+  const equipmentImageFallbackAttr = stockEquipmentImage && stockEquipmentImage !== equipmentImage
+    ? ` data-fallback-src="${escapeHtml(stockEquipmentImage)}"`
+    : "";
   const shellEquipmentPanel = showEquipmentImage ? `
     <aside class="default-effect-shell-equipment-panel" aria-hidden="true">
-      <img class="default-effect-shell-equipment-image" src="${equipmentImage}" alt="" loading="lazy" decoding="async" />
+      <img class="default-effect-shell-equipment-image" src="${escapeHtml(equipmentImage)}" alt="" loading="lazy" decoding="async"${equipmentImageFallbackAttr} />
     </aside>
   ` : "";
   const shellMainContent = amp3dSplit ? `
@@ -4795,7 +4798,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               aria-label="${shellBypassTitle}"
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
             ${layoutSwitchButton}
-            ${shellLayoutButton}
             ${amp3dToggleButton}
           </div>
         </div>
@@ -4821,6 +4823,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindGraphicEqControls(node, preset);
   bindLayoutOverlayBypassToggles(node, preset);
   bindResourceControls(node, preset);
+  bindEquipmentImageFallback();
   bindHostedPluginActionControls(node);
   bindHostedPluginListControls(node);
   bindCustomEffectActionControls(node);
@@ -4828,7 +4831,6 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindBlendModeOverride(node);
   bindBypassButton(node, preset);
   bindSelectedNodeDspStatusToggle();
-  bindCustomizeLayoutButton(node);
   bindLayoutSwitchButton(node, preset);
   bindAmp3dToggleButton();
   setAmp3dImmersiveMode(Boolean(amp3dSplit));
@@ -5601,6 +5603,24 @@ function bindGraphicEqControls(node: GraphNode, preset: Preset): void {  if (Eff
   });
 }
 
+/// Remote capture artwork can fail to load (offline, image withdrawn): swap in
+/// the stock equipment image rather than leaving an empty panel.
+function bindEquipmentImageFallback(): void {
+  const images = nodeParamsPanelElement?.querySelectorAll<HTMLImageElement>(
+    ".default-effect-shell-equipment-image[data-fallback-src]",
+  ) ?? [];
+  images.forEach((image) => {
+    image.addEventListener("error", () => {
+      const fallback = image.dataset.fallbackSrc;
+      if (!fallback || image.src.endsWith(fallback)) {
+        return;
+      }
+      delete image.dataset.fallbackSrc;
+      image.src = fallback;
+    }, { once: true });
+  });
+}
+
 function bindResourceControls(node: GraphNode, preset: Preset): void {
   const syncResourceNavigationButtons = (
     nodeId: string,
@@ -6240,51 +6260,53 @@ function bindBypassButton(node: GraphNode, preset: Preset): void {
   });
 }
 
-function bindCustomizeLayoutButton(node: GraphNode): void {
-  const layoutButtons = document.querySelectorAll<HTMLButtonElement>("#node-params-panel .node-customize-layout-btn");
-  if (!layoutButtons.length) {
-    return;
+/**
+ * Opens the layout designer for a node, from the layout picker.
+ * `layoutId` is null to start a fresh auto-generated layout (so an effect type can
+ * hold several), or an existing layout id to edit that one.
+ */
+function openLayoutDesignerForNode(
+  node: GraphNode,
+  effectType: string,
+  blendId: string,
+  layoutId: string | null,
+): void {
+  let existingLayout: EffectLayout | null = null;
+  if (layoutId) {
+    existingLayout = findLayoutById(layoutId, effectType, blendId || undefined);
+    if (!existingLayout) {
+      showNotification("That layout is no longer available", "error");
+      return;
+    }
   }
 
-  layoutButtons.forEach((layoutBtn) => {
-    layoutBtn.addEventListener("click", () => {
-      const effectType = layoutBtn.dataset.effectType || node.type;
-      const blendId = layoutBtn.dataset.blendId || "";
+  // Resolve blend params so the designer shows all available controls
+  let blendName = "";
+  let blendParamDefs: Array<{ key: string; name: string; default: number; min: number; max: number; unit: string; step?: number }> | undefined;
+  if (blendId) {
+    const blendState = getBlendState(node);
+    if (blendState) {
+      blendName = blendState.blend?.name || blendId;
+      // Include ALL blend param specs so every possible knob is available in the designer
+      const allBlendParams = BLEND_PARAM_SPECS.map((spec) => ({
+        key: spec.id,
+        name: spec.label,
+        default: 0,
+        min: spec.min,
+        max: spec.max,
+        unit: "amount",
+        step: 0.1,
+      }));
+      const typeInfo = getNodeEffectInfo(node);
+      const baseParams = (typeInfo?.parameters || []).filter((p) => p.key !== "blend");
+      blendParamDefs = [...allBlendParams, ...baseParams];
+    }
+  }
 
-      // For blend effects, try per-blend layout first, then fall back to effect-type layout
-      const existingLayout = blendId
-        ? (getCustomLayout(effectType, blendId) ?? getCustomLayout(effectType))
-        : getCustomLayout(effectType);
-
-      // Resolve blend params so the designer shows all available controls
-      let blendName = "";
-      let blendParamDefs: Array<{ key: string; name: string; default: number; min: number; max: number; unit: string; step?: number }> | undefined;
-      if (blendId) {
-        const blendState = getBlendState(node);
-        if (blendState) {
-          blendName = blendState.blend?.name || blendId;
-          // Include ALL blend param specs so every possible knob is available in the designer
-          const allBlendParams = BLEND_PARAM_SPECS.map((spec) => ({
-            key: spec.id,
-            name: spec.label,
-            default: 0,
-            min: spec.min,
-            max: spec.max,
-            unit: "amount",
-            step: 0.1,
-          }));
-          const typeInfo = getNodeEffectInfo(node);
-          const baseParams = (typeInfo?.parameters || []).filter((p) => p.key !== "blend");
-          blendParamDefs = [...allBlendParams, ...baseParams];
-        }
-      }
-
-      layoutDesigner.open(effectType, existingLayout ?? undefined, {
-        blendId: blendId || undefined,
-        blendName: blendName || undefined,
-        blendParamDefs,
-      });
-    });
+  layoutDesigner.open(effectType, existingLayout ?? undefined, {
+    blendId: blendId || undefined,
+    blendName: blendName || undefined,
+    blendParamDefs,
   });
 }
 

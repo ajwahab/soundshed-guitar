@@ -103,6 +103,21 @@
   margin-right: 4px;
 }
 
+.layout-designer-name-input {
+  width: 190px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-dark-medium);
+  border-radius: 4px;
+  background: var(--bg-dark-secondary);
+  color: var(--text-dark-primary);
+  font-size: 12px;
+}
+
+.layout-designer-name-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
 /* Canvas area */
 .layout-designer-canvas-container {
   flex: 1;

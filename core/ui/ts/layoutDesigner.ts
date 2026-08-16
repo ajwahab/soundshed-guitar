@@ -159,6 +159,11 @@ export class LayoutDesignerModal {
   private widthInput: HTMLInputElement | null = null;
   private heightInput: HTMLInputElement | null = null;
 
+  // Layout name
+  private nameInput: HTMLInputElement | null = null;
+  /** Name used when the user leaves the name field blank (effect display name). */
+  private fallbackLayoutName = "";
+
   // Callbacks
   private onSaveCallback?: (layout: EffectLayout) => void;
   private onCloseCallback?: (didSave: boolean) => void;
@@ -212,6 +217,9 @@ export class LayoutDesignerModal {
     this.widthInput = document.getElementById("layout-designer-width") as HTMLInputElement;
     this.heightInput = document.getElementById("layout-designer-height") as HTMLInputElement;
 
+    // Layout name input
+    this.nameInput = document.getElementById("layout-designer-name") as HTMLInputElement;
+
     this.bindEvents();
   }
 
@@ -251,6 +259,15 @@ export class LayoutDesignerModal {
     // Dimension inputs
     this.widthInput?.addEventListener("change", () => this.updateDimensions());
     this.heightInput?.addEventListener("change", () => this.updateDimensions());
+
+    // Layout name — committed on blur/Enter so a rename is a single undo step
+    this.nameInput?.addEventListener("change", () => this.applyLayoutName(true));
+    this.nameInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.nameInput?.blur();
+      }
+    });
 
     // Canvas mouse events for drag
     this.canvas?.addEventListener("mousedown", (e) => this.onCanvasMouseDown(e));
@@ -302,17 +319,19 @@ export class LayoutDesignerModal {
     this.resourceCandidates = this.buildResourceCandidates(typeInfo);
 
     // Set title — include blend name when designing a per-blend layout
+    const baseName = typeInfo?.displayName || effectType;
+    const blendSuffix = options?.blendName ? ` — ${options.blendName}` : "";
     if (this.titleEl) {
-      const baseName = typeInfo?.displayName || effectType;
-      const blendSuffix = options?.blendName ? ` — ${options.blendName}` : "";
       this.titleEl.textContent = `Layout Designer - ${baseName}${blendSuffix}`;
     }
+    this.fallbackLayoutName = `${baseName}${blendSuffix}`;
 
     // Load or create layout
     if (existingLayout) {
       this.layout = JSON.parse(JSON.stringify(existingLayout)); // Deep clone
     } else {
       this.layout = this.createDefaultLayout(effectType);
+      this.layout.name = this.fallbackLayoutName;
     }
 
     // Ensure layoutId is always set at open time so images can reference it before save.
@@ -356,6 +375,9 @@ export class LayoutDesignerModal {
       } else {
         // No user copy yet: fork a new one from this factory layout
         this.layout.layoutId = generateLayoutId();
+        // Rename the fork so it is distinguishable from the factory original
+        const forkedFrom = this.layout.name || this.fallbackLayoutName;
+        this.layout.name = `${forkedFrom} (copy)`;
       }
     }
 
@@ -390,6 +412,7 @@ export class LayoutDesignerModal {
     }
 
     // Update UI
+    this.updateNameInput();
     this.updateDimensionInputs();
     this.updateZoomUI();
     this.updateUndoRedoButtons();
@@ -568,6 +591,12 @@ export class LayoutDesignerModal {
 
   private async save(): Promise<void> {
     if (!this.layout) return;
+
+    // Pick up any name edit that has not been committed by a blur yet
+    this.applyLayoutName();
+    if (!this.layout.name) {
+      this.layout.name = this.fallbackLayoutName;
+    }
 
     this.layout.modifiedAt = new Date().toISOString();
 
@@ -994,6 +1023,7 @@ export class LayoutDesignerModal {
     this.redoStack.push(JSON.stringify(this.layout));
     this.layout = JSON.parse(this.undoStack.pop()!) as EffectLayout;
     this.selectedElement = null;
+    this.updateNameInput();
     this.updateDimensionInputs();
     this.renderCanvas();
     this.renderSidebar();
@@ -1005,6 +1035,7 @@ export class LayoutDesignerModal {
     this.undoStack.push(JSON.stringify(this.layout));
     this.layout = JSON.parse(this.redoStack.pop()!) as EffectLayout;
     this.selectedElement = null;
+    this.updateNameInput();
     this.updateDimensionInputs();
     this.renderCanvas();
     this.renderSidebar();
@@ -1068,6 +1099,25 @@ export class LayoutDesignerModal {
     if (!this.layout) return;
     if (this.widthInput) this.widthInput.value = String(this.layout.dimensions.width);
     if (this.heightInput) this.heightInput.value = String(this.layout.dimensions.height);
+  }
+
+  /**
+   * Copy the name field into the layout. Falls back to the effect display name so
+   * the layout picker and layout library never have to show "(Unnamed layout)".
+   */
+  private applyLayoutName(pushUndo = false): void {
+    if (!this.layout || !this.nameInput) return;
+    const name = this.nameInput.value.trim() || this.fallbackLayoutName;
+    if ((this.layout.name ?? "") === name) return;
+    if (pushUndo) this.pushUndoState();
+    this.layout.name = name;
+    this.updateNameInput();
+  }
+
+  private updateNameInput(): void {
+    if (!this.nameInput) return;
+    this.nameInput.value = this.layout?.name ?? "";
+    this.nameInput.placeholder = this.fallbackLayoutName || "Untitled layout";
   }
 
   private updateCanvasSize(): void {
