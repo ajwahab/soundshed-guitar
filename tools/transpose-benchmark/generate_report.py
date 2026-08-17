@@ -1485,7 +1485,8 @@ def build_report(snapshots: list[dict], output_root: Path) -> str:
             for effect in effect_labels:
                 header += (
                     f"<th data-effect='{html.escape(effect)}'>{html.escape(effect)}<br>"
-                    "<span class='meta'>latency rep/meas · rtf · avg/max block · peak/RMS</span></th>")
+                    "<span class='meta'>latency rep/meas · rtf · avg/max block · peak/RMS · "
+                    "pitch err±jitter</span></th>")
             header += "</tr>"
             parts.append(header)
 
@@ -1530,6 +1531,25 @@ def build_report(snapshots: list[dict], output_root: Path) -> str:
                             return "n/a"
                         return f"{float(value):.{precision}f}"
 
+                    # Pitch accuracy: median cents error of the output fundamental
+                    # against the requested interval. A shifter can look perfect on
+                    # latency and CPU while not actually transposing, so flag hard.
+                    pitch_err = entry.get("pitchErrorCents")
+                    pitch_jitter = entry.get("pitchJitterCents")
+                    pitch_frames = entry.get("pitchFrames")
+                    if pitch_err is None:
+                        pitch_html = "<div class='stat meta'>pitch n/a</div>"
+                    else:
+                        err = float(pitch_err)
+                        # 25 cents is well past "in tune" but below a quarter tone;
+                        # anything above it is an audible tuning error, not artifact.
+                        pitch_class = "good" if abs(err) <= 25.0 else "warn"
+                        frames_text = f" · {int(pitch_frames)} fr" if pitch_frames else ""
+                        pitch_html = (
+                            f"<div class='stat'>pitch <span class='{pitch_class}'>"
+                            f"{err:+.1f}</span> ± {fmt_num(pitch_jitter)} cents"
+                            f"<span class='meta'>{frames_text}</span></div>")
+
                     cell = (
                         f"<div class='stat'>lat {fmt_samples(entry.get('reportedLatencySamples'))} / "
                         f"{fmt_samples(entry.get('measuredLatencySamples'))} smp"
@@ -1540,6 +1560,7 @@ def build_report(snapshots: list[dict], output_root: Path) -> str:
                         f"blk {fmt_num(avg_block, 0)}/{fmt_num(max_block, 0)} µs</div>"
                         f"<div class='stat'>peak {fmt_num(peak_db)} dB · "
                         f"rms {fmt_num(rms_db)} dB</div>"
+                        f"{pitch_html}"
                         f"{audio_tag}")
                     row.append(f"<td data-effect='{html.escape(effect)}'>{cell}</td>")
                 row.append("</tr>")
