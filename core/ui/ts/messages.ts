@@ -17,7 +17,8 @@ import { applyAutomationState, handleMidiLogEntry, handleMidiLearnCapture } from
 import { applyToneSharingAppSettings, registerInstalledToneSharingPackFromImport, handleToneSharingDeepLink } from "./toneSharingPanel.js";
 import { applyJamAppSettings } from "./jam.js";
 import { Features, isFeatureEnabled } from "./featureFlags.js";
-import type { CompositePreset, GlobalSignalChainConfig, LibraryResource, Preset, PresetFolder, ResourceRef, Setlist, UiSettings } from "./types.js";
+import type { CompositePreset, GlobalSignalChainConfig, InputAnalyzerTelemetry, LibraryResource, Preset, PresetFolder, ResourceRef, Setlist, SignalDiagnosticsAnalyzerFrame, SignalDiagnosticsFrame, SignalDiagnosticsRoster, SignalLevelDiagnostics, SignalLevelMetrics, SignalLevelNodeMetrics, UiSettings } from "./types.js";
+import { SIGNAL_DIAGNOSTICS_TUPLE_LENGTH } from "./types.js";
 import { EffectGuids } from "./effectGuids.js";
 import { migratePresetNodeTypes, setNodeParam } from "./presetV2.js";
 import { handleResourceDataMessage } from "./archiveUtils.js";
@@ -160,8 +161,139 @@ function shouldIgnoreStatePreset(incoming: Preset): boolean {
   return stillValid;
 }
 
-const DEBUG_SNAPSHOT_SKIP_TYPES = new Set(["dspPerformance", "signalLevelDiagnostics", "spatialPosition", "captureDebugSnapshot", "debugSnapshotWritten"]);
+const DEBUG_SNAPSHOT_SKIP_TYPES = new Set(["dspPerformance", "sld", "sldA", "sldRoster", "spatialPosition", "captureDebugSnapshot", "debugSnapshotWritten"]);
 let debugSnapshotTimer: number | null = null;
+
+/* ── Signal diagnostics reassembly ─────────────────────────────────────────
+ * The backend streams levels as bare numeric tuples ("sld", 20 Hz) resolved against
+ * a roster ("sldRoster") that is only re-sent when the node set changes, plus separate
+ * analyzer payloads ("sldA"). Everything is rebuilt here into the SignalLevelDiagnostics
+ * shape the views consume, so the wire format stays independent of the render code.
+ */
+let signalDiagnosticsRoster: SignalDiagnosticsRoster | null = null;
+const signalDiagnosticsAnalyzerByNodeId = new Map<string, InputAnalyzerTelemetry>();
+
+function signalDiagnosticsMetrics(values: number[], offset: number): SignalLevelMetrics {
+  const peakDbfs = values[offset];
+  return {
+    peakDbfs,
+    rmsDbfs: values[offset + 1],
+    // Derived rather than transmitted: the backend computes it the same way.
+    headroomDb: Math.max(0, -peakDbfs),
+    clipCount: values[offset + 2],
+    clipped: values[offset + 3] === 1,
+  };
+}
+
+function applySignalDiagnosticsRoster(roster: SignalDiagnosticsRoster): void {
+  if (!roster || !Array.isArray(roster.nodes)) {
+    return;
+  }
+  signalDiagnosticsRoster = roster;
+
+  // Drop cached analyzer telemetry for nodes that are no longer present, so a removed
+  // analyzer cannot keep painting stale spectrogram data.
+  const liveNodeIds = new Set(roster.nodes.map((entry) => entry[2]));
+  for (const nodeId of [...signalDiagnosticsAnalyzerByNodeId.keys()]) {
+    if (!liveNodeIds.has(nodeId)) {
+      signalDiagnosticsAnalyzerByNodeId.delete(nodeId);
+    }
+  }
+}
+
+function applySignalDiagnosticsFrame(frame: SignalDiagnosticsFrame): boolean {
+  const roster = signalDiagnosticsRoster;
+  // A frame that predates the roster we hold describes a different node set — drop it
+  // and wait for the matching roster rather than mismapping levels onto the wrong nodes.
+  if (!roster || frame?.seq !== roster.seq || !Array.isArray(frame.d)) {
+    return false;
+  }
+  if (frame.d.length !== roster.nodes.length * SIGNAL_DIAGNOSTICS_TUPLE_LENGTH) {
+    return false;
+  }
+
+  const nodes: SignalLevelNodeMetrics[] = roster.nodes.map((entry, index) => {
+    const [scope, presetId, nodeId, nodeType, channelCount] = entry;
+    const node: SignalLevelNodeMetrics = {
+      scope,
+      nodeId,
+      nodeType,
+      channelCount,
+      levels: signalDiagnosticsMetrics(frame.d, index * SIGNAL_DIAGNOSTICS_TUPLE_LENGTH),
+    };
+    if (presetId) {
+      node.presetId = presetId;
+    }
+    const analyzer = signalDiagnosticsAnalyzerByNodeId.get(nodeId);
+    if (analyzer) {
+      node.analyzer = analyzer;
+    }
+    return node;
+  });
+
+  const diagnostics: SignalLevelDiagnostics = {
+    rawInput: signalDiagnosticsMetrics(frame.r, 0),
+    input: signalDiagnosticsMetrics(frame.i, 0),
+    output: signalDiagnosticsMetrics(frame.o, 0),
+    nodes,
+  };
+  uiState.signalDiagnostics = diagnostics;
+  return true;
+}
+
+function applySignalDiagnosticsAnalyzer(frame: SignalDiagnosticsAnalyzerFrame): boolean {
+  const roster = signalDiagnosticsRoster;
+  if (!roster || frame?.seq !== roster.seq || !frame.id || !Array.isArray(frame.l)) {
+    return false;
+  }
+
+  const [spectrogramMinDbfs, spectrogramMaxDbfs, spectrogramMinHz, spectrogramMaxHz] = roster.spectrogramRange;
+  const [barkMinDbfs, barkMaxDbfs, barkMinHz, barkMaxHz] = roster.barkRange;
+  const stereo = frame.l[9] === 1;
+
+  const analyzer: InputAnalyzerTelemetry = {
+    levels: {
+      peakPercent: frame.l[0],
+      rmsPercent: frame.l[1],
+      rmsDbu: frame.l[2],
+      rmsDbv: frame.l[3],
+      rmsVolts: frame.l[4],
+      momentaryLufs: frame.l[5],
+      shortTermLufs: frame.l[6],
+      integratedLufs: frame.l[7],
+      activeChannelCount: frame.l[8],
+      stereo,
+      loudnessValid: frame.l[10] === 1,
+      channelMode: stereo ? "stereo" : "mono",
+    },
+    spectrogram: {
+      binsDb: frame.s ?? [],
+      minDbfs: spectrogramMinDbfs,
+      maxDbfs: spectrogramMaxDbfs,
+      minFrequencyHz: spectrogramMinHz,
+      maxFrequencyHz: spectrogramMaxHz,
+      generatedAtMs: frame.t,
+    },
+    bark: {
+      bandsDb: frame.b ?? [],
+      minDbfs: barkMinDbfs,
+      maxDbfs: barkMaxDbfs,
+      minFrequencyHz: barkMinHz,
+      maxFrequencyHz: barkMaxHz,
+      generatedAtMs: frame.t,
+    },
+  };
+
+  signalDiagnosticsAnalyzerByNodeId.set(frame.id, analyzer);
+
+  // Analyzer payloads follow their frame, so patch the snapshot the frame just built
+  // rather than waiting a further 50 ms for the next one.
+  const node = uiState.signalDiagnostics?.nodes.find((candidate) => candidate.nodeId === frame.id);
+  if (node) {
+    node.analyzer = analyzer;
+  }
+  return true;
+}
 
 const TELEMETRY_UI_FPS = 30;
 const TELEMETRY_UI_FRAME_MS = 1000 / TELEMETRY_UI_FPS;
@@ -528,7 +660,7 @@ export function handleIncomingMessage(message: string): void {
   const payload = JSON.parse(message) as Record<string, unknown>;
   const type = typeof payload.type === "string" ? payload.type : "";
   // Frequent diagnostics messages; avoid spamming console.
-  if (type !== "dspPerformance" && type !== "signalLevelDiagnostics" && type !== "spatialPosition") {
+  if (type !== "dspPerformance" && type !== "sld" && type !== "sldA" && type !== "sldRoster" && type !== "spatialPosition") {
     console.log("[JS] handleIncomingMessage received:", message.substring(0, 200));
     console.log("[JS] Parsed message type:", type);
   }
@@ -1515,10 +1647,18 @@ export function handleIncomingMessage(message: string): void {
       }
       break;
     }
-    case "signalLevelDiagnostics": {
-      const diagnostics = payload as unknown as import("./types.js").SignalLevelDiagnostics;
-      if (diagnostics && diagnostics.input && diagnostics.output) {
-        uiState.signalDiagnostics = diagnostics;
+    case "sldRoster": {
+      applySignalDiagnosticsRoster(payload as unknown as SignalDiagnosticsRoster);
+      break;
+    }
+    case "sld": {
+      if (applySignalDiagnosticsFrame(payload as unknown as SignalDiagnosticsFrame)) {
+        queueTelemetryUiUpdate("signalDiagnostics");
+      }
+      break;
+    }
+    case "sldA": {
+      if (applySignalDiagnosticsAnalyzer(payload as unknown as SignalDiagnosticsAnalyzerFrame)) {
         queueTelemetryUiUpdate("signalDiagnostics");
       }
       break;

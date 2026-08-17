@@ -760,6 +760,28 @@ private:
     bool mSpatialPositionsWereSent = false;
     bool mPendingSignalDiagnosticsUpdate = false;
     std::chrono::steady_clock::time_point mLastSignalDiagnosticsUpdateSentAt{};
+
+    // Identity of one node in the signal diagnostics roster. The roster holds everything
+    // about a node that does not change frame to frame, so the 20 Hz frames can carry
+    // nothing but numbers. A roster is re-sent (with a new sequence number) whenever this
+    // set changes; frames whose seq does not match the UI's roster are dropped there.
+    struct SignalDiagnosticsRosterEntry
+    {
+        std::string scope;
+        std::string presetId;
+        std::string nodeId;
+        std::string nodeType;
+        int channelCount = 0;
+        bool hasAnalyzer = false;
+
+        bool operator==(const SignalDiagnosticsRosterEntry&) const = default;
+    };
+    std::vector<SignalDiagnosticsRosterEntry> mSignalDiagnosticsRoster;
+    std::uint32_t mSignalDiagnosticsRosterSeq = 0;
+    // Forces the next send to re-emit the roster even if the node set is unchanged, so a
+    // reloaded UI can recover without waiting for a graph edit.
+    bool mSignalDiagnosticsRosterDirty = true;
+
     bool mPendingPerformanceStatsUpdate = false;
     std::chrono::steady_clock::time_point mLastPerformanceStatsUpdateSentAt{};
 

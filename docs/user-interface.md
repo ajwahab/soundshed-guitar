@@ -79,7 +79,9 @@ The UI is a web-based single-page application (SPA) hosted in a native WebView. 
 | `globalChain` | `{config}` | Global signal chain configuration |
 | `effectCatalog` | `{effects: [...]}` | Available effect types |
 | `dspPerformance` | `{...}` | DSP performance statistics |
-| `signalLevelDiagnostics` | `{rawInput, input, output, nodes}` | Signal level diagnostics and per-node meters |
+| `sldRoster` | `{seq, nodes: [[scope, presetId, nodeId, nodeType, channelCount, hasAnalyzer]], spectrogramRange, barkRange}` | Signal diagnostics roster: everything about the node set that does not change frame to frame. Sent only when the node set changes, and on `getSignalDiagnostics`. |
+| `sld` | `{seq, r, i, o, d}` | Signal level frame at 20 Hz. `r`/`i`/`o` are raw input, processed input and output; `d` holds one tuple per roster node, flattened in roster order. Every tuple is `[peakDbfs, rmsDbfs, clipCount, clipped]`, rounded to 0.1 dB; `headroomDb` is derived UI-side. Frames whose `seq` does not match the held roster are dropped. |
+| `sldA` | `{seq, id, t, l, s, b}` | Analyzer telemetry for one node — levels `l`, spectrogram bins `s` and bark bands `b` in whole dBFS. Sent separately from `sld` because it is an order of magnitude larger than a level tuple. |
 | `spatialPosition` | `{nodes: [{scope, presetId?, nodeId, azimuth, elevation, distance, itdUs, ildDb, rateHz, moving}]}` | Live source position for every 3D Spatial node, ~20 Hz. Purely cosmetic: it keeps the spatial panner's puck in sync with what is being heard, and the widget falls back to the anchor position if it never arrives. Only sent while at least one such node exists. |
 | `metronomeState` | `{bpm, enabled, ...}` | Metronome state |
 | `layoutSaved` | `{...}` | Effect layout saved |
@@ -188,7 +190,7 @@ Rules for anyone touching this:
   unconditionally), `globalSignalChain` (its absence triggers a `getGlobalChain` round trip)
   and `presetArchiveSession` (its absence clears the UI's archive-session state).
 - A full request queued in the same idle window wins over a preset-scoped one.
-- The periodic telemetry feeds (`signalLevelDiagnostics` at 20 Hz, `dspPerformance`) only
+- The periodic telemetry feeds (`sld` at 20 Hz, `dspPerformance`) only
   drive on-screen meters and are suppressed while the UI reports itself hidden via
   `uiVisibility`.
 

@@ -392,8 +392,6 @@ export interface DSPPerformanceStats {
 }
 
 export interface SignalLevelMetrics {
-  peak: number;
-  rms: number;
   peakDbfs: number;
   rmsDbfs: number;
   headroomDb: number;
@@ -456,6 +454,52 @@ export interface SignalLevelDiagnostics {
   output: SignalLevelMetrics;
   nodes: SignalLevelNodeMetrics[];
   timestamp?: number;
+}
+
+/* ── Signal diagnostics wire format ────────────────────────────────────────
+ * Levels stream at 20 Hz, so everything static about a node lives in a roster
+ * ("sldRoster") that is re-sent only when the node set changes. Each frame
+ * ("sld") then carries nothing but numbers, resolved against the roster by
+ * matching `seq`. messages.ts reassembles both into SignalLevelDiagnostics.
+ */
+
+/** [scope, presetId, nodeId, nodeType, channelCount, hasAnalyzer] */
+export type SignalDiagnosticsRosterNode = [string, string, string, string, number, number];
+
+/** [minDbfs, maxDbfs, minFrequencyHz, maxFrequencyHz] */
+export type SignalDiagnosticsBandRange = [number, number, number, number];
+
+export interface SignalDiagnosticsRoster {
+  seq: number;
+  nodes: SignalDiagnosticsRosterNode[];
+  spectrogramRange: SignalDiagnosticsBandRange;
+  barkRange: SignalDiagnosticsBandRange;
+}
+
+/** Values per level tuple: [peakDbfs, rmsDbfs, clipCount, clipped]. */
+export const SIGNAL_DIAGNOSTICS_TUPLE_LENGTH = 4;
+
+export interface SignalDiagnosticsFrame {
+  seq: number;
+  r: number[];
+  i: number[];
+  o: number[];
+  /** Node level tuples, flattened in roster order. */
+  d: number[];
+}
+
+export interface SignalDiagnosticsAnalyzerFrame {
+  seq: number;
+  id: string;
+  /** generatedAtMs */
+  t: number;
+  /** [peakPercent, rmsPercent, rmsDbu, rmsDbv, rmsVolts, momentaryLufs, shortTermLufs,
+   *   integratedLufs, activeChannelCount, stereo, loudnessValid] */
+  l: number[];
+  /** Spectrogram bins, whole dBFS. */
+  s: number[];
+  /** Bark bands, whole dBFS. */
+  b: number[];
 }
 
 export interface SignalPeakHoldEntry {

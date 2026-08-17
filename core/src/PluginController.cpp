@@ -16,6 +16,7 @@
 #include "dsp/LevelTargets.h"
 #include "dsp/BlockSincResampler.h"
 #include "dsp/effects/BuiltinEffects.h"
+#include "dsp/effects/InputAnalyzerEffect.h"
 #include "dsp/effects/NAMSlimmableSettings.h"
 #if defined(GUITARFX_ENABLE_WASM_EFFECTS)
 #include "dsp/effects/WasmEffect.h"
@@ -223,12 +224,6 @@ namespace
     {
         if (linear <= kMinLinear) return -120.0;
         return 20.0 * std::log10(linear);
-    }
-
-    double HeadroomDbFromPeak(double peak)
-    {
-        const double peakDb = ToDbFS(peak);
-        return std::max(0.0, -peakDb);
     }
 
         std::string FormatTimestamp()
@@ -10691,6 +10686,9 @@ void PluginController::HandlePreviewCapturedRiffRequest(const nlohmann::json& pa
 
 void PluginController::HandleGetSignalDiagnosticsRequest()
 {
+    // The UI only asks for this on startup or after a reload, when it has no roster to
+    // resolve frames against, so always re-send the roster alongside the next frame.
+    mSignalDiagnosticsRosterDirty = true;
     RequestSignalDiagnosticsToUI();
 }
 
@@ -10705,6 +10703,7 @@ void PluginController::HandleSetSignalDiagnosticsEnabledRequest(const nlohmann::
     const bool enabled = true;
     mSignalDiagnosticsEnabled.store(enabled, std::memory_order_release);
     mPresetMixer.SetSignalDiagnosticsEnabled(enabled);
+    mSignalDiagnosticsRosterDirty = true;
     mAppSettings[kSignalDiagnosticsSettingKey] = enabled;
     SaveAppSettings();
 }
@@ -14507,87 +14506,126 @@ void PluginController::TrySendPendingSignalDiagnosticsToUI()
 void PluginController::SendSignalDiagnosticsToUI()
 {
     auto snapshot = mPresetMixer.GetSignalDiagnosticsSnapshot();
-    nlohmann::json msg;
-    msg["type"] = "signalLevelDiagnostics";
 
-    auto buildLevelJson = [](const MultiPresetMixer::SignalLevelStats& stats)
+    // Levels travel as bare numeric tuples, so the 20 Hz frame carries no repeated keys or
+    // node ids. Values are rounded to 0.1 dB: the UI renders one decimal place, and full
+    // double precision was costing ~14 characters per value for digits nothing displays.
+    const auto roundDb = [](double db) { return std::round(db * 10.0) / 10.0; };
+    const auto buildLevelTuple = [&roundDb](const MultiPresetMixer::SignalLevelStats& stats)
     {
-        const double peakDb = ToDbFS(stats.peak);
-        const double rmsDb = ToDbFS(stats.rms);
-        const double headroomDb = HeadroomDbFromPeak(stats.peak);
+        // `clipped` is carried explicitly rather than derived UI-side from the rounded peak:
+        // a peak of 0.999 rounds to -0.0 dBFS, which would otherwise read as clipping.
         const bool clipped = stats.clipCount > 0 || stats.peak >= 1.0;
-        return nlohmann::json{
-            {"peak", stats.peak},
-            {"rms", stats.rms},
-            {"peakDbfs", peakDb},
-            {"rmsDbfs", rmsDb},
-            {"headroomDb", headroomDb},
-            {"clipped", clipped},
-            {"clipCount", stats.clipCount},
-        };
+        return nlohmann::json::array({
+            roundDb(ToDbFS(stats.peak)),
+            roundDb(ToDbFS(stats.rms)),
+            stats.clipCount,
+            clipped ? 1 : 0,
+        });
     };
 
-    auto buildAnalyzerJson = [](const MultiPresetMixer::NodeSignalLevel::AnalyzerTelemetry& analyzer)
-    {
-        nlohmann::json levels;
-        levels["peakPercent"] = analyzer.peakPercent;
-        levels["rmsPercent"] = analyzer.rmsPercent;
-        levels["rmsDbu"] = analyzer.rmsDbu;
-        levels["rmsDbv"] = analyzer.rmsDbv;
-        levels["rmsVolts"] = analyzer.rmsVolts;
-        levels["loudnessValid"] = analyzer.loudnessValid;
-        levels["momentaryLufs"] = analyzer.momentaryLufs;
-        levels["shortTermLufs"] = analyzer.shortTermLufs;
-        levels["integratedLufs"] = analyzer.integratedLufs;
-        levels["stereo"] = analyzer.stereo;
-        levels["activeChannelCount"] = analyzer.activeChannelCount;
-        levels["channelMode"] = analyzer.stereo ? "stereo" : "mono";
-
-        nlohmann::json spectrogram;
-        spectrogram["binsDb"] = analyzer.spectrogramBinsDb;
-        spectrogram["minDbfs"] = analyzer.spectrogramMinDbfs;
-        spectrogram["maxDbfs"] = analyzer.spectrogramMaxDbfs;
-        spectrogram["minFrequencyHz"] = analyzer.spectrogramMinFrequencyHz;
-        spectrogram["maxFrequencyHz"] = analyzer.spectrogramMaxFrequencyHz;
-        spectrogram["generatedAtMs"] = analyzer.generatedAtMs;
-
-        nlohmann::json bark;
-        bark["bandsDb"] = analyzer.barkBandsDb;
-        bark["minDbfs"] = analyzer.barkMinDbfs;
-        bark["maxDbfs"] = analyzer.barkMaxDbfs;
-        bark["minFrequencyHz"] = analyzer.barkMinFrequencyHz;
-        bark["maxFrequencyHz"] = analyzer.barkMaxFrequencyHz;
-        bark["generatedAtMs"] = analyzer.generatedAtMs;
-
-        nlohmann::json result;
-        result["levels"] = std::move(levels);
-        result["spectrogram"] = std::move(spectrogram);
-        result["bark"] = std::move(bark);
-        return result;
-    };
-
-    msg["rawInput"] = buildLevelJson(snapshot.rawInput);
-    msg["input"] = buildLevelJson(snapshot.input);
-    msg["output"] = buildLevelJson(snapshot.output);
-
-    nlohmann::json nodes = nlohmann::json::array();
+    std::vector<SignalDiagnosticsRosterEntry> roster;
+    roster.reserve(snapshot.nodes.size());
     for (const auto& n : snapshot.nodes)
     {
-        nlohmann::json node;
-        node["scope"] = n.scope;
-        node["presetId"] = n.presetId;
-        node["nodeId"] = n.nodeId;
-        node["nodeType"] = n.nodeType;
-        node["channelCount"] = n.channelCount;
-        node["levels"] = buildLevelJson(n.levels);
-        if (n.analyzer)
-        {
-            node["analyzer"] = buildAnalyzerJson(*n.analyzer);
-        }
-        nodes.push_back(node);
+        roster.push_back(SignalDiagnosticsRosterEntry{
+            n.scope, n.presetId, n.nodeId, n.nodeType, n.channelCount, n.analyzer.has_value() });
     }
-    msg["nodes"] = nodes;
-    SendMessageToUI(msg.dump());
+
+    if (mSignalDiagnosticsRosterDirty || roster != mSignalDiagnosticsRoster)
+    {
+        mSignalDiagnosticsRoster = roster;
+        mSignalDiagnosticsRosterDirty = false;
+        ++mSignalDiagnosticsRosterSeq;
+
+        nlohmann::json rosterNodes = nlohmann::json::array();
+        for (const auto& entry : mSignalDiagnosticsRoster)
+        {
+            rosterNodes.push_back(nlohmann::json::array({
+                entry.scope, entry.presetId, entry.nodeId, entry.nodeType,
+                entry.channelCount, entry.hasAnalyzer ? 1 : 0 }));
+        }
+
+        // The analyzer display ranges are compile-time constants, so they ride along with
+        // the roster instead of being repeated in every analyzer payload.
+        nlohmann::json rosterMsg;
+        rosterMsg["type"] = "sldRoster";
+        rosterMsg["seq"] = mSignalDiagnosticsRosterSeq;
+        rosterMsg["nodes"] = std::move(rosterNodes);
+        rosterMsg["spectrogramRange"] = nlohmann::json::array({
+            InputAnalyzerEffect::kSpectrogramMinDbfs, InputAnalyzerEffect::kSpectrogramMaxDbfs,
+            InputAnalyzerEffect::kSpectrogramMinFrequencyHz, InputAnalyzerEffect::kSpectrogramMaxFrequencyHz });
+        rosterMsg["barkRange"] = nlohmann::json::array({
+            InputAnalyzerEffect::kBarkMinDbfs, InputAnalyzerEffect::kBarkMaxDbfs,
+            InputAnalyzerEffect::kBarkMinFrequencyHz, InputAnalyzerEffect::kBarkMaxFrequencyHz });
+        SendMessageToUI(rosterMsg.dump());
+    }
+
+    nlohmann::json frameLevels = nlohmann::json::array();
+    for (const auto& n : snapshot.nodes)
+    {
+        for (const auto& value : buildLevelTuple(n.levels))
+            frameLevels.push_back(value);
+    }
+
+    nlohmann::json frame;
+    frame["type"] = "sld";
+    frame["seq"] = mSignalDiagnosticsRosterSeq;
+    frame["r"] = buildLevelTuple(snapshot.rawInput);
+    frame["i"] = buildLevelTuple(snapshot.input);
+    frame["o"] = buildLevelTuple(snapshot.output);
+    frame["d"] = std::move(frameLevels);
+    SendMessageToUI(frame.dump());
+
+    // Analyzer telemetry is an order of magnitude larger than a level tuple, so it moves out
+    // of the frame into its own message rather than bloating every node entry. Band values are
+    // rounded to whole dB — the spectrogram heatmap and bark bar graph cannot resolve finer.
+    // NOTE: this still goes out for every analyzer node on every frame. The analyzer refreshes
+    // on each processed block, so there is no cheap staleness check to skip on; the remaining
+    // win here is only sending it for the node whose analyzer panel is actually open.
+    for (const auto& n : snapshot.nodes)
+    {
+        if (!n.analyzer)
+            continue;
+
+        const auto& analyzer = *n.analyzer;
+        const auto quantiseBands = [](const std::vector<float>& values)
+        {
+            nlohmann::json out = nlohmann::json::array();
+            for (const float value : values)
+                out.push_back(std::isfinite(value) ? static_cast<int>(std::lround(value)) : -120);
+            return out;
+        };
+
+        nlohmann::json analyzerMsg;
+        analyzerMsg["type"] = "sldA";
+        analyzerMsg["seq"] = mSignalDiagnosticsRosterSeq;
+        analyzerMsg["id"] = n.nodeId;
+        analyzerMsg["t"] = analyzer.generatedAtMs;
+        // Percent-of-full-scale values are not rounded to 0.1 like the dB fields: the UI also
+        // converts them back to dBFS for display, where 0.1 percentage points is a 6 dB error
+        // on a quiet signal. 1e-6 is far below the -120 dBFS floor and still trims the double.
+        const auto roundPercent = [](double v) { return std::round(v * 1.0e6) / 1.0e6; };
+
+        // [peakPercent, rmsPercent, rmsDbu, rmsDbv, rmsVolts, momentaryLufs, shortTermLufs,
+        //  integratedLufs, activeChannelCount, stereo, loudnessValid]
+        analyzerMsg["l"] = nlohmann::json::array({
+            roundPercent(analyzer.peakPercent),
+            roundPercent(analyzer.rmsPercent),
+            roundDb(analyzer.rmsDbu),
+            roundDb(analyzer.rmsDbv),
+            std::round(analyzer.rmsVolts * 1000.0) / 1000.0,
+            roundDb(analyzer.momentaryLufs),
+            roundDb(analyzer.shortTermLufs),
+            roundDb(analyzer.integratedLufs),
+            analyzer.activeChannelCount,
+            analyzer.stereo ? 1 : 0,
+            analyzer.loudnessValid ? 1 : 0,
+        });
+        analyzerMsg["s"] = quantiseBands(analyzer.spectrogramBinsDb);
+        analyzerMsg["b"] = quantiseBands(analyzer.barkBandsDb);
+        SendMessageToUI(analyzerMsg.dump());
+    }
 }
 
 void PluginController::RequestPerformanceStatsToUI()
