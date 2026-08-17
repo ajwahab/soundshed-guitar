@@ -15,6 +15,8 @@
 #include "dsp/EffectGuids.h"
 #include "dsp/MultiPresetMixer.h"
 #include "dsp/effects/BuiltinEffects.h"
+#include "dsp/effects/OptimizedNAMAmpEffect.h"
+#include "util/PathEncoding.h"
 
 namespace
 {
@@ -335,13 +337,21 @@ std::size_t ResolveModelLimit(std::size_t discoveredCount)
 int main()
 {
   using namespace guitarfx;
+  std::cout << std::unitbuf; // flush as we go so a crash still leaves the progress trail
   RegisterAllEffects();
+
+  // The hosted path adds a 5 Hz post-model DC blocker that the stock NAM reference
+  // path has no equivalent of. Its phase shift alone is ~2.6 degrees at 220 Hz, far
+  // more than the sample tolerances below, so disable it to compare the model paths
+  // themselves rather than that deliberate difference.
+  gEnableNamPostDcBlocker = false;
 
   const fs::path assetsRoot = fs::path(GUITARFX_TEST_RESOURCES_DIR) / "assets";
   auto models = DiscoverModels(assetsRoot);
   if (models.empty())
   {
-    std::cout << "NAM reference comparison: no .nam models found under " << assetsRoot << "\n";
+    std::cout << "NAM reference comparison: no .nam models found under "
+              << guitarfx::util::PathToUtf8(assetsRoot) << "\n";
     return 0;
   }
 
@@ -369,7 +379,9 @@ int main()
   for (const auto& model : models)
   {
     const ModelMetadata metadata = ReadModelMetadata(model);
-    std::cout << "Model: " << model.lexically_relative(assetsRoot).string() << "\n";
+    // PathToUtf8 rather than path::string(): model names in the test assets contain
+    // characters (e.g. U+221A) with no code-page mapping, and string() throws on those.
+    std::cout << "Model: " << guitarfx::util::PathToUtf8(model.lexically_relative(assetsRoot)) << "\n";
     if (!metadata.loadOk)
     {
       std::cout << "  metadata: FAIL (" << metadata.error << ")\n\n";

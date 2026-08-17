@@ -37,6 +37,11 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <crtdbg.h>
+#endif
+
 #include <nlohmann/json.hpp>
 
 #include "dsp/EffectRegistry.h"
@@ -514,6 +519,38 @@ std::string TailTrace(const std::deque<std::string>& trace)
   return out;
 }
 
+#ifdef _WIN32
+// A hard crash (access violation, debug-CRT assertion) bypasses the try/catch below and
+// leaves nothing behind: buffered stdout is discarded and ctest logs an empty test. Since
+// the point of this test is to report a reproducible failure, install a last-chance handler
+// that names the fault, and route CRT assertions to stderr so they never open the modal
+// dialog that would otherwise hang an unattended run.
+LONG WINAPI StressCrashHandler(EXCEPTION_POINTERS* info)
+{
+  const auto* record = info ? info->ExceptionRecord : nullptr;
+  std::cerr << "\nStress test crashed: code=0x" << std::hex
+            << (record ? record->ExceptionCode : 0u)
+            << " at address " << (record ? record->ExceptionAddress : nullptr) << std::dec
+            << "\nSee the trace file for the seed and the last actions before the fault."
+            << std::endl;
+  return EXCEPTION_EXECUTE_HANDLER; // terminate, but with the diagnosis printed
+}
+
+void InstallCrashDiagnostics()
+{
+  SetUnhandledExceptionFilter(StressCrashHandler);
+#ifdef _DEBUG
+  for (const int report : { _CRT_WARN, _CRT_ERROR, _CRT_ASSERT })
+  {
+    _CrtSetReportMode(report, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(report, _CRTDBG_FILE_STDERR);
+  }
+#endif
+}
+#else
+void InstallCrashDiagnostics() {}
+#endif
+
 } // namespace
 
 int main()
@@ -521,6 +558,9 @@ int main()
 #ifndef GUITARFX_TEST_RESOURCES_DIR
 #error "GUITARFX_TEST_RESOURCES_DIR must be defined"
 #endif
+
+  InstallCrashDiagnostics();
+  std::cout << std::unitbuf; // keep the progress trail if the run dies mid-step
 
   try
   {

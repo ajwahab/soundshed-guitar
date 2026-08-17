@@ -461,7 +461,28 @@ namespace guitarfx
       else if (key == "autoGainComp")
         mAutoGainCompEnabled = value > 0.5;
       else if (key == "normalizeIR")
-        mNormalizeIR = value > 0.5;
+      {
+        const bool nv = value > 0.5;
+        if (nv != mNormalizeIR)
+        {
+          // The normalisation gain is baked into the convolver coefficients at load
+          // time, so the flag only takes effect if the impulses are rebuilt here.
+          // Same locking rationale as "lowLatency" below.
+          if (HasResource())
+          {
+            CapturePreviousConvolvers(); // capture with the old normalisation for the crossfade
+            mNormalizeIR = nv;
+            InitializeConvolverA();
+            if (!mImpulseBL.empty())
+              InitializeConvolverB();
+            BeginResourceTransition();
+          }
+          else
+          {
+            mNormalizeIR = nv;
+          }
+        }
+      }
       else if (key == "outputGain")
         mOutputGain = std::pow(10.0, std::clamp(value, -24.0, 24.0) / 20.0);
       else if (key == "enabled")
@@ -746,6 +767,8 @@ namespace guitarfx
 
   private:
     static constexpr double kPi = 3.14159265358979323846;
+    // Host rate the IR normalisation gain is anchored to (see ComputeL2NormGain).
+    static constexpr double kNormalizationReferenceRate = 48000.0;
     // WAV parsing utilities (shared)
 
     // Find optimal truncation point based on energy threshold
@@ -1028,7 +1051,7 @@ namespace guitarfx
         {
           // Scale IR samples so convolution preserves signal energy (unity-gain normalization).
           // Uses combined L+R L2 norm so stereo and mono IRs normalize consistently.
-          const float normGain = ComputeL2NormGain(processedL, processedR);
+          const float normGain = ComputeL2NormGain(mSampleRate, processedL, processedR);
           for (auto &s : processedL) s *= normGain;
           for (auto &s : processedR) s *= normGain;
         }
@@ -1061,7 +1084,7 @@ namespace guitarfx
       if (mNormalizeIR)
       {
         // Scale IR samples so convolution preserves signal energy (unity-gain normalization).
-        const float normGain = ComputeL2NormGain(processedIR);
+        const float normGain = ComputeL2NormGain(mSampleRate, processedIR);
         for (auto &s : processedIR) s *= normGain;
       }
 
@@ -1135,7 +1158,14 @@ namespace guitarfx
     // Returns the gain to apply to IR samples so that convolution is unity-gain for a broadband
     // signal. Computed as 1/||h||_2 where ||h||_2 = sqrt(sum(h[n]^2)).
     // For stereo, the average L+R L2 norm is used so stereo and mono IRs normalise equivalently.
-    static float ComputeL2NormGain(const std::vector<float> &samplesL,
+    //
+    // playbackRate is the rate the (already resampled) impulse runs at. Resampling preserves
+    // coefficient area, not energy, so ||h||_2 falls as 1/sqrt(rate) and a bare 1/||h||_2 gain
+    // would make the same IR file progressively louder at higher host rates (+6 dB at 192 kHz
+    // versus 48 kHz). Anchoring to a reference rate removes that dependency; 48 kHz is the
+    // anchor so the normalisation there is unchanged.
+    static float ComputeL2NormGain(double playbackRate,
+                                   const std::vector<float> &samplesL,
                                    const std::vector<float> &samplesR = {})
     {
       double sumSq = 0.0;
@@ -1147,7 +1177,13 @@ namespace guitarfx
           sumSq += static_cast<double>(s) * s;
         sumSq *= 0.5; // average channels so stereo == mono for the same impulse response
       }
-      return sumSq > 1e-12 ? static_cast<float>(1.0 / std::sqrt(sumSq)) : 1.0f;
+      if (sumSq <= 1e-12)
+        return 1.0f;
+
+      const double rateCompensation = playbackRate > 0.0
+        ? std::sqrt(kNormalizationReferenceRate / playbackRate)
+        : 1.0;
+      return static_cast<float>(rateCompensation / std::sqrt(sumSq));
     }
 
     static double ComputeSignalEnergy(const std::vector<float> &samples)

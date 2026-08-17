@@ -394,5 +394,55 @@ int main()
     }
   }
 
+  // A block larger than the prepared size must still fill the whole output buffer.
+  // Truncating leaves the caller's stale previous block in the tail, which clicks.
+  {
+    MultiPresetMixer mixer;
+    ResourceLibrary lib;
+    mixer.SetResourceLibrary(&lib);
+    mixer.Prepare(kTestSampleRate, kTestBlockSize);
+
+    auto preset = MakePassthroughPreset("oversized");
+    if (!mixer.AddActivePreset(preset, "oversized", "Oversized"))
+    {
+      std::cerr << "Failed to add preset for oversized-block test" << std::endl;
+      return 1;
+    }
+    mixer.SetPresetMix("oversized", 1.0);
+    mixer.SetPresetPan("oversized", 0.0);
+
+    const int oversized = kTestBlockSize * 3 + 7; // deliberately not a whole multiple
+    constexpr float kPoison = -999.0f;
+    std::vector<float> inL(static_cast<size_t>(oversized), 0.25f);
+    std::vector<float> inR(static_cast<size_t>(oversized), 0.25f);
+    std::vector<float> outL(static_cast<size_t>(oversized), kPoison);
+    std::vector<float> outR(static_cast<size_t>(oversized), kPoison);
+
+    float *inputs[2] = {inL.data(), inR.data()};
+    float *outputs[2] = {outL.data(), outR.data()};
+    mixer.Process(inputs, outputs, oversized);
+
+    int untouched = 0;
+    for (int i = 0; i < oversized; ++i)
+    {
+      if (outL[static_cast<size_t>(i)] == kPoison || outR[static_cast<size_t>(i)] == kPoison)
+        ++untouched;
+    }
+
+    if (untouched > 0)
+    {
+      std::cerr << "Oversized block left " << untouched << "/" << oversized
+                << " output samples stale" << std::endl;
+      allPassed = false;
+    }
+
+    if (mixer.GetOversizedBlockCount() != 1)
+    {
+      std::cerr << "Expected the oversized block to be counted once, got "
+                << mixer.GetOversizedBlockCount() << std::endl;
+      allPassed = false;
+    }
+  }
+
   return allPassed ? 0 : 1;
 }

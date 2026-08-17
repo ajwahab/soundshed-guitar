@@ -9,6 +9,7 @@ set(TEST_SOURCES
     EffectProcessorTests.cpp
     GaplessSwitchingTests.cpp
     IRConvolutionTests.cpp
+    IRReverbQualityTests.cpp
     MultiPresetMixerTests.cpp
     NamCalibrationProbe.cpp
     NamModelCacheTests.cpp
@@ -34,6 +35,13 @@ set(TEST_SOURCES
 if(GUITARFX_CORE_ENABLE_WASM_EFFECTS)
     list(APPEND TEST_SOURCES WasmEffectHostTests.cpp)
 endif()
+
+# SignalChainMutationStressTest is a concurrency fuzzer: it runs for ~15 minutes, seeds itself
+# from the clock, and a failure needs manual triage from its trace file rather than a rerun.
+# The binary is always built, but it is not registered with ctest unless this is ON, so a
+# normal `ctest` run stays fast and deterministic. To run it: enable this option, or just
+# invoke the executable directly (see GUITARFX_STRESS_* env vars in its header comment).
+option(GUITARFX_TEST_STRESS "Register the signal-chain mutation stress test with ctest" OFF)
 
 option(GUITARFX_TEST_EXTENDED_DSP "Build extended DSP diagnostic tests" OFF)
 if(GUITARFX_TEST_EXTENDED_DSP)
@@ -106,10 +114,18 @@ foreach(test_source IN LISTS TEST_SOURCES)
     # Reuse core library's precompiled header
     target_precompile_headers(${test_name} REUSE_FROM SoundshedGuitarCore)
 
-    add_test(NAME ${test_name} COMMAND ${test_name})
+    # The stress test is opt-in; everything else is registered normally.
+    set(_register_test TRUE)
+    if(test_name STREQUAL "SignalChainMutationStressTest" AND NOT GUITARFX_TEST_STRESS)
+        set(_register_test FALSE)
+    endif()
 
-    # Label slow benchmarks so they are excluded from default test runs
-    if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest" OR test_name STREQUAL "TransposeBenchmark" OR test_name STREQUAL "ResourceLoadBenchmark")
-        set_tests_properties(${test_name} PROPERTIES LABELS "benchmark")
+    if(_register_test)
+        add_test(NAME ${test_name} COMMAND ${test_name})
+
+        # Label slow benchmarks so `ctest -LE benchmark` can skip them
+        if(test_name STREQUAL "NAMPerformanceBenchmark" OR test_name STREQUAL "DSPPerformanceTests" OR test_name STREQUAL "SignalChainThreadingBenchmark" OR test_name STREQUAL "SignalChainMutationStressTest" OR test_name STREQUAL "TransposeBenchmark" OR test_name STREQUAL "ResourceLoadBenchmark")
+            set_tests_properties(${test_name} PROPERTIES LABELS "benchmark")
+        endif()
     endif()
 endforeach()

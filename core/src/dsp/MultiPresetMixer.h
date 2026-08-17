@@ -299,6 +299,14 @@ namespace guitarfx
     // Signal diagnostics
     void SetSignalDiagnosticsEnabled(bool enabled);
     [[nodiscard]] bool IsSignalDiagnosticsEnabled() const noexcept { return mSignalDiagnosticsEnabled.load(std::memory_order_acquire); }
+
+    /// Number of blocks received larger than the prepared block size. Any non-zero value
+    /// means the host is overrunning what Prepare() was told; those blocks are split
+    /// rather than truncated, but it is worth knowing about.
+    [[nodiscard]] std::uint64_t GetOversizedBlockCount() const noexcept
+    {
+      return mOversizedBlockCount.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] SignalDiagnosticsSnapshot GetSignalDiagnosticsSnapshot() const;
 
     // Tuner functionality
@@ -483,6 +491,10 @@ namespace guitarfx
       std::atomic<double> rms{0.0};
       std::atomic<int> clipCount{0};
     };
+
+    // Counts blocks that arrived larger than the size we were prepared with (see Process).
+    // Non-zero means the host is not honouring the prepared block size.
+    std::atomic<std::uint64_t> mOversizedBlockCount{0};
 
     std::atomic<bool> mSignalDiagnosticsEnabled{true};
     AtomicLevelStats mRawInputLevels;

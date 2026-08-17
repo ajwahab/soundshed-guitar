@@ -59,6 +59,12 @@ If you only load a few files, use these:
 - Build JUCE standalone debug: cmake --build juce/builds --config Debug --target SoundshedGuitar_Standalone
 - UI build: cd core/ui && npm run build
 - Tests (Debug): cd core/build && ctest -C Debug --output-on-failure
+- Skip the slow benchmarks: add `-LE benchmark`
+- The signal-chain mutation stress test (~15 min concurrency fuzzer, random seed) is not
+  registered with ctest by default. Run its executable directly, or reconfigure with
+  `-DGUITARFX_TEST_STRESS=ON`. It writes `SignalChainMutationStressTest-last-trace.log`
+  next to the working directory; the seed in that file's header replays the same
+  mutation sequence via `GUITARFX_STRESS_SEED`.
 
 ## Live UI Testing (Computer-Use Debugging)
 

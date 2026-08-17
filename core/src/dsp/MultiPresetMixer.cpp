@@ -1540,9 +1540,32 @@ namespace guitarfx
     if (!outputs || numSamples <= 0)
       return;
 
-    // Clamp to allocated buffer size to prevent out-of-bounds writes
-    if (mPrepared && mMaxBlockSize > 0)
-      numSamples = std::min(numSamples, mMaxBlockSize);
+    // A host is supposed to respect the block size we were prepared with, but not all of
+    // them do. Clamping alone kept us inside our buffers at the cost of leaving the tail of
+    // the caller's output buffer untouched -- and since hosts reuse those buffers, the
+    // stale previous block plays through as a click. Split the work instead so the whole
+    // buffer is always written. mOversizedBlockCount makes it visible when this happens.
+    if (mPrepared && mMaxBlockSize > 0 && numSamples > mMaxBlockSize)
+    {
+      mOversizedBlockCount.fetch_add(1, std::memory_order_relaxed);
+
+      int offset = 0;
+      while (offset < numSamples)
+      {
+        const int chunk = std::min(mMaxBlockSize, numSamples - offset);
+        float *chunkIn[2] = {
+          inputs && inputs[0] ? inputs[0] + offset : nullptr,
+          inputs && inputs[1] ? inputs[1] + offset : nullptr
+        };
+        float *chunkOut[2] = {
+          outputs[0] ? outputs[0] + offset : nullptr,
+          outputs[1] ? outputs[1] + offset : nullptr
+        };
+        Process(chunkIn, chunkOut, chunk);
+        offset += chunk;
+      }
+      return;
+    }
 
     const bool diagnosticsEnabled = mSignalDiagnosticsEnabled.load(std::memory_order_acquire);
 
