@@ -1136,26 +1136,33 @@ export function applySetlistsFromBackend(setlists: Setlist[], activeSetlistId?: 
   renderSetlistPanel();
 }
 
-export function applySetlistCursorFromBackend(cursorIndex: number, presetId?: string, activeSetlistId?: string): void {
+export function applySetlistCursorFromBackend(cursorIndex: number, _presetId?: string, activeSetlistId?: string): void {
   if (typeof activeSetlistId === "string" && activeSetlistId && activeSetlistId !== uiState.activeSetlistId) {
     uiState.activeSetlistId = activeSetlistId;
   }
   uiState.setlistCursorIndex = cursorIndex;
   renderSetlistPanel();
-  if (presetId && presetId !== uiState.activePresetId) {
-    void applyPresetFromLibrary(presetId);
-  }
+  // The backend applies the slot's preset itself and reports it via "presetLoaded";
+  // loading it again from here would race that swap and leave both presets in the mixer.
 }
 
-function selectSetlistSlot(index: number): void {
+async function selectSetlistSlot(index: number): Promise<void> {
   const activeSetlist = findSetlistById(uiState.activeSetlistId);
   if (!activeSetlist || index < 0 || index >= activeSetlist.slots.length) return;
   const presetId = activeSetlist.slots[index].presetId;
   if (!presetId) return;
+  if (uiState.presetDirty && uiState.activePresetId && uiState.activePresetId !== presetId) {
+    const confirmDiscard = await showConfirm("Discard unsaved changes?", "Unsaved changes");
+    if (!confirmDiscard) return;
+    setPresetDirty(false);
+  }
   uiState.setlistCursorIndex = index;
+  // "setSetlistCursor" is the single switch verb — the backend moves the cursor *and* swaps
+  // the preset in, matching what a footswitch or MIDI program change does.
   postMessage({ type: "setSetlistCursor", cursorIndex: index });
+  uiState.presetLoadingId = presetId;
   renderSetlistPanel();
-  void applyPresetFromLibrary(presetId);
+  renderActivePreset();
 }
 
 function findSetlistById(id: string | null | undefined): Setlist | undefined {
@@ -1370,7 +1377,7 @@ function renderSetlistPanel(): void {
     slotEl.addEventListener("click", () => {
       const index = Number(slotEl.dataset.slotIndex ?? -1);
       if (index >= 0) {
-        selectSetlistSlot(index);
+        void selectSetlistSlot(index);
       }
     });
 

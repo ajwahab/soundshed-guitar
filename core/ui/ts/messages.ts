@@ -16,6 +16,7 @@ import { applyEnvironmentState, applyMetronomeState } from "./metronome.js";
 import { applyAutomationState, handleMidiLogEntry, handleMidiLearnCapture } from "./automationPanel.js";
 import { applyToneSharingAppSettings, registerInstalledToneSharingPackFromImport, handleToneSharingDeepLink } from "./toneSharingPanel.js";
 import { applyJamAppSettings } from "./jam.js";
+import { Features, isFeatureEnabled } from "./featureFlags.js";
 import type { CompositePreset, GlobalSignalChainConfig, LibraryResource, Preset, PresetFolder, ResourceRef, Setlist, UiSettings } from "./types.js";
 import { EffectGuids } from "./effectGuids.js";
 import { migratePresetNodeTypes, setNodeParam } from "./presetV2.js";
@@ -336,10 +337,12 @@ function scheduleUiDebugSnapshot(source: string): void {
   if (debugSnapshotTimer !== null) {
     window.clearTimeout(debugSnapshotTimer);
   }
+  // Long enough that a burst of messages (a preset switch is ~4) coalesces into one
+  // snapshot, and that the snapshot lands after the interaction rather than during it.
   debugSnapshotTimer = window.setTimeout(() => {
     debugSnapshotTimer = null;
     postUiDebugSnapshot(source);
-  }, 200);
+  }, 1500);
 }
 
 function summarizeGraphForDebug(graph?: Preset["graph"] | null): Record<string, unknown> {
@@ -990,6 +993,12 @@ export function handleIncomingMessage(message: string): void {
         rejectPendingPresetRequest(requestId, (payload as { message?: string }).message ?? "An error occurred", (payload as { detail?: string }).detail);
       }
       showNotification((payload as { message?: string }).message ?? "An error occurred", (payload as { detail?: string }).detail ?? "");
+      if (uiState.presetLoadingId) {
+        // A backend-driven load (e.g. a setlist step onto a missing preset) failed, so the
+        // "presetLoaded" that would clear the loading state is never coming.
+        uiState.presetLoadingId = null;
+        renderActivePreset();
+      }
       break;
     }
     case "modelLoaded": {
@@ -1926,7 +1935,11 @@ export function handleIncomingMessage(message: string): void {
       console.warn("Unknown message type", payload.type);
   }
 
-  if (!DEBUG_SNAPSHOT_SKIP_TYPES.has(type)) {
+  // Building this snapshot serializes the whole of uiState — resource library, preset cache
+  // and all — which is tens of MB, on the main thread, and then ships it over the bridge for
+  // the backend to write to disk. It is a diagnostic for the Debug State Capture feature, so
+  // it must not run at all unless that feature is switched on.
+  if (isFeatureEnabled(Features.DebugStateCapture) && !DEBUG_SNAPSHOT_SKIP_TYPES.has(type)) {
     scheduleUiDebugSnapshot(`incoming:${type}`);
   }
 }

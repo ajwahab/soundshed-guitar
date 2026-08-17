@@ -116,6 +116,12 @@ bool MessageDispatcher::DispatchSettings(PluginController& c,
     }
     if (type == "uiVisibility")
     {
+        // Gates the periodic telemetry feeds (signal diagnostics, DSP performance). Absent
+        // or non-boolean means "assume visible" — never silently stop feeding a live UI.
+        const bool visible = msg.contains("visible") && msg["visible"].is_boolean()
+            ? msg["visible"].get<bool>()
+            : true;
+        c.mUiVisible.store(visible, std::memory_order_release);
         return true;
     }
     return false;

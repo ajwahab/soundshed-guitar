@@ -55,7 +55,7 @@ The UI is a web-based single-page application (SPA) hosted in a native WebView. 
 
 | Type | Payload | Description |
 |------|---------|-------------|
-| `state` | Full state object | Complete sync on startup/major changes |
+| `state` | Full or preset-scoped state object | Complete sync on startup/major changes; preset/scene switches send a preset-scoped subset (see below) |
 | `presetLoaded` | `{preset, sceneId, activePresetIds, parameters}` | Preset load notification |
 | `presetSaved` | `{preset, sceneId}` | Preset saved to disk confirmation |
 | `presetList` | `{presets: [{id, name, category, source}]}` | Factory/user presets from disk |
@@ -166,6 +166,31 @@ Sent via `state` message on startup and major changes:
   }
 }
 ```
+
+### Broadcast scope
+
+`state` comes in two scopes (`PluginController::StateScope`):
+
+- **Full** — everything above. Sent on startup, on an explicit `requestState`/`uiReady`, and
+  whenever library or settings state changes. On a real library this is ~510 KB, ~90% of it
+  `resourceLibrary`, which also costs one filesystem stat per entry to build. It is followed
+  by `compositeLibrary` and `effectCatalog` (~68 KB together).
+- **Preset-scoped** — sent when a preset or scene switch is the only thing that changed
+  (~10 KB, no supplementary messages). Carries `preset`, `activePresetId`, `activeSceneId`,
+  `activePresetIds`, `mixer`, `globalSignalChain` and `presetArchiveSession`; omits the
+  resource/riff/blend/custom-effect libraries, app settings, UI settings, UI view state,
+  metronome, environment and automation, none of which a preset switch can change.
+
+Rules for anyone touching this:
+
+- Every section the UI reads is behind a presence check, so omitting a key is a no-op there.
+  Three keys are **not** safe to omit and are always sent: `activePresetId` (read
+  unconditionally), `globalSignalChain` (its absence triggers a `getGlobalChain` round trip)
+  and `presetArchiveSession` (its absence clears the UI's archive-session state).
+- A full request queued in the same idle window wins over a preset-scoped one.
+- The periodic telemetry feeds (`signalLevelDiagnostics` at 20 Hz, `dspPerformance`) only
+  drive on-screen meters and are suppressed while the UI reports itself hidden via
+  `uiVisibility`.
 
 ## JavaScript Bridge
 

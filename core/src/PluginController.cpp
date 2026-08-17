@@ -4027,11 +4027,18 @@ void PluginController::OnIdle()
         }
     }
 
-    // Broadcast pending state
+    // Broadcast pending state. A full request supersedes any preset-only request queued
+    // alongside it — the full payload is a superset.
     if (mPendingStateBroadcast)
     {
         mPendingStateBroadcast = false;
-        BroadcastState();
+        mPendingPresetStateBroadcast = false;
+        BroadcastState(StateScope::Full);
+    }
+    else if (mPendingPresetStateBroadcast)
+    {
+        mPendingPresetStateBroadcast = false;
+        BroadcastState(StateScope::PresetOnly);
     }
 
     // Drain deferred node-param notifications (from MIDI/keyboard automation)
@@ -4160,12 +4167,18 @@ void PluginController::OnIdle()
         SendMessageToUI(msg.dump());
     }
 
-    // Periodic updates
+    // Periodic updates. The telemetry feeds are the app's largest ongoing cost — signal
+    // diagnostics alone is ~6.7 KB at 20 Hz — and they only exist to drive on-screen meters,
+    // so they are suppressed entirely while the UI is hidden. The counters keep running so
+    // the cadence does not jump when it comes back.
+    const bool uiVisible = mUiVisible.load(std::memory_order_acquire);
+
     mDSPPerformanceUpdateCounter++;
     if (mDSPPerformanceUpdateCounter >= 60 / kDspPerformanceStatsRateHz) // fire at kDspPerformanceStatsRateHz; actual sends are rate-limited below
     {
         mDSPPerformanceUpdateCounter = 0;
-        RequestPerformanceStatsToUI();
+        if (uiVisible)
+            RequestPerformanceStatsToUI();
     }
 
     TrySendPendingPerformanceStatsToUI();
@@ -4176,7 +4189,8 @@ void PluginController::OnIdle()
         if (mSignalDiagnosticsUpdateCounter >= 60 / kSignalDiagnosticsRateHz)
         {
             mSignalDiagnosticsUpdateCounter = 0;
-            RequestSignalDiagnosticsToUI();
+            if (uiVisible)
+                RequestSignalDiagnosticsToUI();
         }
     }
 
@@ -4416,6 +4430,59 @@ bool PluginController::AddActivePresetById(const std::string& presetId)
     return false;
 }
 
+bool PluginController::ApplyActivePresetById(const std::string& presetId)
+{
+    if (presetId.empty())
+        return false;
+
+    auto presetOpt = LoadPresetById(presetId);
+    if (!presetOpt && mActivePreset
+        && (mActivePreset->id == presetId || mActivePresetId == presetId))
+    {
+        // Unsaved/session-only preset that is already loaded — re-apply what we have.
+        presetOpt = *mActivePreset;
+    }
+    if (!presetOpt)
+    {
+        ReportErrorToUI("Cannot load preset", "Preset '" + presetId + "' not found");
+        return false;
+    }
+
+    Preset preset = std::move(*presetOpt);
+    NormalizePresetScenes(preset);
+    if (!SetPresetActiveScene(preset, std::string{}, &mActiveSceneId))
+        mActiveSceneId = GetDefaultPresetSceneId(preset);
+
+    mActivePresetId = presetId;
+
+    // Single-instance swap: ApplyPreset() crossfades the outgoing chain out and the new one
+    // in, and sets mActivePreset/mActivePresetJson and the mixer slot cache itself.
+    ApplyPreset(preset);
+
+    mPendingPresetStateBroadcast = true;
+
+    if (mActivePreset)
+    {
+        nlohmann::json loaded;
+        loaded["type"] = "presetLoaded";
+        loaded["preset"] = SerializePresetForUi(*mActivePreset);
+        nlohmann::json activeIds = nlohmann::json::array();
+        for (const auto& id : mPresetMixer.GetActivePresetIds())
+            activeIds.push_back(id);
+        loaded["activePresetIds"] = activeIds;
+        loaded["sceneId"] = GetResolvedActiveSceneId();
+        SendMessageToUI(loaded.dump());
+    }
+
+    if (!IsPresetArchiveSessionActive())
+    {
+        mAppSettings["lastPresetId"] = mActivePresetId;
+        SaveAppSettings();
+    }
+
+    return true;
+}
+
 void PluginController::RemoveActivePreset(const std::string& presetId)
 {
     std::lock_guard<std::mutex> lock(mDSPMutex);
@@ -4453,7 +4520,7 @@ void PluginController::FocusMixerPreset(const std::string& presetId)
     mActivePresetJson = PresetStorage::SerializeToJson(*mActivePreset);
     mMixerPresetJsonCache[presetId] = mActivePresetJson;
 
-    mPendingStateBroadcast = true;
+    mPendingPresetStateBroadcast = true;
 }
 
 bool PluginController::ReplaceActiveMixerPresetInPlace(const Preset& preset, const std::string& presetId, const std::string& name)
@@ -4801,7 +4868,7 @@ void PluginController::HandlePresetLoadRequest(const nlohmann::json& payload)
             ApplyPreset(preset); // SetGlobalChainConfig is called inside ApplyPreset under mDSPMutex
         }
 
-        mPendingStateBroadcast = true;
+        mPendingPresetStateBroadcast = true;
 
         // Send explicit "presetLoaded" confirmation to the UI
         {
@@ -10954,7 +11021,7 @@ void PluginController::ApplySetlistPresetByIndex(int index)
 {
     // This method may be called from the audio thread (via automation/MIDI apply,
     // already holding mDSPMutex) or from the UI thread (not holding the lock).
-    // AddActivePresetById needs to acquire mDSPMutex, so when we're already
+    // ApplyActivePresetById needs to acquire mDSPMutex, so when we're already
     // holding it we must defer the actual preset swap to OnIdle.
     //
     // We detect this by trying to lock mDSPMutex non-blocking. If it fails,
@@ -11010,8 +11077,10 @@ void PluginController::ApplySetlistPresetByIndexDirect(int index)
     toStore["cursorIndex"] = index;
     SaveUiStorageJson("setlists.json", toStore);
 
-    // Load the preset
-    AddActivePresetById(presetId);
+    // Change to the preset. A setlist step is a *switch*, not a Multi-Rig add: it must swap
+    // the mixer down to this one preset (gapless, via ApplyPreset's crossfade) rather than
+    // stacking another instance on top of whatever is already playing.
+    ApplyActivePresetById(presetId);
 
     // Notify the UI that the setlist cursor changed so it can update its display
     // and load the preset into the main preset chooser.
@@ -11366,9 +11435,11 @@ void PluginController::HandleSetTunerReferenceRequest(const nlohmann::json& payl
 // Internal helpers
 // ════════════════════════════════════════════════════════════════════
 
-void PluginController::BroadcastState()
+void PluginController::BroadcastState(StateScope scope)
 {
     if (!mUIReady) return;
+
+    const bool full = scope == StateScope::Full;
 
     nlohmann::json state;
     state["type"] = "state";
@@ -11382,9 +11453,13 @@ void PluginController::BroadcastState()
         state["activeSceneId"] = GetResolvedActiveSceneId();
     }
 
-    // App settings — UI reads "appSettings"
-    state["appSettings"] = mAppSettings;
+    // App settings — UI reads "appSettings". Applying them re-runs the demo-audio, recents,
+    // tone-sharing and update-check passes and echoes an input-mode message back to us, so
+    // this is deliberately not resent on a preset switch.
+    if (full)
+        state["appSettings"] = mAppSettings;
 
+    // Always sent: the UI clears its archive-session state when this key is absent.
     state["presetArchiveSession"] = {
         {"active", IsPresetArchiveSessionActive()}
     };
@@ -11396,48 +11471,56 @@ void PluginController::BroadcastState()
     }
 
     // UI settings — UI reads "uiSettings"
-    state["uiSettings"] = mUiSettings;
+    if (full)
+        state["uiSettings"] = mUiSettings;
 
     // UI view state — UI reads "uiViewState"
-    state["uiViewState"] = mUiViewState;
+    if (full)
+        state["uiViewState"] = mUiViewState;
 
-    // Global chain — UI reads "globalSignalChain"
+    // Global chain — UI reads "globalSignalChain". Always sent: the UI asks for it with a
+    // round trip when the key is missing, which would cost more than including it.
     auto chainConfig = mPresetMixer.GetGlobalChainConfig();
     state["globalSignalChain"] = chainConfig;
 
-    // Resource library summary + per-type entries for UI rendering
-    nlohmann::json libraryInfo = nlohmann::json::object();
-    auto allResources = mResourceLibrary.GetAllResources();
-    libraryInfo["totalCount"] = allResources.size();
-
-    for (const auto& resource : allResources)
+    // Resource library summary + per-type entries for UI rendering. By far the largest
+    // section, and it stats every file on disk to fill in "fileMissing", so it is only
+    // built for a full broadcast.
+    if (full)
     {
-        const std::string type = resource.type;
-        if (!libraryInfo.contains(type) || !libraryInfo[type].is_array())
+        nlohmann::json libraryInfo = nlohmann::json::object();
+        auto allResources = mResourceLibrary.GetAllResources();
+        libraryInfo["totalCount"] = allResources.size();
+
+        for (const auto& resource : allResources)
         {
-            libraryInfo[type] = nlohmann::json::array();
+            const std::string type = resource.type;
+            if (!libraryInfo.contains(type) || !libraryInfo[type].is_array())
+            {
+                libraryInfo[type] = nlohmann::json::array();
+            }
+
+            nlohmann::json entry;
+            entry["id"] = resource.id;
+            entry["name"] = resource.name;
+            entry["category"] = resource.category;
+            entry["description"] = resource.description;
+            entry["tags"] = resource.tags;
+            entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
+            entry["hash"] = resource.hash;
+            if (!resource.metadata.empty())
+            {
+                entry["metadata"] = resource.metadata;
+            }
+            const bool hasPath = !resource.filePath.empty();
+            const bool exists = hasPath && std::filesystem::exists(resource.filePath);
+            entry["fileMissing"] = !(hasPath && exists);
+
+            libraryInfo[type].push_back(entry);
         }
 
-        nlohmann::json entry;
-        entry["id"] = resource.id;
-        entry["name"] = resource.name;
-        entry["category"] = resource.category;
-        entry["description"] = resource.description;
-        entry["tags"] = resource.tags;
-        entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
-        entry["hash"] = resource.hash;
-        if (!resource.metadata.empty())
-        {
-            entry["metadata"] = resource.metadata;
-        }
-        const bool hasPath = !resource.filePath.empty();
-        const bool exists = hasPath && std::filesystem::exists(resource.filePath);
-        entry["fileMissing"] = !(hasPath && exists);
-
-        libraryInfo[type].push_back(entry);
+        state["resourceLibrary"] = std::move(libraryInfo);
     }
-
-    state["resourceLibrary"] = libraryInfo;
 
     // Active preset IDs — UI reads "activePresetIds" as string array
     nlohmann::json activePresetIds = nlohmann::json::array();
@@ -11481,20 +11564,23 @@ void PluginController::BroadcastState()
     mixer["presetGraphs"] = std::move(presetGraphs);
     state["mixer"] = std::move(mixer);
 
-    // Metronome
-    nlohmann::json metronome;
-    metronome["bpm"] = GetEffectiveTempoBpm();
-    metronome["enabled"] = mMetronomeEnabled.load();
-    metronome["editable"] = mHost.IsStandalone();
-    metronome["source"] = mHost.IsStandalone() ? "app" : "host";
-    metronome["volumeDb"] = mMetronomeVolumeDb.load();
-    metronome["pan"] = mMetronomePan.load();
-    metronome["clickType"] = mMetronomeClickType;
-    nlohmann::json clickTypes = nlohmann::json::array();
-    for (const auto& config : mMetronomeClickConfig)
-        clickTypes.push_back({ {"id", config.id}, {"label", config.label} });
-    metronome["clickTypes"] = std::move(clickTypes);
-    state["metronome"] = metronome;
+    // Everything below is app-wide state that a preset or scene switch cannot change.
+    if (full)
+    {
+        // Metronome
+        nlohmann::json metronome;
+        metronome["bpm"] = GetEffectiveTempoBpm();
+        metronome["enabled"] = mMetronomeEnabled.load();
+        metronome["editable"] = mHost.IsStandalone();
+        metronome["source"] = mHost.IsStandalone() ? "app" : "host";
+        metronome["volumeDb"] = mMetronomeVolumeDb.load();
+        metronome["pan"] = mMetronomePan.load();
+        metronome["clickType"] = mMetronomeClickType;
+        nlohmann::json clickTypes = nlohmann::json::array();
+        for (const auto& config : mMetronomeClickConfig)
+            clickTypes.push_back({ {"id", config.id}, {"label", config.label} });
+        metronome["clickTypes"] = std::move(clickTypes);
+        state["metronome"] = std::move(metronome);
 
         // Environment
         state["environment"] = {
@@ -11518,31 +11604,35 @@ void PluginController::BroadcastState()
     #endif
         };
 
-    // Blend library
-    state["blendLibrary"] = mBlendLibrary;
+        // Blend library
+        state["blendLibrary"] = mBlendLibrary;
 
-    // Saved custom effects library
-    {
-        nlohmann::json customEffects = nlohmann::json::array();
-        for (const auto& entry : mCustomEffectLibrary.GetAllEntries())
-            customEffects.push_back(SerializeCustomEffectLibraryEntry(entry));
-        state["customEffectLibrary"] = std::move(customEffects);
+        // Saved custom effects library
+        {
+            nlohmann::json customEffects = nlohmann::json::array();
+            for (const auto& entry : mCustomEffectLibrary.GetAllEntries())
+                customEffects.push_back(SerializeCustomEffectLibraryEntry(entry));
+            state["customEffectLibrary"] = std::move(customEffects);
+        }
+
+        // Riff library
+        {
+            std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
+            state["riffLibrary"] = mRiffLibraryIndex;
+        }
+
+        // Automation slots
+        state["automation"] = mAutomationSlots.GetSlotsJson();
     }
-
-    // Riff library
-    {
-        std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
-        state["riffLibrary"] = mRiffLibraryIndex;
-    }
-
-    // Automation slots
-    state["automation"] = mAutomationSlots.GetSlotsJson();
 
     SendMessageToUI(state.dump());
 
-    // Also send supplementary data
-    SendCompositeLibraryToUI();
-    SendEffectCatalogToUI();
+    // Also send supplementary data. Both are static libraries, not preset state.
+    if (full)
+    {
+        SendCompositeLibraryToUI();
+        SendEffectCatalogToUI();
+    }
 
     // Notify the host of any latency change now that the graph is settled.
     UpdateHostLatency();
