@@ -14016,12 +14016,28 @@ void PluginController::SaveUiStorageJson(const std::string& filename, const nloh
     try
     {
         [[maybe_unused]] const auto ensuredUiStorageParent = mFileSystem.EnsureDirectory(path.parent_path());
-        std::ofstream ofs(path);
-        if (ofs.is_open())
+
+        // Write to a temp file first, then atomically rename over the real file,
+        // matching SaveAppSettings. A partial write here would corrupt setlists.json,
+        // automation.json or the preset metadata files and lose the user's data.
+        const auto tempPath = path.parent_path() / (path.filename().string() + ".tmp");
         {
+            std::ofstream ofs(tempPath);
+            if (!ofs.is_open())
+                return;
             ofs << payload.dump(2);
-            wrote = true;
         }
+
+        std::error_code ec;
+        std::filesystem::rename(tempPath, path, ec);
+        if (ec)
+        {
+            // rename failed (e.g. cross-device) – fall back to copy+delete
+            std::filesystem::copy_file(tempPath, path,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::remove(tempPath, ec);
+        }
+        wrote = !ec;
     }
     catch (const std::exception&) {}
 
