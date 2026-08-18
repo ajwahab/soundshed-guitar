@@ -1,5 +1,5 @@
 import { appendLog } from "./logging.js";
-import { setPresetDirty } from "./state.js";
+import { setPresetDirty, uiState } from "./state.js";
 
 const NAMBridge = {
   postMessage(message: unknown): void {
@@ -44,6 +44,24 @@ export function addActivePreset(presetId: string): void {
 export function removeActivePreset(presetId: string): void {
   postMessage({ type: "removeActivePreset", presetId });
   appendLog(`removeActivePreset → ${presetId}`);
+}
+
+/**
+ * Tells the engine to switch its editing focus (the preset that signal-chain
+ * edits apply to) to an already-active mixer slot, without touching the
+ * running DSP instances. Call this alongside setFocusedMixerPresetId()
+ * whenever the user switches which preset tab they're viewing/editing in a
+ * multi-preset mixer session — otherwise node edits silently target whatever
+ * preset the engine last considered "active" instead of the one on screen.
+ * No-op when fewer than 2 presets are active in the mixer.
+ */
+export function focusMixerPreset(presetId: string): void {
+  const mixer = uiState.mixer;
+  if (!mixer || mixer.activePresetIds.length < 2 || !mixer.activePresetIds.includes(presetId)) {
+    return;
+  }
+  postMessage({ type: "focusMixerPreset", presetId });
+  appendLog(`focusMixerPreset → ${presetId}`);
 }
 
 export function setPresetMix(presetId: string, mix: number): void {
@@ -217,9 +235,15 @@ export function requestCaptureDebugSnapshot(source = "footer-button"): void {
 
 // ── Composite Presets (Multi-Rig) ─────────────────────────────────────────────
 
-export function saveCompositePreset(name: string, description?: string): void {
-  postMessage({ type: "saveCompositePreset", name, description: description ?? "" });
-  appendLog(`saveCompositePreset → ${name}`);
+export function saveCompositePreset(name: string, description?: string, tags?: string[], id?: string): void {
+  postMessage({
+    type: "saveCompositePreset",
+    name,
+    description: description ?? "",
+    tags: Array.isArray(tags) ? tags : [],
+    ...(id ? { id } : {}),
+  });
+  appendLog(`saveCompositePreset → ${name}${id ? ` (updating ${id})` : ""}`);
 }
 
 export function loadCompositePreset(id: string): void {

@@ -88,7 +88,22 @@ Constant-latency-through-zero is **not** the chosen contract (transparent-at-zer
 3. **Range/contract drift.**
    - Docs mention -24/-36 ranges but the runtime global transpose is clamped to ±12 (`PluginController.cpp`, `MultiPresetMixer.cpp`, `controls.ts`). Decide: expand the runtime clamp or narrow the effect/docs.
    - `pitch_shift` has a `stepMode`/`minSemitones`/`maxSemitones` contract in UI/docs but the backend only supports `semitones` + `mix`. Restore backend support or remove from UI/docs.
-4. **Pitch Shift “does not shift” (listening).** First-pass listening claimed no shift; unit test preload +12 ZCR path exists. Re-verify with benchmark WAVs after latency fix (compensated renders may have been misaligned due to PDC under-report).
+4. ~~**Pitch Shift “does not shift” (listening).**~~ **Not reproducible (2026-08):** the pitch-accuracy metric measures `pitch_shift` within ±3 cents at every setting from -12 to +12, jitter 3-8 cents. The original listening call was almost certainly the PDC under-report misaligning the compensated renders.
+
+7. **STFT/Hybrid do not transpose at shallow settings.** Measured with the pitch-accuracy metric (snapshot `pitch-metric`, riff-01 @ 48k):
+
+   | Engine | -2 st | -1 st | +2 st |
+   |---|---:|---:|---:|
+   | STFT low-latency | **+202.4** ±39.5 | **+83.8** ±21.5 | **-192.6** ±39.6 |
+   | STFT polyphonic | +4.3 ±24.7 | **+81.4** ±38.2 | **-258.1** ±184.8 |
+   | Hybrid | **+201.8** ±82.6 | **+88.0** ±24.3 | — |
+   | Signalsmith | +1.2 ±4.8 | +1.4 ±3.5 | +2.8 ±4.3 |
+
+   At -2 st the error equals the interval: the output is at the **input pitch**. -3 st is marginal (+14.2 ±43.8 LL); -5 st and deeper are correct. This is what "-1 st sounds awful" actually is — not an artifact problem but a detuned near-copy of the input.
+
+   **Mechanism:** `Pitcher` shifts by linearly resampling the spectrum, so a partial must move far enough between bins for interpolation to relocate energy. Displacement is `f0 × (1 − 2^(st/12)) × N / sr`; below roughly **0.3 bins** nothing moves. For a ~125 Hz fundamental that means -1 st needs N≥2048, and an open low E would need N≈4096 — over 60 ms of latency for one semitone, since latency is `analysis − synthesis`. Confirmed experimentally: raising the polyphonic shallow profile to 2048 fixed -1 st (+0.4 cents) but tripled transient rise time (8.7 → 26.7 ms).
+
+   **This is structural, not a tuning problem.** Do not try to fix it by enlarging windows. Gate `transpose_stft` / `transpose_hybrid` off |st| ≤ 2 and route shallow shifts to Signalsmith or a time-domain engine.
 5. **STFT latency slight over-report** on deep downshifts (e.g. rep 768 vs meas ~619 @ -12 LL). Safer than under-report; tighten later.
 6. **Hybrid docs/code mismatch** and high CPU / poly artifacts @ -12 — do not promote from experimental yet.
 
@@ -124,6 +139,42 @@ An offline benchmark renders the demo audio through every variant at multiple se
 - Report generator: `tools/transpose-benchmark/generate_report.py` (Python stdlib only).
 - Inputs: `core/ui/demo/guitar-riff-01.wav`, `guitar-riff-02.wav`, `DI_Guitar_L.wav` (trimmed to 12 s, native sample rate, 512-sample blocks).
 - Latency is measured two ways: `GetLatencySamples()` (what PDC would use) and envelope cross-correlation against the dry signal (ground truth). Rendered WAVs are compensated by the *reported* latency, so any PDC misreport is audible in the report.
+- **Pitch accuracy** is measured per pass: `pitchErrorCents` (median cents error of the output fundamental vs the requested interval), `pitchJitterCents` (robust MAD-scaled spread) and `pitchFrames` (usable frames). See "Pitch accuracy metric" below.
+
+### Pitch accuracy metric
+
+An engine can report honest latency, sit in a sensible CPU budget and render audio
+that *sounds* like a pitch shifter while not actually transposing by the requested
+interval. Latency/CPU/peak/RMS metrics are all blind to this — it took a dedicated
+measurement to find that the STFT path was ~200 cents off at -2 st.
+
+How it works (`MeasurePitchAccuracy` in `core/tests/TransposeBenchmark.cpp`):
+
+1. Dry and output are mixed to mono and decimated to ~8 kHz (guitar fundamentals
+   are well under 500 Hz; this shrinks YIN's search space ~6x).
+2. Both are tracked with YIN (cumulative mean normalized difference + parabolic
+   refinement) on a common grid: 128 ms frame, 32 ms hop.
+3. The output is aligned using the **measured** latency when the cross-correlation
+   was trustworthy, falling back to the reported value — the metric must stay
+   honest when the reported latency is not.
+4. The output's YIN search range is shifted by the requested interval, which keeps
+   octave confusion out of the result.
+5. Per frame where both signals are voiced: `1200 * log2(f0_out / (f0_dry * 2^(st/12)))`.
+   Errors beyond ±600 cents are discarded as tracker octave artifacts.
+6. Reported as the median, with a MAD-scaled spread as jitter.
+
+Reading the numbers:
+
+| Result | Meaning |
+|---|---|
+| within ±5 cents, jitter < 10 | correct transposition |
+| ±25 cents | audible tuning error, flagged `warn` in the report |
+| error ≈ −(interval in cents) | **not transposing at all** — output is at the input pitch |
+| `n/a` | fewer than 10 usable frames; treat as no data, not as a pass |
+
+Every 0 st pass must read `0.0 ± 0.0` — that is the metric's self-check. Coverage
+depends on the tracker locking onto the output, so a low `pitchFrames` count on an
+otherwise healthy-looking pass is itself a signal that the output is not periodic.
 
 ### Running the benchmark
 
@@ -240,6 +291,7 @@ If a plugin cannot be loaded headlessly (e.g. requires GUI activation), pass `-N
 **Gate metrics for each experiment:**
 
 - Reported vs measured latency @ **-2** and **-12** (PDC honesty)
+- **Pitch accuracy at every semitone setting** — must be within ±25 cents before any listening judgement is made. A pass that is not transposing is not a tone comparison.
 - Listening: mono riff + poly/chords (add a sustained chord fixture if only riffs exist)
 - CPU: reject paths that approach Hybrid’s cost without a clear quality win
 

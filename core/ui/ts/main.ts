@@ -22,7 +22,7 @@ import { initDiagnosticsToggle, initThemeSelect, initZoomControls, initUserInput
 import { postMessage } from "./bridge.js";
 import { initializeMetronome } from "./metronome.js";
 import { initializeAutomationPanel } from "./automationPanel.js";
-import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar } from "./signalPath.js";
+import { initializeBlendEditorModal, initSignalPathResize, renderSignalPathBar, createNamIrGlobalFileDropHandler } from "./signalPath.js";
 import { initializeCustomEffectDesignerModal } from "./customEffectDesigner.js";
 import { initializeDialogModals } from "./dialogs.js";
 import { activateTab, initializeControlBarTabs, initializeIconBarTabs, initializePlayFooterPadsToggle, initializeTabButtons, switchMainPanel, initControlBarCollapse, initSignalPathCollapse } from "./navigation.js";
@@ -222,6 +222,11 @@ async function bootstrap(): Promise<void> {
     id: "riff-audio-drop",
     priority: 100,
     handle: (files) => handleDroppedRiffAudioFiles(files),
+  });
+  registerGlobalFileDropHandler({
+    id: "nam-ir-resource-drop",
+    priority: 150,
+    handle: createNamIrGlobalFileDropHandler(),
   });
   initializeGlobalFileDrop();
   initMultiRigTab();

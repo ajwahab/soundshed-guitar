@@ -16,6 +16,7 @@
 #include "dsp/LevelTargets.h"
 #include "dsp/BlockSincResampler.h"
 #include "dsp/effects/BuiltinEffects.h"
+#include "dsp/effects/InputAnalyzerEffect.h"
 #include "dsp/effects/NAMSlimmableSettings.h"
 #if defined(GUITARFX_ENABLE_WASM_EFFECTS)
 #include "dsp/effects/WasmEffect.h"
@@ -26,6 +27,7 @@
 #include "util/Base64.h"
 #include "util/FileIO.h"
 #include "util/PathSanitizer.h"
+#include "util/PathEncoding.h"
 #include "util/Wav.h"
 
 #include <miniz.h>
@@ -222,12 +224,6 @@ namespace
     {
         if (linear <= kMinLinear) return -120.0;
         return 20.0 * std::log10(linear);
-    }
-
-    double HeadroomDbFromPeak(double peak)
-    {
-        const double peakDb = ToDbFS(peak);
-        return std::max(0.0, -peakDb);
     }
 
         std::string FormatTimestamp()
@@ -3253,9 +3249,13 @@ void PluginController::ApplyGlobalFxSettingsFromAppSettings()
         config.autoLevelInput = false;
         config.autoLevelOutput = false;
 
+        // Build off the lock, install under it — rebuilding the global executors while the
+        // audio thread is blocked on mDSPMutex is an audible dropout.
+        mPresetMixer.PrepareGlobalChainSwap(config);
+
         {
             std::lock_guard<std::mutex> lock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(config);
+            mPresetMixer.CommitGlobalChainSwap();
             mParamValues[kParamInputTrim] = config.inputGain;
             mParamValues[kParamOutputTrim] = config.outputGain;
             mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
@@ -3836,8 +3836,10 @@ void PluginController::DeserializeState(const std::string& json)
 
         if (state.contains("globalSignalChain") && state["globalSignalChain"].is_object())
         {
+            // Build off the lock, install under it — see PrepareGlobalChainSwap().
+            mPresetMixer.PrepareGlobalChainSwap(state["globalSignalChain"].get<GlobalSignalChainConfig>());
             std::lock_guard<std::mutex> dspLock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(state["globalSignalChain"].get<GlobalSignalChainConfig>());
+            mPresetMixer.CommitGlobalChainSwap();
         }
         if (state.contains("preset"))
         {
@@ -4020,11 +4022,18 @@ void PluginController::OnIdle()
         }
     }
 
-    // Broadcast pending state
+    // Broadcast pending state. A full request supersedes any preset-only request queued
+    // alongside it — the full payload is a superset.
     if (mPendingStateBroadcast)
     {
         mPendingStateBroadcast = false;
-        BroadcastState();
+        mPendingPresetStateBroadcast = false;
+        BroadcastState(StateScope::Full);
+    }
+    else if (mPendingPresetStateBroadcast)
+    {
+        mPendingPresetStateBroadcast = false;
+        BroadcastState(StateScope::PresetOnly);
     }
 
     // Drain deferred node-param notifications (from MIDI/keyboard automation)
@@ -4153,12 +4162,18 @@ void PluginController::OnIdle()
         SendMessageToUI(msg.dump());
     }
 
-    // Periodic updates
+    // Periodic updates. The telemetry feeds are the app's largest ongoing cost — signal
+    // diagnostics alone is ~6.7 KB at 20 Hz — and they only exist to drive on-screen meters,
+    // so they are suppressed entirely while the UI is hidden. The counters keep running so
+    // the cadence does not jump when it comes back.
+    const bool uiVisible = mUiVisible.load(std::memory_order_acquire);
+
     mDSPPerformanceUpdateCounter++;
     if (mDSPPerformanceUpdateCounter >= 60 / kDspPerformanceStatsRateHz) // fire at kDspPerformanceStatsRateHz; actual sends are rate-limited below
     {
         mDSPPerformanceUpdateCounter = 0;
-        RequestPerformanceStatsToUI();
+        if (uiVisible)
+            RequestPerformanceStatsToUI();
     }
 
     TrySendPendingPerformanceStatsToUI();
@@ -4169,7 +4184,8 @@ void PluginController::OnIdle()
         if (mSignalDiagnosticsUpdateCounter >= 60 / kSignalDiagnosticsRateHz)
         {
             mSignalDiagnosticsUpdateCounter = 0;
-            RequestSignalDiagnosticsToUI();
+            if (uiVisible)
+                RequestSignalDiagnosticsToUI();
         }
     }
 
@@ -4409,12 +4425,111 @@ bool PluginController::AddActivePresetById(const std::string& presetId)
     return false;
 }
 
+bool PluginController::ApplyActivePresetById(const std::string& presetId)
+{
+    if (presetId.empty())
+        return false;
+
+    auto presetOpt = LoadPresetById(presetId);
+    if (!presetOpt && mActivePreset
+        && (mActivePreset->id == presetId || mActivePresetId == presetId))
+    {
+        // Unsaved/session-only preset that is already loaded — re-apply what we have.
+        presetOpt = *mActivePreset;
+    }
+    if (!presetOpt)
+    {
+        ReportErrorToUI("Cannot load preset", "Preset '" + presetId + "' not found");
+        return false;
+    }
+
+    Preset preset = std::move(*presetOpt);
+    NormalizePresetScenes(preset);
+    if (!SetPresetActiveScene(preset, std::string{}, &mActiveSceneId))
+        mActiveSceneId = GetDefaultPresetSceneId(preset);
+
+    mActivePresetId = presetId;
+
+    // Single-instance swap: ApplyPreset() crossfades the outgoing chain out and the new one
+    // in, and sets mActivePreset/mActivePresetJson and the mixer slot cache itself.
+    ApplyPreset(preset);
+
+    mPendingPresetStateBroadcast = true;
+
+    if (mActivePreset)
+    {
+        nlohmann::json loaded;
+        loaded["type"] = "presetLoaded";
+        loaded["preset"] = SerializePresetForUi(*mActivePreset);
+        nlohmann::json activeIds = nlohmann::json::array();
+        for (const auto& id : mPresetMixer.GetActivePresetIds())
+            activeIds.push_back(id);
+        loaded["activePresetIds"] = activeIds;
+        loaded["sceneId"] = GetResolvedActiveSceneId();
+        SendMessageToUI(loaded.dump());
+    }
+
+    if (!IsPresetArchiveSessionActive())
+    {
+        mAppSettings["lastPresetId"] = mActivePresetId;
+        SaveAppSettings();
+    }
+
+    return true;
+}
+
 void PluginController::RemoveActivePreset(const std::string& presetId)
 {
     std::lock_guard<std::mutex> lock(mDSPMutex);
     mPresetMixer.RemoveActivePreset(presetId);
     mMixerPresetJsonCache.erase(presetId);
     UpdateHostLatency();
+}
+
+void PluginController::FocusMixerPreset(const std::string& presetId)
+{
+    if (presetId.empty() || presetId == mActivePresetId)
+        return;
+
+    const auto it = mMixerPresetJsonCache.find(presetId);
+    if (it == mMixerPresetJsonCache.end())
+    {
+        AppendSessionLog("FocusMixerPreset: no cached preset data for slot=" + presetId);
+        return;
+    }
+
+    auto presetOpt = PresetStorage::DeserializeFromJson(it->second);
+    if (!presetOpt)
+    {
+        AppendSessionLog("FocusMixerPreset: failed to deserialize cached preset for slot=" + presetId);
+        return;
+    }
+
+    // Switch the editing/display target only. The DSP mixer instances keep running
+    // untouched so audio is unaffected — this just makes graph edits and the
+    // broadcast "preset" state target the mixer slot the user is currently viewing.
+    NormalizePresetScenes(*presetOpt);
+    mActiveSceneId = GetDefaultPresetSceneId(*presetOpt);
+    mActivePreset = std::move(presetOpt);
+    mActivePresetId = presetId;
+    mActivePresetJson = PresetStorage::SerializeToJson(*mActivePreset);
+    mMixerPresetJsonCache[presetId] = mActivePresetJson;
+
+    mPendingPresetStateBroadcast = true;
+}
+
+bool PluginController::ReplaceActiveMixerPresetInPlace(const Preset& preset, const std::string& presetId, const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(mDSPMutex);
+    const bool replaced = mPresetMixer.ReplaceActivePresetInPlace(preset, presetId, name);
+    if (replaced)
+    {
+        AttachRuntimeConfigCallbacks(presetId, preset);
+        try { mMixerPresetJsonCache[presetId] = PresetStorage::SerializeToJson(preset); }
+        catch (...) {}
+        UpdateHostLatency();
+    }
+    return replaced;
 }
 
 void PluginController::SetActivePresetMix(const std::string& presetId, double value)
@@ -4580,7 +4695,7 @@ void PluginController::HandleGetSharedSyncStateRequest()
         entry["category"] = resource.category;
         entry["description"] = resource.description;
         entry["tags"] = resource.tags;
-        entry["filePath"] = resource.filePath.empty() ? "" : resource.filePath.string();
+        entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
         entry["hash"] = resource.hash;
         if (!resource.metadata.empty())
             entry["metadata"] = resource.metadata;
@@ -4728,9 +4843,27 @@ void PluginController::HandlePresetLoadRequest(const nlohmann::json& payload)
             + ", final=" + SummarizeHostedPluginState(preset));
 
         mActivePresetId = requestedPresetId.empty() ? preset.id : requestedPresetId;
-        ApplyPreset(preset); // SetGlobalChainConfig is called inside ApplyPreset under mDSPMutex
 
-        mPendingStateBroadcast = true;
+        // If this preset is already one of several active mixer slots (e.g. the user is
+        // switching scenes on a preset that's part of a multi-preset mix), rebuild just
+        // that slot in place. ApplyPreset()'s PreparePresetSwap()/CommitPresetSwap() swap
+        // the *entire* mixer down to a single instance, which would silently drop every
+        // other active mixer preset.
+        const auto activeMixerIds = mPresetMixer.GetActivePresetIds();
+        const bool isActiveMixerSlot = activeMixerIds.size() > 1
+            && std::find(activeMixerIds.begin(), activeMixerIds.end(), mActivePresetId) != activeMixerIds.end();
+
+        if (isActiveMixerSlot && ReplaceActiveMixerPresetInPlace(preset, mActivePresetId, preset.name))
+        {
+            mActivePreset = preset;
+            mActivePresetJson = PresetStorage::SerializeToJson(preset);
+        }
+        else
+        {
+            ApplyPreset(preset); // SetGlobalChainConfig is called inside ApplyPreset under mDSPMutex
+        }
+
+        mPendingPresetStateBroadcast = true;
 
         // Send explicit "presetLoaded" confirmation to the UI
         {
@@ -4933,7 +5066,7 @@ void PluginController::HandleBrowseModelRequest()
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["path"] = result.path.string();
+                payload["path"] = util::PathToUtf8(result.path);
                 HandleLoadModelRequest(payload);
             }
         });
@@ -4947,7 +5080,7 @@ void PluginController::HandleBrowseIRRequest()
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["path"] = result.path.string();
+                payload["path"] = util::PathToUtf8(result.path);
                 HandleLoadIRRequest(payload);
             }
         });
@@ -5247,27 +5380,44 @@ void PluginController::HandleLoadModelRequest(const nlohmann::json& payload)
         path = payload.value("filePath", "");
     if (path.empty()) return;
 
-    std::filesystem::path filePath(path);
+    std::filesystem::path filePath = util::PathFromUtf8(path);
     if (!std::filesystem::exists(filePath))
     {
         ReportErrorToUI("Model file not found", path);
         return;
     }
 
+    std::string resourceError;
+    const auto savedResource = SaveLocalLibraryResource(
+        nlohmann::json{
+            {"resourceType", "nam"},
+            {"filePath", util::PathToUtf8(filePath)},
+            {"name", util::PathToUtf8(filePath.stem())},
+            {"category", "Local"},
+            {"metadata", nlohmann::json::object({{"provider", kLocalResourceProvider}})}
+        },
+        resourceError,
+        true);
+    if (!savedResource)
+    {
+        ReportErrorToUI("Model load failed", resourceError.empty() ? "Could not register model in the resource library" : resourceError);
+        return;
+    }
+
     const bool updatedNamResource =
-        UpdateResourceForNodeType(EffectGuids::kAmpNamOptimized, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kAmpNamBlend, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kFxNam, "nam", filePath)
-        || UpdateResourceForNodeType(EffectGuids::kAmpNam, "nam", filePath);
+        UpdateResourceForNodeType(EffectGuids::kAmpNamOptimized, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kAmpNamBlend, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kFxNam, savedResource->type, filePath)
+        || UpdateResourceForNodeType(EffectGuids::kAmpNam, savedResource->type, filePath);
 
     if (updatedNamResource)
     {
-        mAppSettings["lastModelPath"] = filePath.parent_path().string();
+        mAppSettings["lastModelPath"] = util::PathToUtf8(filePath.parent_path());
         SaveAppSettings();
 
         nlohmann::json message;
         message["type"] = "modelLoaded";
-        message["path"] = filePath.generic_string();
+        message["path"] = util::PathToUtf8(filePath);
         SendMessageToUI(message.dump());
     }
 }
@@ -5279,7 +5429,7 @@ void PluginController::HandleLoadIRRequest(const nlohmann::json& payload)
         path = payload.value("filePath", "");
     if (path.empty()) return;
 
-    std::filesystem::path filePath(path);
+    std::filesystem::path filePath = util::PathFromUtf8(path);
     if (!std::filesystem::exists(filePath))
     {
         ReportErrorToUI("IR file not found", path);
@@ -5288,12 +5438,12 @@ void PluginController::HandleLoadIRRequest(const nlohmann::json& payload)
 
     if (UpdateResourceForNodeType(EffectGuids::kCabIr, "ir", filePath))
     {
-        mAppSettings["lastIRPath"] = filePath.parent_path().string();
+        mAppSettings["lastIRPath"] = util::PathToUtf8(filePath.parent_path());
         SaveAppSettings();
 
         nlohmann::json message;
         message["type"] = "irLoaded";
-        message["path"] = filePath.generic_string();
+        message["path"] = util::PathToUtf8(filePath);
         SendMessageToUI(message.dump());
     }
 }
@@ -5945,10 +6095,10 @@ void PluginController::HandleBrowseNodeResourceRequest(const nlohmann::json& pay
             if (result.success)
             {
                 nlohmann::json payload;
-                payload["filePath"] = result.path.string();
+                payload["filePath"] = util::PathToUtf8(result.path);
                 payload["resourceType"] = resourceType;
                 payload["nodeId"] = nodeId;
-                payload["name"] = result.path.stem().string();
+                payload["name"] = util::PathToUtf8(result.path.stem());
                 payload["category"] = category.empty() ? std::string{"Local"} : category;
                 payload["metadata"] = nlohmann::json::object({{"provider", kLocalResourceProvider}});
                 if (resourceIndex >= 0)
@@ -6544,7 +6694,7 @@ void PluginController::HandleImportRemoteResourceRequest(const nlohmann::json& p
     msg["resourceType"] = resourceType;
     msg["id"] = resourceId;
     msg["name"] = name;
-    msg["filePath"] = targetPath.string();
+    msg["filePath"] = util::PathToUtf8(targetPath);
     SendMessageToUI(msg.dump());
     AppendSessionLog("Imported resource " + resourceType + ":" + resourceId + " (" + targetPath.string() + ")");
 }
@@ -6616,7 +6766,7 @@ std::optional<LibraryResource> PluginController::SaveLocalLibraryResource(const 
 
     if (hasFilePath)
     {
-        resolvedPath = std::filesystem::path(filePathValue);
+        resolvedPath = util::PathFromUtf8(filePathValue);
         if (!std::filesystem::exists(resolvedPath))
         {
             error = "Selected file does not exist";
@@ -6906,7 +7056,7 @@ void PluginController::HandleSaveLocalLibraryResourceRequest(const nlohmann::jso
     msg["resourceType"] = saved->type;
     msg["id"] = saved->id;
     msg["name"] = saved->name;
-    msg["filePath"] = saved->filePath.string();
+    msg["filePath"] = util::PathToUtf8(saved->filePath);
     SendMessageToUI(msg.dump());
 }
 
@@ -7314,7 +7464,7 @@ void PluginController::HandleUpdateLibraryResourceRequest(const nlohmann::json& 
     AppendUserLibraryResource(updated);
     BroadcastState();
     TouchSharedSyncState({"resourceLibrary"});
-    SendMessageToUI(nlohmann::json{{"type", "resourceImported"}, {"resourceType", updated.type}, {"id", updated.id}, {"name", updated.name}, {"filePath", updated.filePath.string()}}.dump());
+    SendMessageToUI(nlohmann::json{{"type", "resourceImported"}, {"resourceType", updated.type}, {"id", updated.id}, {"name", updated.name}, {"filePath", util::PathToUtf8(updated.filePath)}}.dump());
 }
 
 void PluginController::HandleBrowseLibraryResourcePathRequest(const nlohmann::json& payload)
@@ -7337,7 +7487,7 @@ void PluginController::HandleBrowseLibraryResourcePathRequest(const nlohmann::js
             nlohmann::json updatePayload = payload;
             updatePayload["resourceType"] = resourceType;
             updatePayload["resourceId"] = resourceId;
-            updatePayload["filePath"] = result.path.string();
+            updatePayload["filePath"] = util::PathToUtf8(result.path);
             HandleUpdateLibraryResourceRequest(updatePayload);
         });
 }
@@ -7387,7 +7537,33 @@ void PluginController::HandleListResourceFolderRequest(const nlohmann::json& pay
         std::thread worker(
             [this, rawPath, libraryPaths = std::move(libraryPaths), generation]() mutable
             {
-                ScanResourceFolderWorker(std::move(rawPath), std::move(libraryPaths), generation);
+                const std::string requestedPath = rawPath;
+                try
+                {
+                    ScanResourceFolderWorker(std::move(rawPath), std::move(libraryPaths), generation);
+                }
+                catch (const std::exception& exception)
+                {
+                    if (mFolderScanGeneration.load(std::memory_order_relaxed) == generation)
+                    {
+                        SendMessageToUI(nlohmann::json{
+                            {"type", "resourceFolderListingFailed"},
+                            {"path", requestedPath},
+                            {"message", std::string{"Unable to scan folder: "} + exception.what()}
+                        }.dump());
+                    }
+                }
+                catch (...)
+                {
+                    if (mFolderScanGeneration.load(std::memory_order_relaxed) == generation)
+                    {
+                        SendMessageToUI(nlohmann::json{
+                            {"type", "resourceFolderListingFailed"},
+                            {"path", requestedPath},
+                            {"message", "Unable to scan folder"}
+                        }.dump());
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(mFolderScanDoneMutex);
                     mActiveFolderScans.fetch_sub(1, std::memory_order_relaxed);
@@ -7423,7 +7599,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     // collapse of "."/".."/redundant separators. Unlike weakly_canonical this
     // never touches the disk, so it can't stall on a slow/disconnected drive.
     const auto normalizePath = [](const std::filesystem::path& p) -> std::string {
-        std::string s = p.lexically_normal().generic_string();
+        std::string s = util::PathToUtf8(p.lexically_normal());
         if (!s.empty() && s.back() == '/')
             s.pop_back();
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -7447,7 +7623,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         return;
     }
 
-    std::filesystem::path dir(requestPath);
+    const std::filesystem::path dir = util::PathFromUtf8(requestPath);
     std::error_code dec;
     if (!std::filesystem::is_directory(dir, dec) || dec)
     {
@@ -7485,8 +7661,13 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec);
     if (ec)
     {
+        const std::string detail = ec.message();
         if (!superseded())
-            SendMessageToUI(nlohmann::json{{"type", "resourceFolderListingFailed"}, {"path", requestPath}, {"message", "Unable to read folder"}}.dump());
+            SendMessageToUI(nlohmann::json{
+                {"type", "resourceFolderListingFailed"},
+                {"path", requestPath},
+                {"message", detail.empty() ? "Unable to read folder" : "Unable to read folder: " + detail}
+            }.dump());
         return;
     }
 
@@ -7508,7 +7689,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         const auto& entryPath = entry.path();
         if (entry.is_directory(eec) && !eec)
         {
-            dirs.push_back(nlohmann::json{{"name", entryPath.filename().string()}, {"path", entryPath.generic_string()}});
+            dirs.push_back(nlohmann::json{{"name", util::PathToUtf8(entryPath.filename())}, {"path", util::PathToUtf8(entryPath)}});
             continue;
         }
         if (!entry.is_regular_file(eec) || eec)
@@ -7519,8 +7700,8 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
             continue;
 
         nlohmann::json file;
-        file["name"] = entryPath.filename().string();
-        file["path"] = entryPath.generic_string();
+        file["name"] = util::PathToUtf8(entryPath.filename());
+        file["path"] = util::PathToUtf8(entryPath);
         file["resourceType"] = resourceType;
 
         std::error_code sec;
@@ -7561,16 +7742,16 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
     const auto parentPath = dir.parent_path();
     std::string parentStr;
     if (!parentPath.empty() && parentPath != dir)
-        parentStr = parentPath.generic_string();
+        parentStr = util::PathToUtf8(parentPath);
 
-    const std::string folderPath = dir.generic_string();
+    const std::string folderPath = util::PathToUtf8(dir);
 
     nlohmann::json msg;
     msg["type"] = "resourceFolderListing";
     msg["path"] = folderPath;
     msg["parent"] = parentStr;
     const auto leaf = dir.filename();
-    msg["name"] = leaf.empty() ? folderPath : leaf.string();
+    msg["name"] = leaf.empty() ? folderPath : util::PathToUtf8(leaf);
     msg["dirs"] = dirs;
     msg["files"] = files;
     msg["truncated"] = truncated;
@@ -7635,7 +7816,7 @@ void PluginController::ScanResourceFolderWorker(std::string requestPath,
         }
 
         batch.push_back(nlohmann::json{
-            {"path", pending.path.generic_string()},
+            {"path", util::PathToUtf8(pending.path)},
             {"metadata", std::move(metadata)}
         });
 
@@ -7815,7 +7996,7 @@ void PluginController::HandlePreviewRemoteResourceRequest(const nlohmann::json& 
         updatePayload["nodeId"] = nodeId;
         updatePayload["resourceType"] = resourceType;
         updatePayload["resourceId"] = "";
-        updatePayload["filePath"] = tempPath.string();
+        updatePayload["filePath"] = util::PathToUtf8(tempPath);
         updatePayload["resourceIndex"] = resourceIndex;
         HandleUpdateNodeResourceRequest(updatePayload);
     }
@@ -7836,7 +8017,7 @@ void PluginController::HandleCancelPreviewResourceRequest(const nlohmann::json& 
         updatePayload["nodeId"] = mPreviewState.nodeId;
         updatePayload["resourceType"] = mPreviewState.resourceType;
         updatePayload["resourceId"] = original.resourceId;
-        updatePayload["filePath"] = original.filePath.string();
+        updatePayload["filePath"] = util::PathToUtf8(original.filePath);
         updatePayload["resourceIndex"] = mPreviewState.resourceIndex;
         HandleUpdateNodeResourceRequest(updatePayload);
     }
@@ -8010,7 +8191,7 @@ void PluginController::HandleSaveCurrentCustomEffectRequest(const nlohmann::json
     {
         nlohmann::json savePayload;
         savePayload["resourceType"] = moduleRef.resourceType;
-        savePayload["filePath"] = moduleRef.filePath.string();
+        savePayload["filePath"] = util::PathToUtf8(moduleRef.filePath);
         savePayload["name"] = requestedNameOpt && !requestedNameOpt->empty()
             ? *requestedNameOpt
             : (!std::filesystem::path(moduleRef.filePath).stem().string().empty()
@@ -8656,6 +8837,7 @@ void PluginController::HandleSaveCompositePresetRequest(const nlohmann::json& pa
     if (name.empty()) { ReportErrorToUI("Save Multi-Rig failed", "A name is required"); return; }
 
     const std::string description = payload.value("description", "");
+    const nlohmann::json tagsPayload = payload.value("tags", nlohmann::json::array());
 
     // Build CompositePreset from current mixer state
     CompositePreset cp;
@@ -8679,6 +8861,27 @@ void PluginController::HandleSaveCompositePresetRequest(const nlohmann::json& pa
     }
 
     if (cp.slots.empty()) { ReportErrorToUI("Save Multi-Rig failed", "No active presets in mixer"); return; }
+
+    if (tagsPayload.is_array())
+    {
+        for (const auto& tagValue : tagsPayload)
+        {
+            if (!tagValue.is_string())
+                continue;
+            std::string tag = tagValue.get<std::string>();
+            const auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+            tag.erase(tag.begin(), std::find_if(tag.begin(), tag.end(), [&](char ch)
+            {
+                return !isSpace(static_cast<unsigned char>(ch));
+            }));
+            tag.erase(std::find_if(tag.rbegin(), tag.rend(), [&](char ch)
+            {
+                return !isSpace(static_cast<unsigned char>(ch));
+            }).base(), tag.end());
+            if (!tag.empty())
+                cp.tags.push_back(tag);
+        }
+    }
 
     // Assign id and timestamps
     const std::string existingId = payload.value("id", "");
@@ -9633,15 +9836,15 @@ void PluginController::HandleSetRiffLibraryPathRequest(const nlohmann::json& pay
 
     try
     {
-        const std::filesystem::path libraryPath = std::filesystem::path(requestedPath);
+        const std::filesystem::path libraryPath = util::PathFromUtf8(requestedPath);
         std::filesystem::create_directories(libraryPath);
-        mAppSettings[kRiffLibraryPathSettingKey] = libraryPath.string();
+            mAppSettings[kRiffLibraryPathSettingKey] = util::PathToUtf8(libraryPath);
         SaveAppSettings();
 
         {
             std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
             mRiffLibraryIndex = LoadRiffLibraryIndex();
-            mRiffLibraryIndex["path"] = libraryPath.string();
+            mRiffLibraryIndex["path"] = util::PathToUtf8(libraryPath);
             if (!mRiffLibraryIndex.contains("riffs") || !mRiffLibraryIndex["riffs"].is_array())
                 mRiffLibraryIndex["riffs"] = nlohmann::json::array();
             SaveRiffLibraryIndex(mRiffLibraryIndex);
@@ -10130,7 +10333,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
 
     nlohmann::json takeJson;
     takeJson["id"] = capture.takeId;
-    takeJson["filePath"] = wavPath.string();
+    takeJson["filePath"] = util::PathToUtf8(wavPath);
     takeJson["durationSec"] = capture.sampleRate > 0.0
         ? static_cast<double>(capture.left.size()) / capture.sampleRate
         : 0.0;
@@ -10157,7 +10360,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
         if (!mRiffLibraryIndex.is_object())
             mRiffLibraryIndex = nlohmann::json::object();
 
-        mRiffLibraryIndex["path"] = libraryPath.string();
+        mRiffLibraryIndex["path"] = util::PathToUtf8(libraryPath);
         if (!mRiffLibraryIndex.contains("riffs") || !mRiffLibraryIndex["riffs"].is_array())
             mRiffLibraryIndex["riffs"] = nlohmann::json::array();
 
@@ -10221,7 +10424,7 @@ void PluginController::HandleSaveRiffTakeRequest(const nlohmann::json& payload)
     msg["type"] = "riffSaved";
     msg["riffId"] = riffId;
     msg["takeId"] = capture.takeId;
-    msg["path"] = wavPath.string();
+    msg["path"] = util::PathToUtf8(wavPath);
     msg["library"] = updatedLibrary;
     SendMessageToUI(msg.dump());
     SendRiffLibraryStateToUI();
@@ -10254,7 +10457,7 @@ void PluginController::HandleDeleteRiffRequest(const nlohmann::json& payload)
                 {
                     if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                         continue;
-                    const auto runtimePath = std::filesystem::path(take["filePath"].get<std::string>());
+                    const auto runtimePath = util::PathFromUtf8(take["filePath"].get<std::string>());
                     if (!runtimePath.empty())
                         takeFiles.push_back(runtimePath);
                 }
@@ -10483,6 +10686,9 @@ void PluginController::HandlePreviewCapturedRiffRequest(const nlohmann::json& pa
 
 void PluginController::HandleGetSignalDiagnosticsRequest()
 {
+    // The UI only asks for this on startup or after a reload, when it has no roster to
+    // resolve frames against, so always re-send the roster alongside the next frame.
+    mSignalDiagnosticsRosterDirty = true;
     RequestSignalDiagnosticsToUI();
 }
 
@@ -10497,6 +10703,7 @@ void PluginController::HandleSetSignalDiagnosticsEnabledRequest(const nlohmann::
     const bool enabled = true;
     mSignalDiagnosticsEnabled.store(enabled, std::memory_order_release);
     mPresetMixer.SetSignalDiagnosticsEnabled(enabled);
+    mSignalDiagnosticsRosterDirty = true;
     mAppSettings[kSignalDiagnosticsSettingKey] = enabled;
     SaveAppSettings();
 }
@@ -10813,7 +11020,7 @@ void PluginController::ApplySetlistPresetByIndex(int index)
 {
     // This method may be called from the audio thread (via automation/MIDI apply,
     // already holding mDSPMutex) or from the UI thread (not holding the lock).
-    // AddActivePresetById needs to acquire mDSPMutex, so when we're already
+    // ApplyActivePresetById needs to acquire mDSPMutex, so when we're already
     // holding it we must defer the actual preset swap to OnIdle.
     //
     // We detect this by trying to lock mDSPMutex non-blocking. If it fails,
@@ -10869,8 +11076,10 @@ void PluginController::ApplySetlistPresetByIndexDirect(int index)
     toStore["cursorIndex"] = index;
     SaveUiStorageJson("setlists.json", toStore);
 
-    // Load the preset
-    AddActivePresetById(presetId);
+    // Change to the preset. A setlist step is a *switch*, not a Multi-Rig add: it must swap
+    // the mixer down to this one preset (gapless, via ApplyPreset's crossfade) rather than
+    // stacking another instance on top of whatever is already playing.
+    ApplyActivePresetById(presetId);
 
     // Notify the UI that the setlist cursor changed so it can update its display
     // and load the preset into the main preset chooser.
@@ -11152,9 +11361,13 @@ void PluginController::HandleSetGlobalChainRequest(const nlohmann::json& payload
     if (payload.contains("config"))
     {
         auto config = payload["config"].get<GlobalSignalChainConfig>();
+
+        // Build off the lock, install under it — see PrepareGlobalChainSwap().
+        mPresetMixer.PrepareGlobalChainSwap(config);
+
         {
             std::lock_guard<std::mutex> dspLock(mDSPMutex);
-            mPresetMixer.SetGlobalChainConfig(config);
+            mPresetMixer.CommitGlobalChainSwap();
             mParamValues[kParamInputTrim] = config.inputGain;
             mParamValues[kParamOutputTrim] = config.outputGain;
             mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(config));
@@ -11221,9 +11434,11 @@ void PluginController::HandleSetTunerReferenceRequest(const nlohmann::json& payl
 // Internal helpers
 // ════════════════════════════════════════════════════════════════════
 
-void PluginController::BroadcastState()
+void PluginController::BroadcastState(StateScope scope)
 {
     if (!mUIReady) return;
+
+    const bool full = scope == StateScope::Full;
 
     nlohmann::json state;
     state["type"] = "state";
@@ -11237,9 +11452,13 @@ void PluginController::BroadcastState()
         state["activeSceneId"] = GetResolvedActiveSceneId();
     }
 
-    // App settings — UI reads "appSettings"
-    state["appSettings"] = mAppSettings;
+    // App settings — UI reads "appSettings". Applying them re-runs the demo-audio, recents,
+    // tone-sharing and update-check passes and echoes an input-mode message back to us, so
+    // this is deliberately not resent on a preset switch.
+    if (full)
+        state["appSettings"] = mAppSettings;
 
+    // Always sent: the UI clears its archive-session state when this key is absent.
     state["presetArchiveSession"] = {
         {"active", IsPresetArchiveSessionActive()}
     };
@@ -11251,48 +11470,56 @@ void PluginController::BroadcastState()
     }
 
     // UI settings — UI reads "uiSettings"
-    state["uiSettings"] = mUiSettings;
+    if (full)
+        state["uiSettings"] = mUiSettings;
 
     // UI view state — UI reads "uiViewState"
-    state["uiViewState"] = mUiViewState;
+    if (full)
+        state["uiViewState"] = mUiViewState;
 
-    // Global chain — UI reads "globalSignalChain"
+    // Global chain — UI reads "globalSignalChain". Always sent: the UI asks for it with a
+    // round trip when the key is missing, which would cost more than including it.
     auto chainConfig = mPresetMixer.GetGlobalChainConfig();
     state["globalSignalChain"] = chainConfig;
 
-    // Resource library summary + per-type entries for UI rendering
-    nlohmann::json libraryInfo = nlohmann::json::object();
-    auto allResources = mResourceLibrary.GetAllResources();
-    libraryInfo["totalCount"] = allResources.size();
-
-    for (const auto& resource : allResources)
+    // Resource library summary + per-type entries for UI rendering. By far the largest
+    // section, and it stats every file on disk to fill in "fileMissing", so it is only
+    // built for a full broadcast.
+    if (full)
     {
-        const std::string type = resource.type;
-        if (!libraryInfo.contains(type) || !libraryInfo[type].is_array())
+        nlohmann::json libraryInfo = nlohmann::json::object();
+        auto allResources = mResourceLibrary.GetAllResources();
+        libraryInfo["totalCount"] = allResources.size();
+
+        for (const auto& resource : allResources)
         {
-            libraryInfo[type] = nlohmann::json::array();
+            const std::string type = resource.type;
+            if (!libraryInfo.contains(type) || !libraryInfo[type].is_array())
+            {
+                libraryInfo[type] = nlohmann::json::array();
+            }
+
+            nlohmann::json entry;
+            entry["id"] = resource.id;
+            entry["name"] = resource.name;
+            entry["category"] = resource.category;
+            entry["description"] = resource.description;
+            entry["tags"] = resource.tags;
+            entry["filePath"] = resource.filePath.empty() ? "" : util::PathToUtf8(resource.filePath);
+            entry["hash"] = resource.hash;
+            if (!resource.metadata.empty())
+            {
+                entry["metadata"] = resource.metadata;
+            }
+            const bool hasPath = !resource.filePath.empty();
+            const bool exists = hasPath && std::filesystem::exists(resource.filePath);
+            entry["fileMissing"] = !(hasPath && exists);
+
+            libraryInfo[type].push_back(entry);
         }
 
-        nlohmann::json entry;
-        entry["id"] = resource.id;
-        entry["name"] = resource.name;
-        entry["category"] = resource.category;
-        entry["description"] = resource.description;
-        entry["tags"] = resource.tags;
-        entry["filePath"] = resource.filePath.empty() ? "" : resource.filePath.string();
-        entry["hash"] = resource.hash;
-        if (!resource.metadata.empty())
-        {
-            entry["metadata"] = resource.metadata;
-        }
-        const bool hasPath = !resource.filePath.empty();
-        const bool exists = hasPath && std::filesystem::exists(resource.filePath);
-        entry["fileMissing"] = !(hasPath && exists);
-
-        libraryInfo[type].push_back(entry);
+        state["resourceLibrary"] = std::move(libraryInfo);
     }
-
-    state["resourceLibrary"] = libraryInfo;
 
     // Active preset IDs — UI reads "activePresetIds" as string array
     nlohmann::json activePresetIds = nlohmann::json::array();
@@ -11336,20 +11563,23 @@ void PluginController::BroadcastState()
     mixer["presetGraphs"] = std::move(presetGraphs);
     state["mixer"] = std::move(mixer);
 
-    // Metronome
-    nlohmann::json metronome;
-    metronome["bpm"] = GetEffectiveTempoBpm();
-    metronome["enabled"] = mMetronomeEnabled.load();
-    metronome["editable"] = mHost.IsStandalone();
-    metronome["source"] = mHost.IsStandalone() ? "app" : "host";
-    metronome["volumeDb"] = mMetronomeVolumeDb.load();
-    metronome["pan"] = mMetronomePan.load();
-    metronome["clickType"] = mMetronomeClickType;
-    nlohmann::json clickTypes = nlohmann::json::array();
-    for (const auto& config : mMetronomeClickConfig)
-        clickTypes.push_back({ {"id", config.id}, {"label", config.label} });
-    metronome["clickTypes"] = std::move(clickTypes);
-    state["metronome"] = metronome;
+    // Everything below is app-wide state that a preset or scene switch cannot change.
+    if (full)
+    {
+        // Metronome
+        nlohmann::json metronome;
+        metronome["bpm"] = GetEffectiveTempoBpm();
+        metronome["enabled"] = mMetronomeEnabled.load();
+        metronome["editable"] = mHost.IsStandalone();
+        metronome["source"] = mHost.IsStandalone() ? "app" : "host";
+        metronome["volumeDb"] = mMetronomeVolumeDb.load();
+        metronome["pan"] = mMetronomePan.load();
+        metronome["clickType"] = mMetronomeClickType;
+        nlohmann::json clickTypes = nlohmann::json::array();
+        for (const auto& config : mMetronomeClickConfig)
+            clickTypes.push_back({ {"id", config.id}, {"label", config.label} });
+        metronome["clickTypes"] = std::move(clickTypes);
+        state["metronome"] = std::move(metronome);
 
         // Environment
         state["environment"] = {
@@ -11373,31 +11603,35 @@ void PluginController::BroadcastState()
     #endif
         };
 
-    // Blend library
-    state["blendLibrary"] = mBlendLibrary;
+        // Blend library
+        state["blendLibrary"] = mBlendLibrary;
 
-    // Saved custom effects library
-    {
-        nlohmann::json customEffects = nlohmann::json::array();
-        for (const auto& entry : mCustomEffectLibrary.GetAllEntries())
-            customEffects.push_back(SerializeCustomEffectLibraryEntry(entry));
-        state["customEffectLibrary"] = std::move(customEffects);
+        // Saved custom effects library
+        {
+            nlohmann::json customEffects = nlohmann::json::array();
+            for (const auto& entry : mCustomEffectLibrary.GetAllEntries())
+                customEffects.push_back(SerializeCustomEffectLibraryEntry(entry));
+            state["customEffectLibrary"] = std::move(customEffects);
+        }
+
+        // Riff library
+        {
+            std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
+            state["riffLibrary"] = mRiffLibraryIndex;
+        }
+
+        // Automation slots
+        state["automation"] = mAutomationSlots.GetSlotsJson();
     }
-
-    // Riff library
-    {
-        std::lock_guard<std::mutex> riffLock(mRiffLibraryMutex);
-        state["riffLibrary"] = mRiffLibraryIndex;
-    }
-
-    // Automation slots
-    state["automation"] = mAutomationSlots.GetSlotsJson();
 
     SendMessageToUI(state.dump());
 
-    // Also send supplementary data
-    SendCompositeLibraryToUI();
-    SendEffectCatalogToUI();
+    // Also send supplementary data. Both are static libraries, not preset state.
+    if (full)
+    {
+        SendCompositeLibraryToUI();
+        SendEffectCatalogToUI();
+    }
 
     // Notify the host of any latency change now that the graph is settled.
     UpdateHostLatency();
@@ -11466,9 +11700,9 @@ bool PluginController::ReportHostedPluginResourceLoadFailure(const std::string& 
     if (!ref.resourceId.empty())
         message["resourceId"] = ref.resourceId;
     if (!ref.filePath.empty())
-        message["filePath"] = ref.filePath.string();
+        message["filePath"] = util::PathToUtf8(ref.filePath);
     else if (auto resolvedPath = ResolveResourceRef(ref))
-        message["filePath"] = resolvedPath->string();
+        message["filePath"] = util::PathToUtf8(*resolvedPath);
 
     SendMessageToUI(message.dump());
     return true;
@@ -11692,11 +11926,16 @@ void PluginController::ApplyPreset(const Preset& preset)
     const std::string initialSlotId = normalizedPreset.id.empty() ? "p1" : normalizedPreset.id;
     const std::string newPresetJson = PresetStorage::SerializeToJson(normalizedPreset);
 
-    // === Phase 2: Build the new executor off the DSP lock. ===
+    // === Phase 2: Build the new executors off the DSP lock. ===
     // This is the expensive step: effect processors are created, resources loaded
     // (e.g. NAM model weights read from disk), and Prepare() called on each node.
     // The audio thread continues processing the current preset uninterrupted.
     mPresetMixer.PreparePresetSwap(normalizedPreset, initialSlotId, normalizedPreset.name);
+
+    // Global chains are staged the same way. This is almost always a no-op: global FX are
+    // per-instance state that never comes from a preset, so chainConfig normally matches the
+    // running config exactly and no rebuild is staged at all.
+    mPresetMixer.PrepareGlobalChainSwap(chainConfig);
 
     // === Phase 3: Atomic swap under the DSP lock (fast). ===
     // The lock is held only for lightweight state updates and the instance swap.
@@ -11709,11 +11948,9 @@ void PluginController::ApplyPreset(const Preset& preset)
         mParamValues[kParamOutputTrim] = outputGainDb;
         mParamValues[kParamTranspose] = static_cast<double>(GetGlobalTransposeFromChainConfig(chainConfig));
 
-        // Apply global signal chain config under the DSP lock so the audio thread
-        // cannot be inside mPreChainExecutor/mPostChainExecutor.Process() while
-        // RebuildGlobalChains() tears down and recreates those executors' node states.
-        // The pre/post chain (gate, transpose, EQ, doubler) rebuilds quickly; no I/O.
-        mPresetMixer.SetGlobalChainConfig(chainConfig);
+        // Install the global chains staged above. Construction already happened off the
+        // lock; this is a pointer-level swap plus the scalar input/output settings.
+        mPresetMixer.CommitGlobalChainSwap();
         mPresetMixer.SetAutoLevelInput(false);
         mPresetMixer.SetAutoLevelOutput(false);
 
@@ -12253,6 +12490,24 @@ bool PluginController::UpdateResourceForNodeType(const std::string& nodeType,
             ResourceRef ref;
             ref.resourceType = resourceType;
             ref.filePath = filePath;
+
+            const auto normalizePath = [](const std::filesystem::path& value) {
+                std::string normalized = value.lexically_normal().generic_string();
+                std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                return normalized;
+            };
+            const auto normalizedFilePath = normalizePath(filePath);
+            for (const auto& resource : mResourceLibrary.GetResourcesByType(resourceType))
+            {
+                if (normalizePath(resource.filePath) == normalizedFilePath)
+                {
+                    ref.resourceId = resource.id;
+                    ref.filePath.clear();
+                    break;
+                }
+            }
+
             if (node.resources.empty())
                 node.resources.push_back(ref);
             else
@@ -13761,12 +14016,28 @@ void PluginController::SaveUiStorageJson(const std::string& filename, const nloh
     try
     {
         [[maybe_unused]] const auto ensuredUiStorageParent = mFileSystem.EnsureDirectory(path.parent_path());
-        std::ofstream ofs(path);
-        if (ofs.is_open())
+
+        // Write to a temp file first, then atomically rename over the real file,
+        // matching SaveAppSettings. A partial write here would corrupt setlists.json,
+        // automation.json or the preset metadata files and lose the user's data.
+        const auto tempPath = path.parent_path() / (path.filename().string() + ".tmp");
         {
+            std::ofstream ofs(tempPath);
+            if (!ofs.is_open())
+                return;
             ofs << payload.dump(2);
-            wrote = true;
         }
+
+        std::error_code ec;
+        std::filesystem::rename(tempPath, path, ec);
+        if (ec)
+        {
+            // rename failed (e.g. cross-device) – fall back to copy+delete
+            std::filesystem::copy_file(tempPath, path,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::remove(tempPath, ec);
+        }
+        wrote = !ec;
     }
     catch (const std::exception&) {}
 
@@ -13792,7 +14063,7 @@ std::filesystem::path PluginController::ResolveRiffLibraryPath() const
 {
     if (mAppSettings.contains(kRiffLibraryPathSettingKey) && mAppSettings[kRiffLibraryPathSettingKey].is_string())
     {
-        const auto configured = std::filesystem::path(mAppSettings[kRiffLibraryPathSettingKey].get<std::string>());
+        const auto configured = util::PathFromUtf8(mAppSettings[kRiffLibraryPathSettingKey].get<std::string>());
         if (!configured.empty())
             return configured;
     }
@@ -13830,7 +14101,7 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
         index = nlohmann::json::object();
     }
 
-    index["path"] = path.string();
+    index["path"] = util::PathToUtf8(path);
     if (!index.contains("riffs") || !index["riffs"].is_array())
         index["riffs"] = nlohmann::json::array();
 
@@ -13844,7 +14115,7 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
             if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                 continue;
 
-            const auto storedPath = std::filesystem::path(take["filePath"].get<std::string>());
+            const auto storedPath = util::PathFromUtf8(take["filePath"].get<std::string>());
             if (storedPath.empty())
                 continue;
 
@@ -13853,9 +14124,9 @@ nlohmann::json PluginController::LoadRiffLibraryIndex() const
             const bool storedExists = std::filesystem::exists(storedPath);
 
             if (resolvedExists)
-                take["filePath"] = resolvedPath.string();
+                take["filePath"] = util::PathToUtf8(resolvedPath);
             else if (!storedExists && !resolvedPath.empty())
-                take["filePath"] = resolvedPath.string();
+                take["filePath"] = util::PathToUtf8(resolvedPath);
         }
     }
 
@@ -13868,7 +14139,7 @@ bool PluginController::SaveRiffLibraryIndex(const nlohmann::json& payload) const
     const auto libraryPath = ResolveRiffLibraryPath();
     nlohmann::json normalizedPayload = payload;
 
-    normalizedPayload["path"] = libraryPath.string();
+    normalizedPayload["path"] = util::PathToUtf8(libraryPath);
     if (!normalizedPayload.contains("riffs") || !normalizedPayload["riffs"].is_array())
         normalizedPayload["riffs"] = nlohmann::json::array();
 
@@ -13882,9 +14153,9 @@ bool PluginController::SaveRiffLibraryIndex(const nlohmann::json& payload) const
             if (!take.is_object() || !take.contains("filePath") || !take["filePath"].is_string())
                 continue;
 
-            const auto runtimePath = std::filesystem::path(take["filePath"].get<std::string>());
+            const auto runtimePath = util::PathFromUtf8(take["filePath"].get<std::string>());
             const auto storedPath = BuildRiffTakePathForStorage(runtimePath, libraryPath);
-            take["filePath"] = storedPath.string();
+            take["filePath"] = util::PathToUtf8(storedPath);
         }
     }
 
@@ -14251,87 +14522,126 @@ void PluginController::TrySendPendingSignalDiagnosticsToUI()
 void PluginController::SendSignalDiagnosticsToUI()
 {
     auto snapshot = mPresetMixer.GetSignalDiagnosticsSnapshot();
-    nlohmann::json msg;
-    msg["type"] = "signalLevelDiagnostics";
 
-    auto buildLevelJson = [](const MultiPresetMixer::SignalLevelStats& stats)
+    // Levels travel as bare numeric tuples, so the 20 Hz frame carries no repeated keys or
+    // node ids. Values are rounded to 0.1 dB: the UI renders one decimal place, and full
+    // double precision was costing ~14 characters per value for digits nothing displays.
+    const auto roundDb = [](double db) { return std::round(db * 10.0) / 10.0; };
+    const auto buildLevelTuple = [&roundDb](const MultiPresetMixer::SignalLevelStats& stats)
     {
-        const double peakDb = ToDbFS(stats.peak);
-        const double rmsDb = ToDbFS(stats.rms);
-        const double headroomDb = HeadroomDbFromPeak(stats.peak);
+        // `clipped` is carried explicitly rather than derived UI-side from the rounded peak:
+        // a peak of 0.999 rounds to -0.0 dBFS, which would otherwise read as clipping.
         const bool clipped = stats.clipCount > 0 || stats.peak >= 1.0;
-        return nlohmann::json{
-            {"peak", stats.peak},
-            {"rms", stats.rms},
-            {"peakDbfs", peakDb},
-            {"rmsDbfs", rmsDb},
-            {"headroomDb", headroomDb},
-            {"clipped", clipped},
-            {"clipCount", stats.clipCount},
-        };
+        return nlohmann::json::array({
+            roundDb(ToDbFS(stats.peak)),
+            roundDb(ToDbFS(stats.rms)),
+            stats.clipCount,
+            clipped ? 1 : 0,
+        });
     };
 
-    auto buildAnalyzerJson = [](const MultiPresetMixer::NodeSignalLevel::AnalyzerTelemetry& analyzer)
-    {
-        nlohmann::json levels;
-        levels["peakPercent"] = analyzer.peakPercent;
-        levels["rmsPercent"] = analyzer.rmsPercent;
-        levels["rmsDbu"] = analyzer.rmsDbu;
-        levels["rmsDbv"] = analyzer.rmsDbv;
-        levels["rmsVolts"] = analyzer.rmsVolts;
-        levels["loudnessValid"] = analyzer.loudnessValid;
-        levels["momentaryLufs"] = analyzer.momentaryLufs;
-        levels["shortTermLufs"] = analyzer.shortTermLufs;
-        levels["integratedLufs"] = analyzer.integratedLufs;
-        levels["stereo"] = analyzer.stereo;
-        levels["activeChannelCount"] = analyzer.activeChannelCount;
-        levels["channelMode"] = analyzer.stereo ? "stereo" : "mono";
-
-        nlohmann::json spectrogram;
-        spectrogram["binsDb"] = analyzer.spectrogramBinsDb;
-        spectrogram["minDbfs"] = analyzer.spectrogramMinDbfs;
-        spectrogram["maxDbfs"] = analyzer.spectrogramMaxDbfs;
-        spectrogram["minFrequencyHz"] = analyzer.spectrogramMinFrequencyHz;
-        spectrogram["maxFrequencyHz"] = analyzer.spectrogramMaxFrequencyHz;
-        spectrogram["generatedAtMs"] = analyzer.generatedAtMs;
-
-        nlohmann::json bark;
-        bark["bandsDb"] = analyzer.barkBandsDb;
-        bark["minDbfs"] = analyzer.barkMinDbfs;
-        bark["maxDbfs"] = analyzer.barkMaxDbfs;
-        bark["minFrequencyHz"] = analyzer.barkMinFrequencyHz;
-        bark["maxFrequencyHz"] = analyzer.barkMaxFrequencyHz;
-        bark["generatedAtMs"] = analyzer.generatedAtMs;
-
-        nlohmann::json result;
-        result["levels"] = std::move(levels);
-        result["spectrogram"] = std::move(spectrogram);
-        result["bark"] = std::move(bark);
-        return result;
-    };
-
-    msg["rawInput"] = buildLevelJson(snapshot.rawInput);
-    msg["input"] = buildLevelJson(snapshot.input);
-    msg["output"] = buildLevelJson(snapshot.output);
-
-    nlohmann::json nodes = nlohmann::json::array();
+    std::vector<SignalDiagnosticsRosterEntry> roster;
+    roster.reserve(snapshot.nodes.size());
     for (const auto& n : snapshot.nodes)
     {
-        nlohmann::json node;
-        node["scope"] = n.scope;
-        node["presetId"] = n.presetId;
-        node["nodeId"] = n.nodeId;
-        node["nodeType"] = n.nodeType;
-        node["channelCount"] = n.channelCount;
-        node["levels"] = buildLevelJson(n.levels);
-        if (n.analyzer)
-        {
-            node["analyzer"] = buildAnalyzerJson(*n.analyzer);
-        }
-        nodes.push_back(node);
+        roster.push_back(SignalDiagnosticsRosterEntry{
+            n.scope, n.presetId, n.nodeId, n.nodeType, n.channelCount, n.analyzer.has_value() });
     }
-    msg["nodes"] = nodes;
-    SendMessageToUI(msg.dump());
+
+    if (mSignalDiagnosticsRosterDirty || roster != mSignalDiagnosticsRoster)
+    {
+        mSignalDiagnosticsRoster = roster;
+        mSignalDiagnosticsRosterDirty = false;
+        ++mSignalDiagnosticsRosterSeq;
+
+        nlohmann::json rosterNodes = nlohmann::json::array();
+        for (const auto& entry : mSignalDiagnosticsRoster)
+        {
+            rosterNodes.push_back(nlohmann::json::array({
+                entry.scope, entry.presetId, entry.nodeId, entry.nodeType,
+                entry.channelCount, entry.hasAnalyzer ? 1 : 0 }));
+        }
+
+        // The analyzer display ranges are compile-time constants, so they ride along with
+        // the roster instead of being repeated in every analyzer payload.
+        nlohmann::json rosterMsg;
+        rosterMsg["type"] = "sldRoster";
+        rosterMsg["seq"] = mSignalDiagnosticsRosterSeq;
+        rosterMsg["nodes"] = std::move(rosterNodes);
+        rosterMsg["spectrogramRange"] = nlohmann::json::array({
+            InputAnalyzerEffect::kSpectrogramMinDbfs, InputAnalyzerEffect::kSpectrogramMaxDbfs,
+            InputAnalyzerEffect::kSpectrogramMinFrequencyHz, InputAnalyzerEffect::kSpectrogramMaxFrequencyHz });
+        rosterMsg["barkRange"] = nlohmann::json::array({
+            InputAnalyzerEffect::kBarkMinDbfs, InputAnalyzerEffect::kBarkMaxDbfs,
+            InputAnalyzerEffect::kBarkMinFrequencyHz, InputAnalyzerEffect::kBarkMaxFrequencyHz });
+        SendMessageToUI(rosterMsg.dump());
+    }
+
+    nlohmann::json frameLevels = nlohmann::json::array();
+    for (const auto& n : snapshot.nodes)
+    {
+        for (const auto& value : buildLevelTuple(n.levels))
+            frameLevels.push_back(value);
+    }
+
+    nlohmann::json frame;
+    frame["type"] = "sld";
+    frame["seq"] = mSignalDiagnosticsRosterSeq;
+    frame["r"] = buildLevelTuple(snapshot.rawInput);
+    frame["i"] = buildLevelTuple(snapshot.input);
+    frame["o"] = buildLevelTuple(snapshot.output);
+    frame["d"] = std::move(frameLevels);
+    SendMessageToUI(frame.dump());
+
+    // Analyzer telemetry is an order of magnitude larger than a level tuple, so it moves out
+    // of the frame into its own message rather than bloating every node entry. Band values are
+    // rounded to whole dB — the spectrogram heatmap and bark bar graph cannot resolve finer.
+    // NOTE: this still goes out for every analyzer node on every frame. The analyzer refreshes
+    // on each processed block, so there is no cheap staleness check to skip on; the remaining
+    // win here is only sending it for the node whose analyzer panel is actually open.
+    for (const auto& n : snapshot.nodes)
+    {
+        if (!n.analyzer)
+            continue;
+
+        const auto& analyzer = *n.analyzer;
+        const auto quantiseBands = [](const std::vector<float>& values)
+        {
+            nlohmann::json out = nlohmann::json::array();
+            for (const float value : values)
+                out.push_back(std::isfinite(value) ? static_cast<int>(std::lround(value)) : -120);
+            return out;
+        };
+
+        nlohmann::json analyzerMsg;
+        analyzerMsg["type"] = "sldA";
+        analyzerMsg["seq"] = mSignalDiagnosticsRosterSeq;
+        analyzerMsg["id"] = n.nodeId;
+        analyzerMsg["t"] = analyzer.generatedAtMs;
+        // Percent-of-full-scale values are not rounded to 0.1 like the dB fields: the UI also
+        // converts them back to dBFS for display, where 0.1 percentage points is a 6 dB error
+        // on a quiet signal. 1e-6 is far below the -120 dBFS floor and still trims the double.
+        const auto roundPercent = [](double v) { return std::round(v * 1.0e6) / 1.0e6; };
+
+        // [peakPercent, rmsPercent, rmsDbu, rmsDbv, rmsVolts, momentaryLufs, shortTermLufs,
+        //  integratedLufs, activeChannelCount, stereo, loudnessValid]
+        analyzerMsg["l"] = nlohmann::json::array({
+            roundPercent(analyzer.peakPercent),
+            roundPercent(analyzer.rmsPercent),
+            roundDb(analyzer.rmsDbu),
+            roundDb(analyzer.rmsDbv),
+            std::round(analyzer.rmsVolts * 1000.0) / 1000.0,
+            roundDb(analyzer.momentaryLufs),
+            roundDb(analyzer.shortTermLufs),
+            roundDb(analyzer.integratedLufs),
+            analyzer.activeChannelCount,
+            analyzer.stereo ? 1 : 0,
+            analyzer.loudnessValid ? 1 : 0,
+        });
+        analyzerMsg["s"] = quantiseBands(analyzer.spectrogramBinsDb);
+        analyzerMsg["b"] = quantiseBands(analyzer.barkBandsDb);
+        SendMessageToUI(analyzerMsg.dump());
+    }
 }
 
 void PluginController::RequestPerformanceStatsToUI()

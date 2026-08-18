@@ -7,6 +7,8 @@
  * - All complex logic stays in the rest of the TS modules; Alpine only owns declarative DOM.
  */
 
+import { STANDARD_TAGS } from "./presetTags.js";
+
 declare global {
   interface Window {
     Alpine?: any;
@@ -78,18 +80,10 @@ export function initAlpineStores(): void {
     },
   });
 
-  // Simple tags for preset filters (example list conversion)
+  // Tags for the preset library's filter bar — same standard vocabulary
+  // used by every tag picker (Save Preset, Save Multi-Rig, Tone Sharing).
   Alpine.store('presetTags', {
-    tags: [
-      { tag: 'lead', label: 'lead' },
-      { tag: 'rhythm', label: 'rhythm' },
-      { tag: 'clean', label: 'clean' },
-      { tag: 'crunch', label: 'crunch' },
-      { tag: 'high-gain', label: 'high-gain' },
-      { tag: 'ambient', label: 'ambient' },
-      { tag: 'atmospheric', label: 'atmospheric' },
-      { tag: 'bass', label: 'bass' },
-    ],
+    tags: STANDARD_TAGS.map((tag) => ({ tag, label: tag })),
     activeFilters: [] as string[],
     toggle(tag: string) {
       const s = Alpine.store('presetTags') as any;

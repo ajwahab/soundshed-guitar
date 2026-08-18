@@ -2,7 +2,6 @@ import { setAppSetting, postMessage } from "./bridge.js";
 import { showNotification } from "./notifications.js";
 import { showConfirm } from "./dialogs.js";
 import {
-  applyPresetFromLibrary,
   assignPresetToActiveSetlistSlot,
   clearActiveSetlistSlot,
   createSetlist,
@@ -295,9 +294,12 @@ function selectSetlistSlot(index: number): void {
   }
 
   uiState.setlistCursorIndex = index;
+  // The backend switches the preset off this one message and reports it with "presetLoaded",
+  // which re-renders the pads. Loading it from here as well rebuilt the whole DSP graph a
+  // second time and doubled the switch time.
   postMessage({ type: "setSetlistCursor", cursorIndex: index });
+  uiState.presetLoadingId = presetId;
   renderPerformancePads();
-  void applyPresetFromLibrary(presetId).then(() => renderPerformancePads());
 }
 
 async function assignSetlistSlot(index: number): Promise<void> {

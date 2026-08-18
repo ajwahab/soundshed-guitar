@@ -40,6 +40,49 @@ export function getTone3000ImageUrl(tone: Tone3000Tone): string | null {
   return null;
 }
 
+/// Artwork is not part of the model download, so anything imported before the
+/// image URL was recorded has no `imageUrl` in its metadata. Every tone listing
+/// the API returns already carries the image, so fill it in for matching library
+/// resources as the user browses rather than re-fetching tones later.
+export function backfillTone3000ResourceImages(tones: Tone3000Tone[]): void {
+  const imageUrlByToneId = new Map<string, string>();
+  tones.forEach((tone) => {
+    const imageUrl = getTone3000ImageUrl(tone);
+    if (imageUrl) {
+      imageUrlByToneId.set(String(tone.id), imageUrl);
+    }
+  });
+  if (!imageUrlByToneId.size) {
+    return;
+  }
+
+  for (const resourceType of ["nam", "ir"] as const) {
+    (uiState.resourceLibrary[resourceType] ?? []).forEach((resource) => {
+      const metadata = resource.metadata;
+      if (!metadata || metadata.provider !== "tone3000" || metadata.imageUrl) {
+        return;
+      }
+
+      const imageUrl = imageUrlByToneId.get(metadata.toneId ?? "");
+      if (!imageUrl) {
+        return;
+      }
+
+      const updated = { ...metadata, imageUrl };
+      resource.metadata = updated;
+      postMessage({
+        type: "updateLibraryResource",
+        resourceType,
+        resourceId: resource.id,
+        name: resource.name,
+        category: resource.category,
+        description: resource.description,
+        metadata: updated,
+      });
+    });
+  }
+}
+
 export async function fetchTone3000Models(
   tone: Tone3000Tone,
   architecture?: Tone3000Architecture,
@@ -175,6 +218,7 @@ function importRemoteResource(options: {
       modelId: String(model.id),
       modelName: model.name ?? "",
       modelUrl: model.model_url,
+      imageUrl: getTone3000ImageUrl(tone) ?? "",
       architectureVersion: model.architecture_version ?? "",
       ...(entryName ? { entryName } : {}),
       sourceUrl: `https://www.tone3000.com/tones/${tone.slug ?? tone.id}`,

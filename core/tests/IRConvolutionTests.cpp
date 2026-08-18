@@ -464,6 +464,10 @@ namespace
     void SetCabParam(const std::string& key, double value)
     {
       mExecutor.SetNodeParam("cab", key, value);
+      // Parameters that rebuild the impulse (normalizeIR, lowLatency) start a 30 ms
+      // crossfade from the previous convolver. Reset so the first rendered samples
+      // reflect the new setting rather than the tail of the old one.
+      mExecutor.Reset();
     }
 
     void Convolve(std::vector<double>& samples, int channel = 0)
@@ -619,6 +623,7 @@ namespace
 
     IRConvolutionTester tester;
     tester.SetImpulse(impulse);
+    tester.SetCabParam("normalizeIR", 0.0); // raw passthrough, without the rate-anchored L2 gain
     std::vector<double> testSamples = input;
     tester.Convolve(testSamples);
 
@@ -721,6 +726,7 @@ namespace
 
     IRConvolutionTester tester;
     tester.SetImpulse(impulse);
+    tester.SetCabParam("normalizeIR", 0.0); // test raw convolution math
     std::vector<double> testSamples = input;
     tester.Convolve(testSamples);
 
@@ -964,6 +970,7 @@ namespace
 
     IRConvolutionTester tester;
     tester.SetStereoImpulse(leftIR, rightIR);
+    tester.SetCabParam("normalizeIR", 0.0); // compare raw per-channel impulses
 
     std::vector<double> channelL = { 1.0, 0.0, 0.0 };
     std::vector<double> channelR = { 1.0, 0.0, 0.0 };
@@ -1011,6 +1018,7 @@ namespace
 
     IRConvolutionTester tester;
     tester.SetImpulse(impulse);
+    tester.SetCabParam("normalizeIR", 0.0); // identity IR must pass through unscaled
 
     // Generate a 1-second test signal (e.g., swept frequency)
     std::vector<double> inputSignal(totalSamples);
@@ -1248,6 +1256,7 @@ namespace
     // Process through convolver
     IRConvolutionTester tester;
     tester.SetImpulse(knownIR);
+    tester.SetCabParam("normalizeIR", 0.0); // expect the raw IR back, not the L2-normalised one
     tester.Convolve(impulseInput);
 
     // Verify output matches IR

@@ -107,6 +107,12 @@ namespace guitarfx
     [[nodiscard]] std::string FindFirstNodeOfTypes(const std::vector<std::string> &types) const;
     [[nodiscard]] std::vector<std::string> GetNodeTypes() const;
 
+    /// True if any node in this graph must be loaded and prepared on the main thread
+    /// (plugin hosts marshalling through JUCE's MessageManager). Lets a composite that
+    /// wraps such a node report the same requirement to its parent graph, so it is never
+    /// dispatched to a worker thread.
+    [[nodiscard]] bool AnyNodeRequiresMainThreadLoad() const;
+
     // Global settings
     void SetInputTrim(double dB) { mInputTrim = dB; }
     void SetOutputTrim(double dB) { mOutputTrim = dB; }

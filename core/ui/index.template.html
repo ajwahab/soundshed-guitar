@@ -8,8 +8,9 @@
   <script src="build-flags.js"></script>
   <script src="dist/alpine.min.js"></script>
   <!--
-    Module specifiers for the vendored three.js build. three.js is only fetched
-    when the Neural Amp 3D view is enabled (dynamic import in dist/amp3d).
+    Module specifiers for the vendored three.js build. three.js is only fetched by
+    the dynamic import in dist/amp3d, which is currently unreachable: the 3D chain
+    stage is disabled behind CHAIN_3D_VIEW_ENABLED in ts/signalPath.ts.
   -->
   <script type="importmap">
     {

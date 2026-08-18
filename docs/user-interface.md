@@ -55,7 +55,7 @@ The UI is a web-based single-page application (SPA) hosted in a native WebView. 
 
 | Type | Payload | Description |
 |------|---------|-------------|
-| `state` | Full state object | Complete sync on startup/major changes |
+| `state` | Full or preset-scoped state object | Complete sync on startup/major changes; preset/scene switches send a preset-scoped subset (see below) |
 | `presetLoaded` | `{preset, sceneId, activePresetIds, parameters}` | Preset load notification |
 | `presetSaved` | `{preset, sceneId}` | Preset saved to disk confirmation |
 | `presetList` | `{presets: [{id, name, category, source}]}` | Factory/user presets from disk |
@@ -79,7 +79,9 @@ The UI is a web-based single-page application (SPA) hosted in a native WebView. 
 | `globalChain` | `{config}` | Global signal chain configuration |
 | `effectCatalog` | `{effects: [...]}` | Available effect types |
 | `dspPerformance` | `{...}` | DSP performance statistics |
-| `signalLevelDiagnostics` | `{rawInput, input, output, nodes}` | Signal level diagnostics and per-node meters |
+| `sldRoster` | `{seq, nodes: [[scope, presetId, nodeId, nodeType, channelCount, hasAnalyzer]], spectrogramRange, barkRange}` | Signal diagnostics roster: everything about the node set that does not change frame to frame. Sent only when the node set changes, and on `getSignalDiagnostics`. |
+| `sld` | `{seq, r, i, o, d}` | Signal level frame at 20 Hz. `r`/`i`/`o` are raw input, processed input and output; `d` holds one tuple per roster node, flattened in roster order. Every tuple is `[peakDbfs, rmsDbfs, clipCount, clipped]`, rounded to 0.1 dB; `headroomDb` is derived UI-side. Frames whose `seq` does not match the held roster are dropped. |
+| `sldA` | `{seq, id, t, l, s, b}` | Analyzer telemetry for one node — levels `l`, spectrogram bins `s` and bark bands `b` in whole dBFS. Sent separately from `sld` because it is an order of magnitude larger than a level tuple. |
 | `spatialPosition` | `{nodes: [{scope, presetId?, nodeId, azimuth, elevation, distance, itdUs, ildDb, rateHz, moving}]}` | Live source position for every 3D Spatial node, ~20 Hz. Purely cosmetic: it keeps the spatial panner's puck in sync with what is being heard, and the widget falls back to the anchor position if it never arrives. Only sent while at least one such node exists. |
 | `metronomeState` | `{bpm, enabled, ...}` | Metronome state |
 | `layoutSaved` | `{...}` | Effect layout saved |
@@ -166,6 +168,31 @@ Sent via `state` message on startup and major changes:
   }
 }
 ```
+
+### Broadcast scope
+
+`state` comes in two scopes (`PluginController::StateScope`):
+
+- **Full** — everything above. Sent on startup, on an explicit `requestState`/`uiReady`, and
+  whenever library or settings state changes. On a real library this is ~510 KB, ~90% of it
+  `resourceLibrary`, which also costs one filesystem stat per entry to build. It is followed
+  by `compositeLibrary` and `effectCatalog` (~68 KB together).
+- **Preset-scoped** — sent when a preset or scene switch is the only thing that changed
+  (~10 KB, no supplementary messages). Carries `preset`, `activePresetId`, `activeSceneId`,
+  `activePresetIds`, `mixer`, `globalSignalChain` and `presetArchiveSession`; omits the
+  resource/riff/blend/custom-effect libraries, app settings, UI settings, UI view state,
+  metronome, environment and automation, none of which a preset switch can change.
+
+Rules for anyone touching this:
+
+- Every section the UI reads is behind a presence check, so omitting a key is a no-op there.
+  Three keys are **not** safe to omit and are always sent: `activePresetId` (read
+  unconditionally), `globalSignalChain` (its absence triggers a `getGlobalChain` round trip)
+  and `presetArchiveSession` (its absence clears the UI's archive-session state).
+- A full request queued in the same idle window wins over a preset-scoped one.
+- The periodic telemetry feeds (`sld` at 20 Hz, `dspPerformance`) only
+  drive on-screen meters and are suppressed while the UI reports itself hidden via
+  `uiVisibility`.
 
 ## JavaScript Bridge
 
@@ -290,7 +317,79 @@ way the EQ curve is (see `updateSpatialVisualization` in `signalPath.ts`).
 - Redraws are coalesced through a single `requestAnimationFrame`; there is no free-running
   animation loop.
 
-### Neural Amp 3D view (`core/ui/ts/amp3d/`)
+### Effect layout selection (`core/ui/ts/layoutPreferences.ts`, `layoutPicker.ts`)
+
+Every effect renders either the **standard** auto-generated controls or a **custom
+layout** from the layout library. A layout button (`.node-layout-switch-btn`) in the
+effect shell's meta rail opens the layout picker popover; it is the single entry point
+for both choosing and designing layouts, so it stays visible whenever the `EffectLayout`
+feature flag is on — even before the effect has any layouts — and otherwise only when
+the effect has layouts to switch between. (The separate gear button that used to open
+the designer was removed once the picker covered it.)
+
+- **Master switch** — a *Use Effect Layouts* checkbox sits at the top of the popover,
+  above the tabs, backed by `ui.effectLayoutsEnabled` (absent = on, so existing installs
+  are unaffected). Turned off, every effect renders the standard controls regardless of
+  rules or library defaults — `resolveLayoutSelection()` short-circuits to
+  `{ layoutId: STANDARD_LAYOUT_ID, source: "disabled" }` and `getCustomLayout()` /
+  `hasCustomLayout()` return nothing, which also drops the layout thumbnails from the
+  chain nodes and the FX browser — and the popover collapses to just the toggle and an
+  explanation. Saved rules are deliberately *not* cleared, so turning it back on restores
+  every previous choice. The toggle applies immediately; there is nothing to Apply.
+- **Picker** — two radio options, "Standard controls" and "Custom layout". Because an
+  effect type can accumulate many layouts, the custom ones sit behind a `<details>`
+  dropdown rather than one radio each: the trigger shows the selected layout (thumbnail,
+  name, control count, Factory badge) and the expanded list shows all layouts available
+  for the node's lookup keys (`effectType::blendId` first, then `effectType`). Picking an
+  item writes its id into the custom radio's `value`, which is what Apply reads. The
+  popover is appended to `<body>` with fixed positioning because `.default-effect-shell`
+  clips its overflow.
+- **Rules** — a choice is saved as a preference rule scoped to one of:
+  *every use of this effect* (`effectType`), *amps/FX matching a keyword*
+  (`keyword`, matched case-insensitively against the node's display name, loaded
+  resource/model names and effect name — the picker suggests keywords parsed from
+  that same text), or *one preset* (`preset`, pinned to `uiState.activePresetId`).
+  Rules are persisted in app settings under `ui.effectLayoutPreferences`.
+- **Tabs** — the popover has a **Layout** tab (the options and the "remember this for"
+  scope) and a **Rules** tab listing the saved rules for this effect, each with its own
+  delete button; there is no bulk clear. The tab bar carries the rule count. Switching
+  tabs only toggles `hidden` on the panels, so a pending layout selection survives it,
+  and the active tab is held in `openLayoutPicker`'s scope so deleting a rule (which
+  re-renders) leaves the user on the Rules tab. *Apply* is hidden outside the Layout
+  tab, since it commits that tab's selection.
+- **Resolution order** — master switch → preset rule → keyword rule (longest matching
+  keyword wins) → effect-type rule → layout library default → standard controls. With no rules
+  saved the behaviour is identical to the library default, so existing installs are
+  unaffected. `STANDARD_LAYOUT_ID` (`__standard__`) is a valid rule target, which is
+  how "always use the standard controls for this amp" is expressed.
+- **Design actions** — the footer offers *New layout…*, which opens the Layout Designer
+  on a fresh auto-generated layout for that effect type (and blend, where applicable).
+  A pencil button sits next to the dropdown trigger (edits the selected layout) and next
+  to every item in the expanded list, opening the designer on that specific layout via
+  `findLayoutById`; on a Factory layout it opens the editable fork the designer creates,
+  since factory layouts are read-only. All of these close the popover first — the
+  designer is a modal that would otherwise sit under it — and all are driven by the
+  picker's optional `onDesignLayout(layoutId | null)` callback, which `signalPath.ts`
+  only supplies while the `EffectLayout` feature flag is on.
+- The signal-path node avatar uses the same resolver, so the thumbnail on the chain
+  bar always matches what the parameter panel will render.
+
+### Layout Designer name (`core/ui/ts/layoutDesigner.ts`)
+
+The designer toolbar starts with a **Name** field bound to `EffectLayout.name` — the
+title shown in the layout picker and the layout library list. It is committed on
+blur/Enter as a single undo step, and again on save so an uncommitted edit is not lost.
+Leaving it blank falls back to the effect display name (plus blend name for per-blend
+layouts), which is also the name pre-filled for a new layout; forking a factory layout
+appends " (copy)" so the two are distinguishable in the picker.
+
+### Neural Amp 3D view (`core/ui/ts/amp3d/`) — DISABLED
+
+> This view is switched off. `CHAIN_3D_VIEW_ENABLED` in `core/ui/ts/signalPath.ts` is
+> `false`, so the toggle button is never rendered and the dynamic
+> `import("./amp3d/index.js")` never runs — effect visualisation is served entirely by
+> the standard controls and custom layouts described above. The code and the notes
+> below are retained so the experiment can be revived by flipping that flag.
 
 Neural Amp nodes (`kAmpNam`, `kAmpNamOptimized`, `kAmpNamBlend`) can swap the generic knob
 grid for a photoreal 3D amp head. A toggle button (`.node-amp3d-toggle-btn`) sits in the

@@ -750,7 +750,17 @@ namespace guitarfx
 
         CopyInputToWorkBuffer (inputs, numSamples);
         mMidiBuffer.clear();
-        mPlugin->processBlock (mWorkBuffer, mMidiBuffer);
+
+        // Expose only numSamples frames to the plugin. mWorkBuffer is sized to the
+        // maximum block declared at prepareToPlay; when the host delivers a smaller
+        // real-time block (e.g. an ASIO buffer below 256) the tail beyond numSamples
+        // still holds the previous block's samples. Passing the whole buffer makes
+        // the plugin process that stale tail, corrupting its internal state.
+        juce::AudioBuffer<float> blockView (mWorkBuffer.getArrayOfWritePointers(),
+                                            mWorkBuffer.getNumChannels(),
+                                            numSamples);
+        mPlugin->processBlock (blockView, mMidiBuffer);
+
         CopyWorkBufferToOutputs (inputs, outputs, numSamples);
     }
 
@@ -1185,6 +1195,10 @@ namespace guitarfx
             const juce::SpinLock::ScopedLockType lock (mPluginProcessLock);
             mPlugin->setRateAndBufferSizeDetails (mSampleRate, mMaxBlockSize);
             mPlugin->prepareToPlay (mSampleRate, mMaxBlockSize);
+            // A host must resume the plugins it prepares. Without this, a plugin
+            // that gates its processing on isSuspended() loads without error but
+            // silently passes audio through unprocessed.
+            mPlugin->suspendProcessing (false);
             UpdateWorkBufferForPlugin();
         }
         ApplyPendingPluginState();

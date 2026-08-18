@@ -13,6 +13,7 @@ import { openBlendEditorWithDefinition } from "./signalPath.js";
 import { Tone3000DetailsView } from "./tone3000DetailsView.js";
 import {
   createTone3000BlendDefinition,
+  backfillTone3000ResourceImages,
   fetchTone3000Models,
   getTone3000ImageUrl,
   importTone3000Models,
@@ -359,6 +360,7 @@ async function runSearch(page = 1): Promise<void> {
 
     const data = await response.json();
     const tones = extractTone3000Tones(data);
+    backfillTone3000ResourceImages(tones);
 
     const filtered = useFavoritesMode
       ? tones

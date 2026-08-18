@@ -10,6 +10,7 @@ import { activateEquipmentTab, activateLibraryTab } from "./settings.js";
 import { setTone3000Search } from "./tone3000Browser.js";
 import { FEATURE_FLAGS_CHANGED_EVENT, Features, isFeatureEnabled } from "./featureFlags.js";
 import { showNotification } from "./notifications.js";
+import { STANDARD_TAGS, renderTagChips } from "./presetTags.js";
 
 type ToneSharingUser = {
   id: string;
@@ -4327,10 +4328,14 @@ function bindTopControls(): void {
     }
   });
 
-  // Tag chip toggles in publish modal
-  element<HTMLElement>("tone-sharing-tags-picker")?.querySelectorAll<HTMLButtonElement>(".tone-sharing-tag-chip").forEach((btn) => {
-    btn.addEventListener("click", () => btn.classList.toggle("active"));
-  });
+  // Populate from the standard tag list, then wire tag chip toggles in publish modal
+  const toneSharingTagsPicker = element<HTMLElement>("tone-sharing-tags-picker");
+  if (toneSharingTagsPicker) {
+    renderTagChips(toneSharingTagsPicker, STANDARD_TAGS, "tone-sharing-tag-chip");
+    toneSharingTagsPicker.querySelectorAll<HTMLButtonElement>(".tone-sharing-tag-chip").forEach((btn) => {
+      btn.addEventListener("click", () => btn.classList.toggle("active"));
+    });
+  }
 
   // Publish preset modal (opened from preset chooser)
   element<HTMLButtonElement>("tone-sharing-publish-modal-close")?.addEventListener("click", () => {

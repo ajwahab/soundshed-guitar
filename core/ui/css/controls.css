@@ -60,6 +60,10 @@
   z-index: 1;
 }
 
+.knob[data-custom-knob-image="true"]::before {
+  content: none;
+}
+
 /* Neutral-position tick mark — fixed small mark at 6 o'clock of the ring */
 .knob::after {
   content: "";
@@ -73,6 +77,10 @@
   transform: translateX(-50%);
   pointer-events: none;
   z-index: 2;
+}
+
+.knob[data-custom-knob-image="true"]::after {
+  content: none;
 }
 
 .knob:focus-visible {
@@ -131,6 +139,21 @@ input[type="range"]:focus-visible {
   transform-origin: center 13px; /* pivot = 19px center - 6px top */
   z-index: 2;
   pointer-events: none;
+}
+
+.knob .custom-knob-face {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.knob[data-custom-knob-image="true"] .knob-indicator {
+  display: none;
 }
 
 .knob-mapped-points {

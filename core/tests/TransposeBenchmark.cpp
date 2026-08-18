@@ -29,10 +29,12 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,26 @@ namespace
   constexpr double kMaxRenderSeconds = 12.0;
   constexpr int kEnvelopeDecimation = 32;
   constexpr double kMaxMeasuredLatencySeconds = 0.5;
+
+  // Pitch-accuracy tracking. Guitar fundamentals sit well below 500 Hz, so the
+  // tracker runs on a ~8 kHz decimated copy to keep YIN's search space small.
+  constexpr double kPitchTargetRate = 8000.0;
+  // 128 ms frame / 64 ms hop. Long enough for a reliable YIN estimate on a low E
+  // (~5 periods in the correlation window), short enough that a riff still yields
+  // plenty of steady-pitch frames — a 256 ms frame yielded almost none.
+  constexpr int kPitchFrameSamples = 1024;
+  constexpr int kPitchHopSamples = 256;
+  constexpr double kPitchDryMinHz = 65.0;
+  constexpr double kPitchDryMaxHz = 500.0;
+  constexpr double kPitchAbsoluteMinHz = 30.0;  // -12 st from a low E is 41 Hz
+  constexpr double kPitchYinThreshold = 0.20;
+  // Fallback: when nothing clears the threshold, accept the best CMNDF minimum if
+  // it is at least this good. Without it a phasey shifter output goes untracked
+  // and the metric silently reports "no data" for the very cases it should catch.
+  constexpr double kPitchFallbackMax = 0.60;
+  constexpr double kPitchSilenceRms = 1.0e-4;
+  constexpr double kPitchOctaveRejectCents = 600.0;
+  constexpr int kPitchMinFrames = 10;
 
   struct EffectVariant
   {
@@ -263,6 +285,256 @@ namespace
     return bestLag * kEnvelopeDecimation;
   }
 
+  /**
+   * Mono, band-limited, decimated copy for pitch tracking. A box average over the
+   * decimation factor is the anti-alias filter — crude, but everything above
+   * ~4 kHz is irrelevant to a fundamental estimate.
+   */
+  std::vector<double> DecimateForPitch(const std::vector<float>& left,
+                                       const std::vector<float>& right,
+                                       size_t offsetFrames,
+                                       size_t frameCount,
+                                       double sampleRate,
+                                       double& outRate)
+  {
+    const size_t factor = static_cast<size_t>(
+      std::max(1L, std::lround(sampleRate / kPitchTargetRate)));
+    outRate = sampleRate / static_cast<double>(factor);
+
+    std::vector<double> out;
+    out.reserve(frameCount / factor + 1);
+    for (size_t i = 0; i + factor <= frameCount; i += factor)
+    {
+      double acc = 0.0;
+      size_t taken = 0;
+      for (size_t k = 0; k < factor; ++k)
+      {
+        const size_t idx = offsetFrames + i + k;
+        if (idx >= left.size() || idx >= right.size())
+          break;
+        acc += 0.5 * (static_cast<double>(left[idx]) + static_cast<double>(right[idx]));
+        ++taken;
+      }
+      if (taken == 0)
+        break;
+      out.push_back(acc / static_cast<double>(taken));
+    }
+    return out;
+  }
+
+  /**
+   * YIN fundamental estimate (cumulative mean normalized difference function with
+   * parabolic refinement). Returns 0 when no confident pitch is found, so unvoiced
+   * frames drop out of the comparison rather than contributing noise.
+   */
+  double EstimateF0(const std::vector<double>& x,
+                    size_t start,
+                    size_t count,
+                    double sampleRate,
+                    double minHz,
+                    double maxHz)
+  {
+    if (count < 256 || start + count > x.size())
+      return 0.0;
+
+    const int window = static_cast<int>(count) / 2;
+    const int tauMax = std::min(window, static_cast<int>(sampleRate / std::max(minHz, 1.0)));
+    const int tauMin = std::max(2, static_cast<int>(sampleRate / std::max(maxHz, 1.0)));
+    if (tauMax <= tauMin + 2)
+      return 0.0;
+
+    double mean = 0.0;
+    for (size_t i = 0; i < count; ++i)
+      mean += x[start + i];
+    mean /= static_cast<double>(count);
+
+    double energy = 0.0;
+    for (size_t i = 0; i < count; ++i)
+    {
+      const double centered = x[start + i] - mean;
+      energy += centered * centered;
+    }
+    if (std::sqrt(energy / static_cast<double>(count)) < kPitchSilenceRms)
+      return 0.0;
+
+    std::vector<double> diff(static_cast<size_t>(tauMax) + 1, 0.0);
+    for (int tau = 1; tau <= tauMax; ++tau)
+    {
+      double sum = 0.0;
+      for (int i = 0; i < window; ++i)
+      {
+        const double a = x[start + static_cast<size_t>(i)] - mean;
+        const double b = x[start + static_cast<size_t>(i + tau)] - mean;
+        sum += (a - b) * (a - b);
+      }
+      diff[static_cast<size_t>(tau)] = sum;
+    }
+
+    std::vector<double> normalized(diff.size(), 1.0);
+    double running = 0.0;
+    for (int tau = 1; tau <= tauMax; ++tau)
+    {
+      running += diff[static_cast<size_t>(tau)];
+      normalized[static_cast<size_t>(tau)] = running > 1.0e-12
+        ? diff[static_cast<size_t>(tau)] * tau / running
+        : 1.0;
+    }
+
+    int tau = -1;
+    for (int t = tauMin; t <= tauMax; ++t)
+    {
+      if (normalized[static_cast<size_t>(t)] >= kPitchYinThreshold)
+        continue;
+      // Descend to the local minimum so we lock the true period, not its onset.
+      while (t + 1 <= tauMax
+             && normalized[static_cast<size_t>(t + 1)] < normalized[static_cast<size_t>(t)])
+        ++t;
+      tau = t;
+      break;
+    }
+    if (tau < 1)
+    {
+      int best = tauMin;
+      for (int t = tauMin; t <= tauMax; ++t)
+      {
+        if (normalized[static_cast<size_t>(t)] < normalized[static_cast<size_t>(best)])
+          best = t;
+      }
+      if (normalized[static_cast<size_t>(best)] > kPitchFallbackMax)
+        return 0.0;
+      tau = best;
+    }
+
+    double refined = static_cast<double>(tau);
+    if (tau > 1 && tau < tauMax)
+    {
+      const double a = normalized[static_cast<size_t>(tau) - 1];
+      const double b = normalized[static_cast<size_t>(tau)];
+      const double c = normalized[static_cast<size_t>(tau) + 1];
+      const double denom = a - 2.0 * b + c;
+      if (std::abs(denom) > 1.0e-12)
+        refined = tau + 0.5 * (a - c) / denom;
+    }
+    return refined > 0.0 ? sampleRate / refined : 0.0;
+  }
+
+  struct PitchAccuracy
+  {
+    double medianCents = 0.0;
+    double jitterCents = 0.0;
+    int frames = 0;
+    bool valid = false;
+  };
+
+  /**
+   * Compares the output fundamental against the dry fundamental scaled by the
+   * requested interval. This catches an engine that reports plausible latency and
+   * CPU but is not actually transposing — the STFT path measured 80-200 cents off
+   * at shallow settings while looking healthy on every other metric.
+   *
+   * Only frames whose dry pitch is stable across the frame are used, so vibrato,
+   * bends and note transitions do not masquerade as engine error. The wet search
+   * range is shifted by the requested interval to avoid octave confusion.
+   */
+  PitchAccuracy MeasurePitchAccuracy(const StereoAudio& dry,
+                                     const StereoAudio& wet,
+                                     size_t wetOffsetFrames,
+                                     int semitones)
+  {
+    PitchAccuracy result;
+    if (dry.frames() == 0 || wet.left.size() <= wetOffsetFrames)
+      return result;
+
+    const size_t frameCount = std::min(dry.frames(), wet.left.size() - wetOffsetFrames);
+
+    double rate = 0.0;
+    double wetRate = 0.0;
+    const std::vector<double> dryMono =
+      DecimateForPitch(dry.left, dry.right, 0, frameCount, dry.sampleRate, rate);
+    const std::vector<double> wetMono =
+      DecimateForPitch(wet.left, wet.right, wetOffsetFrames, frameCount, wet.sampleRate, wetRate);
+    if (rate <= 0.0 || dryMono.size() < static_cast<size_t>(kPitchFrameSamples))
+      return result;
+
+    const double factor = std::pow(2.0, static_cast<double>(semitones) / 12.0);
+    const double wetMinHz = std::max(kPitchAbsoluteMinHz, kPitchDryMinHz * factor * 0.7);
+    const double wetMaxHz = kPitchDryMaxHz * factor * 1.4;
+
+    const size_t usable = std::min(dryMono.size(), wetMono.size());
+    const size_t frameSamples = static_cast<size_t>(kPitchFrameSamples);
+    const size_t hop = static_cast<size_t>(kPitchHopSamples);
+
+    // Track both signals on a common grid first, then decide which frames to trust.
+    std::vector<double> dryTrack;
+    std::vector<double> wetTrack;
+    for (size_t start = 0; start + frameSamples <= usable; start += hop)
+    {
+      dryTrack.push_back(
+        EstimateF0(dryMono, start, frameSamples, rate, kPitchDryMinHz, kPitchDryMaxHz));
+      wetTrack.push_back(
+        EstimateF0(wetMono, start, frameSamples, rate, wetMinHz, wetMaxHz));
+    }
+
+    std::vector<double> cents;
+    for (size_t i = 0; i < dryTrack.size(); ++i)
+    {
+      const double here = dryTrack[i];
+      if (here <= 0.0)
+        continue;
+
+      const double wetF0 = wetTrack[i];
+      if (wetF0 <= 0.0)
+        continue;
+
+      const double expected = here * factor;
+      if (expected <= 0.0)
+        continue;
+
+      const double error = 1200.0 * std::log2(wetF0 / expected);
+      // Reject octave-tracking artifacts; a genuine engine error of >600 cents
+      // would show up as a collapse in frame count instead.
+      if (std::abs(error) >= kPitchOctaveRejectCents)
+        continue;
+      cents.push_back(error);
+    }
+
+    result.frames = static_cast<int>(cents.size());
+    if (result.frames < kPitchMinFrames)
+      return result;
+
+    const auto median = [](std::vector<double> values)
+    {
+      std::sort(values.begin(), values.end());
+      const size_t mid = values.size() / 2;
+      return values.size() % 2 == 0 ? 0.5 * (values[mid - 1] + values[mid]) : values[mid];
+    };
+
+    result.medianCents = median(cents);
+
+    // Robust spread (MAD scaled to a normal-equivalent sigma). The YIN fallback
+    // admits a few weak frames on purpose to keep coverage up, and a plain stddev
+    // would let those outliers dominate the number.
+    std::vector<double> deviations;
+    deviations.reserve(cents.size());
+    for (const double c : cents)
+      deviations.push_back(std::abs(c - result.medianCents));
+    result.jitterCents = 1.4826 * median(std::move(deviations));
+    result.valid = true;
+    return result;
+  }
+
+  /** Human-readable pitch-accuracy suffix for the per-pass console line. */
+  std::string FormatPitchSummary(const nlohmann::json& stats)
+  {
+    if (!stats.contains("pitchErrorCents") || stats["pitchErrorCents"].is_null())
+      return ", pitch n/a";
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1)
+        << ", pitch " << stats["pitchErrorCents"].get<double>()
+        << " +/-" << stats["pitchJitterCents"].get<double>() << " cents";
+    return out.str();
+  }
+
   struct PassResult
   {
     nlohmann::json stats;
@@ -272,6 +544,7 @@ namespace
   std::optional<PassResult> RunConfiguredPass(const std::string& alias,
                                               const std::string& label,
                                               const StereoAudio& input,
+                                              int semitones,
                                               const std::function<void(guitarfx::EffectProcessor&)>& configure)
   {
     auto& registry = guitarfx::EffectRegistry::Instance();
@@ -385,6 +658,23 @@ namespace
     stats["peakDb"] = toDb(peak);
     stats["rmsDb"] = toDb(rms);
 
+    // Align on measured latency when the correlation was trustworthy; the whole
+    // point of this metric is to stay honest when the reported value is not.
+    const size_t pitchOffset = static_cast<size_t>(
+      std::max(measuredLatency >= 0 ? measuredLatency : reportedLatency, 0));
+    const PitchAccuracy pitch = MeasurePitchAccuracy(input, raw, pitchOffset, semitones);
+    if (pitch.valid)
+    {
+      stats["pitchErrorCents"] = pitch.medianCents;
+      stats["pitchJitterCents"] = pitch.jitterCents;
+    }
+    else
+    {
+      stats["pitchErrorCents"] = nullptr;
+      stats["pitchJitterCents"] = nullptr;
+    }
+    stats["pitchFrames"] = pitch.frames;
+
     PassResult result;
     result.stats = std::move(stats);
     result.render = std::move(render);
@@ -398,6 +688,7 @@ namespace
     return RunConfiguredPass(variant.alias,
                              variant.label,
                              input,
+                             semitones,
                              [&](guitarfx::EffectProcessor& effect)
                              {
                                // Set params before Prepare so preloaded values are picked up (see repo
@@ -752,7 +1043,8 @@ int main(int argc, char** argv)
 
         std::cout << "latency " << pass->stats["reportedLatencySamples"].get<int>()
                   << " rep / " << pass->stats["measuredLatencySamples"].get<int>()
-                  << " meas samples, rtf " << pass->stats["realtimeFactor"].get<double>() << '\n';
+                  << " meas samples, rtf " << pass->stats["realtimeFactor"].get<double>()
+                  << FormatPitchSummary(pass->stats) << '\n';
       }
     }
 
@@ -788,6 +1080,7 @@ int main(int argc, char** argv)
           const std::optional<PassResult> pass = RunConfiguredPass(pluginHostAlias,
                                                                     plugin.label,
                                                                     *audio,
+                                                                    semitones,
                                                                     [&](guitarfx::EffectProcessor& effect)
                                                                     {
                                                                       effect.SetParam("mix", 1.0);
@@ -826,7 +1119,8 @@ int main(int argc, char** argv)
 
           std::cout << "latency " << pass->stats["reportedLatencySamples"].get<int>()
                     << " rep / " << pass->stats["measuredLatencySamples"].get<int>()
-                    << " meas samples, rtf " << pass->stats["realtimeFactor"].get<double>() << '\n';
+                    << " meas samples, rtf " << pass->stats["realtimeFactor"].get<double>()
+                    << FormatPitchSummary(pass->stats) << '\n';
         }
       }
     }

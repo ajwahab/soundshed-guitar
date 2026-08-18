@@ -1,4 +1,5 @@
 #include "resources/ResourceLibrary.h"
+#include "util/PathEncoding.h"
 #include "presets/PresetTypes.h"
 
 #include <nlohmann/json.hpp>
@@ -153,7 +154,7 @@ namespace guitarfx
     {
       if (resource.filePath.empty())
         continue;
-      result.emplace_back(resource.filePath.generic_string(), resource.id);
+      result.emplace_back(util::PathToUtf8(resource.filePath), resource.id);
     }
     return result;
   }
@@ -269,11 +270,11 @@ namespace guitarfx
         if (!relEc && !relativeToResources.empty() && relativeToResources != std::filesystem::path(".")
             && !IsRelativeOutside(relativeToResources))
         {
-          item["filePath"] = relativeToResources.generic_string();
+          item["filePath"] = util::PathToUtf8(relativeToResources);
         }
         else
         {
-          item["filePath"] = resource.filePath.generic_string();
+          item["filePath"] = util::PathToUtf8(resource.filePath);
         }
       }
       else

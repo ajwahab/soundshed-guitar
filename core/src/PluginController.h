@@ -173,6 +173,11 @@ public:
     // ── Multi-preset mixer controls ────────────────────────────────
     bool AddActivePreset(const Preset& preset, const std::string& presetId, const std::string& name);
     bool AddActivePresetById(const std::string& presetId);
+    /// Loads presetId from storage and makes it *the* active preset, swapping the whole mixer
+    /// down to that single instance via ApplyPreset()'s gapless crossfade. This is the
+    /// "change preset" verb — as opposed to AddActivePresetById(), which is the Multi-Rig
+    /// "add another rig to the mix" verb. Also notifies the UI with "presetLoaded".
+    bool ApplyActivePresetById(const std::string& presetId);
     void RemoveActivePreset(const std::string& presetId);
     void SetActivePresetMix(const std::string& presetId, double value);
     void SetActivePresetPan(const std::string& presetId, double pan);
@@ -181,6 +186,13 @@ public:
     void SetMasterGain(double value);
     void SetLimiterEnabled(bool enabled);
     void SetMultiThreadedProcessingEnabled(bool enabled);
+    /// Switches the editing focus (mActivePreset) to an already-active mixer slot without
+    /// touching the running DSP instances, so signal-chain edits target the correct preset.
+    void FocusMixerPreset(const std::string& presetId);
+    /// Rebuilds one already-active mixer slot in place (e.g. a scene switch on a preset
+    /// that is one of several active mixer presets) without disturbing any other slot.
+    /// Returns false if presetId is not currently an active mixer slot.
+    bool ReplaceActiveMixerPresetInPlace(const Preset& preset, const std::string& presetId, const std::string& name);
 
     // ── Signal path test ───────────────────────────────────────────
     struct SignalPathTestResult
@@ -332,7 +344,19 @@ private:
     void HandleSetTunerReferenceRequest(const nlohmann::json& payload);
 
     // ── Internal helpers ───────────────────────────────────────────
-    void BroadcastState();
+    /// How much of the app state a broadcast carries.
+    ///
+    /// The full payload is ~510 KB on a real library — 90% of it the resource library,
+    /// which also costs one filesystem stat per entry to build. None of that changes when
+    /// the user switches preset, so preset/scene switches ask for `PresetOnly` (~8 KB) and
+    /// skip the effect-catalog and composite-library resends too. Every section the UI
+    /// reads is already guarded by a presence check, so omitting them is a no-op there.
+    enum class StateScope
+    {
+        PresetOnly,
+        Full,
+    };
+    void BroadcastState(StateScope scope = StateScope::Full);
     void ApplyPreset(const Preset& preset);
     void AttachRuntimeConfigCallbacks(const std::string& presetId, const Preset& preset);
     void HandleRuntimeNodeConfigChanged(const std::string& presetId,
@@ -529,8 +553,14 @@ private:
     // Composite edit mode
     std::optional<CompositeEffectDefinition> mEditingComposite;
 
-    // Deferred broadcast
+    // Deferred broadcast. mPendingStateBroadcast means "a full broadcast is pending" — a
+    // full request always wins over a preset-only one queued in the same idle window.
     bool mPendingStateBroadcast = true;
+    bool mPendingPresetStateBroadcast = false;
+
+    // Whether the editor UI is on screen. Set from the UI's "uiVisibility" message; gates
+    // the periodic telemetry feeds, which exist only to drive visible meters.
+    std::atomic<bool> mUiVisible{true};
 
     // Deferred node-param notifications (populated on audio/UI thread, drained in OnIdle)
     struct PendingNodeParamNotify
@@ -730,6 +760,28 @@ private:
     bool mSpatialPositionsWereSent = false;
     bool mPendingSignalDiagnosticsUpdate = false;
     std::chrono::steady_clock::time_point mLastSignalDiagnosticsUpdateSentAt{};
+
+    // Identity of one node in the signal diagnostics roster. The roster holds everything
+    // about a node that does not change frame to frame, so the 20 Hz frames can carry
+    // nothing but numbers. A roster is re-sent (with a new sequence number) whenever this
+    // set changes; frames whose seq does not match the UI's roster are dropped there.
+    struct SignalDiagnosticsRosterEntry
+    {
+        std::string scope;
+        std::string presetId;
+        std::string nodeId;
+        std::string nodeType;
+        int channelCount = 0;
+        bool hasAnalyzer = false;
+
+        bool operator==(const SignalDiagnosticsRosterEntry&) const = default;
+    };
+    std::vector<SignalDiagnosticsRosterEntry> mSignalDiagnosticsRoster;
+    std::uint32_t mSignalDiagnosticsRosterSeq = 0;
+    // Forces the next send to re-emit the roster even if the node set is unchanged, so a
+    // reloaded UI can recover without waiting for a graph edit.
+    bool mSignalDiagnosticsRosterDirty = true;
+
     bool mPendingPerformanceStatsUpdate = false;
     std::chrono::steady_clock::time_point mLastPerformanceStatsUpdateSentAt{};
 

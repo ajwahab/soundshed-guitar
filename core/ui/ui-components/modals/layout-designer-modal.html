@@ -8,11 +8,23 @@
         <!-- Toolbar -->
         <div class="layout-designer-toolbar">
           <div class="layout-designer-toolbar-group">
+            <span class="layout-designer-toolbar-label">Name:</span>
+            <input
+              type="text"
+              id="layout-designer-name"
+              class="layout-designer-name-input"
+              maxlength="60"
+              spellcheck="false"
+              placeholder="Untitled layout"
+              title="Layout name — shown in the layout picker and layout library"
+              aria-label="Layout name">
+          </div>
+          <div class="layout-designer-toolbar-group">
             <span class="layout-designer-toolbar-label">Size:</span>
             <div class="layout-dimensions-inputs">
-              <label>W<input type="number" id="layout-designer-width" min="200" max="800" step="8"></label>
+              <label>W<input type="number" id="layout-designer-width" min="200" max="1024" step="8"></label>
               <span class="dimension-separator">×</span>
-              <label>H<input type="number" id="layout-designer-height" min="150" max="600" step="8"></label>
+              <label>H<input type="number" id="layout-designer-height" min="150" max="768" step="8"></label>
             </div>
           </div>
           <div class="layout-designer-toolbar-group">
@@ -58,7 +70,7 @@
             </button>
           </div>
           <div class="layout-designer-toolbar-group">
-            <label class="layout-designer-checkbox-label" title="Use the standard auto-generated controls instead of positioned controls. The layout provides only the visual backdrop.">
+            <label class="layout-designer-checkbox-label" title="Use the standard controls instead of positioned controls. The layout provides only the visual backdrop.">
               <input type="checkbox" id="layout-designer-use-default-controls">
               Default Controls
             </label>

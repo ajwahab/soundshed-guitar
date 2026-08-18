@@ -394,9 +394,9 @@ int main()
 
     LibraryResource irRes;
     irRes.type = "ir";
-    irRes.id = "test-ir-bark";
-    irRes.name = "Devils Lab Bark";
-    irRes.filePath = base / "ir" / "Guitar" / "Devil's Lab" / "Bark.wav";
+    irRes.id = "test-ir-blue-dragon";
+    irRes.name = "Devils Lab Blue Dragon";
+    irRes.filePath = base / "ir" / "Guitar" / "Devil's Lab" / "Blue Dragon.wav";
     lib.AddResource(irRes);
 
     // Graph: input -> NAM -> output
@@ -438,9 +438,9 @@ int main()
 
     LibraryResource irRes;
     irRes.type = "ir";
-    irRes.id = "test-ir-bark";
-    irRes.name = "Devils Lab Bark";
-    irRes.filePath = base / "ir" / "Guitar" / "Devil's Lab" / "Bark.wav";
+    irRes.id = "test-ir-blue-dragon";
+    irRes.name = "Devils Lab Blue Dragon";
+    irRes.filePath = base / "ir" / "Guitar" / "Devil's Lab" / "Blue Dragon.wav";
     lib.AddResource(irRes);
 
     // Graph: input -> preGain -> IR -> output
@@ -451,7 +451,7 @@ int main()
     g.nodes.push_back(pre);
 
     GraphNode cab{ "cab", "cab_ir", "cab", "IR", true };
-    cab.resources = { ResourceRef{ "ir", "test-ir-bark", {}, "" } };
+    cab.resources = { ResourceRef{ "ir", "test-ir-blue-dragon", {}, "" } };
     cab.params["mix"] = 1.0;
     cab.params["outputGain"] = 0.0;
     g.nodes.push_back(cab);
@@ -516,26 +516,32 @@ int main()
     }
   }
 
-  // Case 7b: Resource-owned NAM normalization metadata affects output level
+  // Case 7b: NAM model calibration metadata affects output level.
+  // (Replaces an older case built on resource metadata "normalizationGainDb", which
+  // was retired in favour of the dBu calibration scheme. The model used here carries
+  // input_level_dbu=18.995 and output_level_dbu=13.195, so with useCalibration on and
+  // a 12 dBu interface reference the executor should apply -6.995 dB before the model
+  // and +1.195 dB after it.)
   {
     using namespace guitarfx;
 
-    auto runNam = [](const std::string &resourceId, const std::string &normalizationGainDb) {
+    auto runNam = [](const std::string &resourceId, bool useCalibration) {
       ResourceLibrary lib;
       const std::filesystem::path base = std::filesystem::path(GUITARFX_TEST_RESOURCES_DIR) / "assets";
 
       LibraryResource namRes;
       namRes.type = "nam";
       namRes.id = resourceId;
-      namRes.name = "Normalized NAM";
-      namRes.filePath = base / "amps" / "Guitar" / "TimR" / "JCM800 2203 1985" / "JCM800 Hi P6 B8 M4 T7 G6.nam";
-      namRes.metadata["normalizationGainDb"] = normalizationGainDb;
+      namRes.name = "Calibrated NAM";
+      namRes.filePath = base / "amps" / "Guitar" / "A2" / "[AMP] MESA.MKVII-90W-CH1-CLN Factory Bright Clean - BLEND #1.nam";
       lib.AddResource(namRes);
 
       SignalGraph g;
       g.nodes.push_back({"in", kNodeTypeInput, "", "Input", true});
       GraphNode nam{"amp", "amp_nam", "amp", "NAM", true};
       nam.resources = { ResourceRef{ "nam", resourceId, {}, "" } };
+      nam.params["useCalibration"] = useCalibration ? 1.0 : 0.0;
+      nam.params["calibrationInputLevel"] = 12.0;
       g.nodes.push_back(nam);
       g.nodes.push_back({"out", kNodeTypeOutput, "", "Output", true});
       g.edges.push_back({"in", "amp", 0, 0, 1.0});
@@ -549,24 +555,29 @@ int main()
 
       std::vector<float> inL(static_cast<size_t>(kBlock), 0.0f), inR(static_cast<size_t>(kBlock), 0.0f);
       std::vector<float> outL(static_cast<size_t>(kBlock), 0.0f), outR(static_cast<size_t>(kBlock), 0.0f);
-      GenerateSine(inL, inR, 440.0, 0.15);
+      // Low drive level: the model saturates heavily at higher inputs, which masks the
+      // calibration trim (at 0.15 the two runs land within 1 dB of each other).
+      GenerateSine(inL, inR, 440.0, 0.01);
       float* in[2] = { inL.data(), inR.data() };
       float* outBuf[2] = { outL.data(), outR.data() };
       exec.Process(in, outBuf, kBlock);
       return Analyze(outL, outR);
     };
 
-    const Analysis unity = runNam("test-nam-jcm800-unity", "0.0");
-    const Analysis boosted = runNam("test-nam-jcm800-boosted", "6.0");
+    const Analysis uncalibrated = runNam("test-nam-mesa-uncalibrated", false);
+    const Analysis calibrated = runNam("test-nam-mesa-calibrated", true);
 
-    const bool ok = !unity.hasNaN && !boosted.hasNaN
-      && !unity.hasInf && !boosted.hasInf
-      && unity.rms > 1e-5
-      && boosted.rms > unity.rms * 1.7
-      && boosted.rms < unity.rms * 2.3;
+    // The net calibration trim is -5.8 dB, but the model is non-linear so the
+    // rendered difference is bounded rather than exact.
+    const bool ok = !uncalibrated.hasNaN && !calibrated.hasNaN
+      && !uncalibrated.hasInf && !calibrated.hasInf
+      && uncalibrated.rms > 1e-5
+      && calibrated.rms > 1e-6
+      && calibrated.rms < uncalibrated.rms * 0.8
+      && calibrated.rms > uncalibrated.rms * 0.3;
 
-    std::cout << "Resource NAM normalization metadata: unityRms=" << std::fixed << std::setprecision(4) << unity.rms
-              << ", boostedRms=" << boosted.rms
+    std::cout << "Resource NAM calibration metadata: uncalibratedRms=" << std::fixed << std::setprecision(4) << uncalibrated.rms
+              << ", calibratedRms=" << calibrated.rms
               << (ok ? "  PASS" : "  FAIL") << "\n";
     if (ok) ++passed; else ++failed;
   }

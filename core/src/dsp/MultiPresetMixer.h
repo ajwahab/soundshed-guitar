@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -122,13 +123,31 @@ namespace guitarfx
     bool AddActivePreset(const Preset &preset, const std::string &presetId, const std::string &name);
     void RemoveActivePreset(const std::string &presetId);
 
+    // Rebuilds a single already-active instance's executor graph in place (e.g. after a
+    // scene switch or in-place edit of a preset that happens to be one of several active
+    // mixer slots), preserving that slot's mix/pan/mute/solo. Unlike PreparePresetSwap()/
+    // CommitPresetSwap(), this does NOT touch any other active instance. Returns false
+    // (no-op) if presetId is not currently active.
+    bool ReplaceActivePresetInPlace(const Preset &preset, const std::string &presetId, const std::string &name);
+
     // Seamless preset swap: build the new executor off the DSP lock, then commit atomically.
     // PreparePresetSwap does the expensive work (effect creation, resource loading, Prepare).
-    // CommitPresetSwap installs the pre-built instance and schedules a brief fade-in.
+    // CommitPresetSwap installs the pre-built instance, fades it in, and fades the outgoing
+    // instance out over the same window so the transition has no step discontinuity.
     // Pattern: call PreparePresetSwap() without holding the DSP lock, then hold the lock
     // and call CommitPresetSwap().
     void PreparePresetSwap(const Preset &preset, const std::string &id, const std::string &name);
     void CommitPresetSwap();
+
+    // Global chain swap, same two-phase pattern as the preset swap above.
+    // PrepareGlobalChainSwap normalizes the config and — only if it actually differs from the
+    // live one — builds replacement pre/post executors off the DSP lock. CommitGlobalChainSwap
+    // installs them and applies the scalar input/output settings. Both are cheap no-ops when
+    // the incoming config matches what is already running, which is the common case: global
+    // settings do not come from presets, so most preset loads pass an identical config.
+    // Returns true if a rebuild was staged.
+    bool PrepareGlobalChainSwap(const GlobalSignalChainConfig &config);
+    void CommitGlobalChainSwap();
 
     // Per-preset mixing controls
     void SetPresetMix(const std::string &presetId, double value);
@@ -271,7 +290,8 @@ namespace guitarfx
     [[nodiscard]] std::vector<std::string> GetActivePresetIds() const;
     [[nodiscard]] std::vector<std::string> GetPresetNodeTypes(const std::string &presetId) const;
     [[nodiscard]] std::optional<InstanceConfig> GetPresetConfig(const std::string &presetId) const;
-    [[nodiscard]] size_t GetPresetCount() const { return mInstances.size(); }
+    /// Live instance count. Instances still fading out after a swap are not counted.
+    [[nodiscard]] size_t GetPresetCount() const;
     [[nodiscard]] SignalGraphExecutor::DSPPerformanceStats GetPerformanceStats() const;
     /// Total algorithmic latency in samples: pre-chain + max(preset instances) + post-chain.
     [[nodiscard]] int GetTotalLatencySamples() const;
@@ -279,6 +299,14 @@ namespace guitarfx
     // Signal diagnostics
     void SetSignalDiagnosticsEnabled(bool enabled);
     [[nodiscard]] bool IsSignalDiagnosticsEnabled() const noexcept { return mSignalDiagnosticsEnabled.load(std::memory_order_acquire); }
+
+    /// Number of blocks received larger than the prepared block size. Any non-zero value
+    /// means the host is overrunning what Prepare() was told; those blocks are split
+    /// rather than truncated, but it is worth knowing about.
+    [[nodiscard]] std::uint64_t GetOversizedBlockCount() const noexcept
+    {
+      return mOversizedBlockCount.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] SignalDiagnosticsSnapshot GetSignalDiagnosticsSnapshot() const;
 
     // Tuner functionality
@@ -291,6 +319,16 @@ namespace guitarfx
     [[nodiscard]] bool IsLiveTunerMode() const noexcept { return mLiveTunerMode; }
 
   private:
+    /// Where an instance is in its lifecycle. Retiring instances stay in mInstances so the
+    /// existing dispatch/mix paths process them unchanged, but they are hidden from every
+    /// lookup and query so callers only ever see the live set.
+    enum class InstancePhase
+    {
+      Active,    ///< Normal: full gain.
+      FadingIn,  ///< Just installed, ramping 0 -> 1.
+      FadingOut, ///< Superseded, ramping 1 -> 0; retired to the reaper when the ramp ends.
+    };
+
     struct PresetInstance
     {
       InstanceConfig cfg;
@@ -298,6 +336,25 @@ namespace guitarfx
       std::vector<float> outL;
       std::vector<float> outR;
       int complexityScore = 1;
+
+      InstancePhase phase = InstancePhase::Active;
+      int fadeSamplesRemaining = 0;
+      int fadeTotalSamples = 0;
+
+      /// Gain multiplier at the start of a block of numSamples, and at its end.
+      /// Linear (equal-gain) ramp: the outgoing and incoming chains carry the same source
+      /// and are strongly correlated, so equal-power would overshoot by up to 3 dB.
+      void GetFadeGains(int numSamples, float &startGain, float &endGain) const;
+
+      /// The instance's current fade multiplier.
+      [[nodiscard]] float CurrentFadeGain() const;
+
+      /// Switch to fading out over `fadeSamples`, starting from whatever gain the instance
+      /// is at right now. Switching again while an instance is still fading in must not
+      /// snap it back to full gain — that step is exactly the click being designed out.
+      void BeginFadeOut(int fadeSamples);
+
+      [[nodiscard]] bool IsRetiring() const { return phase == InstancePhase::FadingOut; }
 
       PresetInstance() = default;
       PresetInstance(PresetInstance &&) noexcept = default;
@@ -313,6 +370,28 @@ namespace guitarfx
     static void ComputePanGains(double pan, float &gL, float &gR);
     void RebuildGlobalChains();
     void EnsureGlobalChainsUpToDate();
+    /// Fill in a config's pre/post graphs where they are missing or malformed.
+    static void NormalizeGlobalChainConfig(GlobalSignalChainConfig &config);
+    /// Apply the non-graph parts of the global config (mono/auto-level/limiter/master gain).
+    void ApplyGlobalChainScalars(const GlobalSignalChainConfig &config);
+
+    // ---- Deferred destruction ------------------------------------------------------
+    // Destroying an instance frees NAM models, convolver partition tables and node buffers.
+    // Doing that on the message thread while holding the DSP lock stalls the audio thread
+    // (which try_locks and outputs silence on failure), so retired instances are moved onto
+    // a queue and destroyed on a background reaper thread instead. Moving is cheap and
+    // allocation-free as long as the queue has spare capacity, which lets the audio thread
+    // retire finished fade-outs itself via a try_lock.
+    void StartReaper();
+    void StopReaper();
+    void ReaperLoop();
+    /// Message-thread retire: always succeeds, may allocate, wakes the reaper.
+    void RetireInstance(std::unique_ptr<PresetInstance> inst);
+    /// Audio-thread retire: non-blocking and allocation-free. Returns false if the caller
+    /// should keep the instance (already silent) and try again on the next block.
+    [[nodiscard]] bool TryRetireInstanceRealtime(std::unique_ptr<PresetInstance> &inst);
+    /// Drop every finished fade-out. Audio thread, end of Process().
+    void CollectFinishedFadeOuts();
     // Tuner processing (YIN-based pitch detection)
     void ProcessTuner(float **inputs, int numSamples);
     [[nodiscard]] double DetectPitch(const std::vector<double> &samples) const;
@@ -322,14 +401,30 @@ namespace guitarfx
     void TunerWorkerLoop();
 
     ResourceLibrary *mResourceLibrary = nullptr;
-    std::vector<PresetInstance> mInstances;
+    // Held by pointer so the audio thread can drop a finished fade-out with a pointer move:
+    // moving a PresetInstance by value moves its SignalGraphExecutor, whose move-assignment
+    // joins worker threads — not something that can happen on the realtime path.
+    std::vector<std::unique_ptr<PresetInstance>> mInstances;
 
     // Staged instance built off the DSP lock by PreparePresetSwap(); committed by CommitPresetSwap().
-    std::optional<PresetInstance> mPendingInstance;
+    std::unique_ptr<PresetInstance> mPendingInstance;
 
-    // Output fade-in counter: ramps from 0→1 over kPresetFadeInSamples after a swap.
-    std::atomic<int> mPresetFadeInRemaining{0};
-    static constexpr int kPresetFadeInSamples = 1024;
+    // Crossfade length for a preset swap, in samples (~21 ms at 48 kHz). This is a declick
+    // ramp, not a musical crossfade; a user-configurable fade time arrives with the switching
+    // settings in a later phase.
+    static constexpr int kPresetFadeSamples = 1024;
+    // Upper bound on simultaneously fading-out instances. Rapid successive switches
+    // hard-drop the oldest rather than stacking unbounded CPU cost.
+    static constexpr std::size_t kMaxFadingOutInstances = 3;
+
+    // Retired instances awaiting destruction on the reaper thread.
+    std::vector<std::unique_ptr<PresetInstance>> mRetireQueue;
+    std::vector<SignalGraphExecutor> mRetireExecutors;
+    std::mutex mRetireMutex;
+    std::condition_variable mRetireCv;
+    std::thread mReaperThread;
+    bool mReaperQuit = false;
+    static constexpr std::size_t kRetireQueueCapacity = 16;
 
     double mSampleRate = 44100.0;
     int mMaxBlockSize = 512;
@@ -362,6 +457,12 @@ namespace guitarfx
     SignalGraphExecutor mPostChainExecutor;  // eq → doubler → output
     std::atomic<bool> mGlobalChainNeedsRebuild{true};
 
+    // Staged global chain built off the DSP lock by PrepareGlobalChainSwap(). The two
+    // executor slots stay empty when the graphs were unchanged and only scalars need applying.
+    std::optional<GlobalSignalChainConfig> mPendingGlobalChainConfig;
+    std::optional<SignalGraphExecutor> mPendingPreChainExecutor;
+    std::optional<SignalGraphExecutor> mPendingPostChainExecutor;
+
     // Tuner state
     bool mTunerEnabled = false;
     bool mLiveTunerMode = true;  // When true, audio passes through DSP while tuning; when false, output is silent
@@ -390,6 +491,10 @@ namespace guitarfx
       std::atomic<double> rms{0.0};
       std::atomic<int> clipCount{0};
     };
+
+    // Counts blocks that arrived larger than the size we were prepared with (see Process).
+    // Non-zero means the host is not honouring the prepared block size.
+    std::atomic<std::uint64_t> mOversizedBlockCount{0};
 
     std::atomic<bool> mSignalDiagnosticsEnabled{true};
     AtomicLevelStats mRawInputLevels;

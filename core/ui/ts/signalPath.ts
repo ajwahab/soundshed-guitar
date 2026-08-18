@@ -11,9 +11,9 @@ import type {
   BlendMode,
   CustomEffectLibraryEntry,
 } from "./types.js";
-import { postMessage, setAppSetting, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, removeActivePreset } from "./bridge.js";
+import { postMessage, setAppSetting, setPresetMix, setPresetPan, setPresetMute, setPresetSolo, setMasterGain, setLimiterEnabled, removeActivePreset, focusMixerPreset } from "./bridge.js";
 import { requestResourceData } from "./archiveUtils.js";
-import { escapeHtml, idAccentColor, base64ToArrayBuffer, findResourceById } from "./utils.js";
+import { escapeHtml, idAccentColor, base64ToArrayBuffer, arrayBufferToBase64, findResourceById } from "./utils.js";
 import { showNotification } from "./notifications.js";
 import { showConfirm } from "./dialogs.js";
 import { EffectTypeRegistry, getNodeEffectInfo, type EffectTypeInfo, type ParameterDef } from "./presetV2.js";
@@ -49,9 +49,12 @@ import {
   type SpatialLiveState,
   type SpatialPosition,
 } from "./spatialPanner.js";
-import { resourceBrowserModal } from "./resourceBrowser.js";
+import { resourceBrowserModal, type ResourceNavigationResult as ResourceNavigationSelection } from "./resourceBrowser.js";
 import { findMatchingResourcePickerLabel } from "./resourcePickerLabel.js";
 import { hasCustomLayout, getCustomLayout, renderCustomLayout, renderCustomLayoutBackdrop, formatParamValue, type LayoutResourceControlDef } from "./layoutRenderer.js";
+import { areEffectLayoutsEnabled, buildLayoutMatchText, findLayoutById, resolveLayoutForNode } from "./layoutPreferences.js";
+import type { EffectLayout } from "./layoutTypes.js";
+import { closeLayoutPicker, hasSelectableLayouts, openLayoutPicker } from "./layoutPicker.js";
 import { layoutDesigner } from "./layoutDesigner.js";
 import {
   type BlendParamSpec,
@@ -128,6 +131,7 @@ let layoutScaleObserverCleanups: (() => void)[] = [];
 let nodeDragStartPoint: { nodeId: string; x: number; y: number } | null = null;
 let lastNodeDragPoint: { x: number; y: number } | null = null;
 let nodeDragDropHandled = false;
+let effectVisualizationDropCleanup: (() => void) | null = null;
 type HostedPluginLoadFailure = {
   selectionKey: string;
   resourceIndex?: number;
@@ -183,7 +187,64 @@ const EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE: Record<string, string> = {
   
 };
 
-function getEffectVisualizationEquipmentImage(node: GraphNode): string {
+/**
+ * Artwork the capture author supplied for the loaded model (Tone3000 tones ship
+ * a photo of the real gear). Only http(s)/data URLs are accepted so a stray
+ * metadata value can never turn into a local file or script URL.
+ */
+function normalizeResourceArtworkUrl(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.startsWith("https://") || trimmed.startsWith("http://") || trimmed.startsWith("data:image/")
+    ? trimmed
+    : "";
+}
+
+function getNodeResourceArtworkImage(node: GraphNode): string {
+  const typeInfo = getNodeEffectInfo(node);
+  const candidates: Array<{ resourceType: string; resourceIndex: number }> = [];
+
+  (typeInfo?.exposedResources ?? []).forEach((exposedResource, exposedResourceIndex) => {
+    candidates.push({
+      resourceType: exposedResource.resourceType,
+      resourceIndex: exposedResource.resourceIndex ?? exposedResourceIndex,
+    });
+  });
+
+  if (typeInfo?.resourceType) {
+    const resources = Array.isArray((node as unknown as { resources?: unknown[] }).resources)
+      ? (node as unknown as { resources?: unknown[] }).resources ?? []
+      : [];
+    for (let index = 0; index < Math.max(1, resources.length); index += 1) {
+      candidates.push({ resourceType: typeInfo.resourceType, resourceIndex: index });
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (candidate.resourceType !== "nam" && candidate.resourceType !== "ir") {
+      continue;
+    }
+    const current = getNodeResourceAtIndex(node, candidate.resourceIndex);
+    if (!current.id) {
+      continue;
+    }
+    const resource = getLibraryResource(
+      candidate.resourceType,
+      getCanonicalLibraryResourceId(candidate.resourceType, current.id),
+    );
+    const artwork = normalizeResourceArtworkUrl(resource?.metadata?.imageUrl);
+    if (artwork) {
+      return artwork;
+    }
+  }
+
+  return "";
+}
+
+/** The stock artwork for this effect type/category, ignoring any loaded model. */
+function getEffectVisualizationStockImage(node: GraphNode): string {
   const resolvedType = EffectTypeRegistry.resolve(node.type);
   const directTypeMatch = EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE[resolvedType]
     || EFFECT_VISUAL_EQUIPMENT_IMAGES_BY_TYPE[node.type];
@@ -192,6 +253,10 @@ function getEffectVisualizationEquipmentImage(node: GraphNode): string {
   }
   const category = getNodeCategory(node);
   return EFFECT_VISUAL_EQUIPMENT_IMAGES[category] || "";
+}
+
+function getEffectVisualizationEquipmentImage(node: GraphNode): string {
+  return getNodeResourceArtworkImage(node) || getEffectVisualizationStockImage(node);
 }
 
 layoutDesigner.onClose(() => {
@@ -208,8 +273,19 @@ let chain3dMountToken = 0;
 /** True while the params panel is showing the chain stage for the current selection. */
 let chain3dPanelActive = false;
 
+/**
+ * Master switch for the experimental 3D chain stage.
+ *
+ * The stage is disabled: effect visualisation is served entirely by the standard
+ * controls and custom layouts, which the user picks between from the effect
+ * header (see `layoutPicker.ts`). The scene code in `amp3d/` is kept — it is only
+ * reachable through a dynamic import — so the experiment can be revived by
+ * flipping this flag, but nothing loads it while it is false.
+ */
+const CHAIN_3D_VIEW_ENABLED = false;
+
 function canOfferChain3dView(): boolean {
-  return isWebglSupported();
+  return CHAIN_3D_VIEW_ENABLED && isWebglSupported();
 }
 
 function shouldRenderChain3dView(hasPositionedLayout: boolean): boolean {
@@ -371,6 +447,7 @@ function disposeChain3dView(): void {
 /** Hides the node params panel and releases any live 3D chain resources. */
 function hideNodeParamsPanel(): void {
   nodeParamsPanelElement?.classList.remove("visible");
+  closeLayoutPicker();
   setAmp3dImmersiveMode(false);
   disposeChain3dView();
 }
@@ -519,6 +596,68 @@ function bindChain3dView(node: GraphNode, preset: Preset): void {
   })();
 }
 
+// ── Standard / custom layout switching ──────────────────────────────────────
+
+/**
+ * Header control for choosing how this effect is presented: the standard
+ * auto-generated controls or one of the custom layouts available for it. Also the
+ * only route into the layout designer, so it stays available while the layout
+ * feature is on even before the effect has any layouts of its own.
+ */
+function renderLayoutSwitchButtonHtml(node: GraphNode, blendId: string, usingCustomLayout: boolean): string {
+  const canDesign = isFeatureEnabled(Features.EffectLayout);
+  if (!canDesign && !hasSelectableLayouts(node.type, blendId || undefined)) {
+    return "";
+  }
+  const state = !areEffectLayoutsEnabled()
+    ? "standard controls (custom layouts turned off)"
+    : usingCustomLayout ? "custom layout" : "standard controls";
+  const label = `Effect layout: ${state}`;
+  return `
+    <button
+      class="effect-visualization-toolbar-btn node-layout-switch-btn${usingCustomLayout ? " is-active" : ""}"
+      data-node-id="${escapeHtml(node.id)}"
+      data-effect-type="${escapeHtml(node.type)}"
+      data-blend-id="${escapeHtml(blendId)}"
+      type="button"
+      aria-haspopup="dialog"
+      aria-expanded="false"
+      title="${label} — choose layout"
+      aria-label="${label}. Choose effect layout"
+    >
+      ${renderIcon("layout", "effect-visualization-toolbar-icon layout-switch-icon")}
+    </button>
+  `;
+}
+
+function bindLayoutSwitchButton(node: GraphNode, preset: Preset): void {
+  const button = nodeParamsPanelElement?.querySelector<HTMLButtonElement>(".node-layout-switch-btn");
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const effectType = button.dataset.effectType || node.type;
+    const blendId = button.dataset.blendId || "";
+    openLayoutPicker(button, {
+      effectType,
+      blendId: blendId || undefined,
+      nodeLabel: getNodeDisplayName(node),
+      matchText: buildNodeLayoutMatchText(node),
+      presetId: uiState.activePresetId,
+      presetName: preset.name || "",
+      onApplied: () => {
+        refreshSelectedNodeParams();
+        renderSignalPathBar();
+      },
+      onDesignLayout: isFeatureEnabled(Features.EffectLayout)
+        ? (layoutId) => openLayoutDesignerForNode(node, effectType, blendId, layoutId)
+        : undefined,
+    });
+  });
+}
+
 function renderAmp3dToggleButtonHtml(_node?: GraphNode): string {
   if (!canOfferChain3dView()) {
     return "";
@@ -565,9 +704,16 @@ function updateEffectVisualization(node?: GraphNode): void {
     return;
   }
 
+  // Remove previous file drop bindings on the visualization element
+  if (effectVisualizationDropCleanup) {
+    effectVisualizationDropCleanup();
+    effectVisualizationDropCleanup = null;
+  }
+
   if (!node) {
     effectVisualizationElement.classList.remove("has-selection");
     effectVisualizationElement.classList.remove("has-equipment-image");
+    effectVisualizationElement.classList.remove("nam-ir-drop-target");
     effectVisualizationElement.style.removeProperty("--effect-visual-bg");
     effectVisualizationElement.dataset.effectType = "";
     effectVisualizationElement.dataset.effectCategory = "";
@@ -583,6 +729,55 @@ function updateEffectVisualization(node?: GraphNode): void {
   effectVisualizationElement.style.setProperty("--effect-visual-bg", background);
   effectVisualizationElement.dataset.effectType = node.type;
   effectVisualizationElement.dataset.effectCategory = category;
+
+  // Bind file drop for NAM / cab-IR nodes on the effect visualization panel
+  if (isNamOrCabIrNode(node)) {
+    const nodeId = node.id;
+    effectVisualizationElement.classList.add("nam-ir-drop-target");
+
+    const onDragOver = (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      effectVisualizationElement!.classList.add("drag-over");
+    };
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!effectVisualizationElement!.contains(e.relatedTarget as Node | null)) {
+        effectVisualizationElement!.classList.remove("drag-over");
+      }
+    };
+
+    const onDrop = (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      effectVisualizationElement!.classList.remove("drag-over");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const file = files[0];
+      if (!file) return;
+      const resourceType = inferResourceTypeFromFile(file);
+      const resolvedNode = getSignalPathPreset()?.graph?.nodes.find((n) => n.id === nodeId);
+      if (resourceType && resolvedNode && nodeAcceptsResourceType(resolvedNode, resourceType)) {
+        void handleNamIrFileDrop(file, nodeId);
+      }
+    };
+
+    effectVisualizationElement.addEventListener("dragover", onDragOver);
+    effectVisualizationElement.addEventListener("dragleave", onDragLeave);
+    effectVisualizationElement.addEventListener("drop", onDrop);
+
+    effectVisualizationDropCleanup = () => {
+      effectVisualizationElement!.removeEventListener("dragover", onDragOver);
+      effectVisualizationElement!.removeEventListener("dragleave", onDragLeave);
+      effectVisualizationElement!.removeEventListener("drop", onDrop);
+      effectVisualizationElement!.classList.remove("nam-ir-drop-target");
+      effectVisualizationElement!.classList.remove("drag-over");
+    };
+  } else {
+    effectVisualizationElement.classList.remove("nam-ir-drop-target");
+  }
 }
 
 export function handleHostedPluginResourceLoadFailed(payload: {
@@ -1318,12 +1513,93 @@ function getNodeResourceSummary(node: GraphNode): string {
   return getNodeResourceDisplayName(node, 0);
 }
 
+/**
+ * Lower-cased make/model text a node is matched against by keyword layout rules:
+ * its display name, any loaded resource (amp model / IR / plugin) names, and the
+ * effect's own display name.
+ */
+function buildNodeLayoutMatchText(node: GraphNode): string {
+  const typeInfo = getNodeEffectInfo(node) ?? EffectTypeRegistry.get(node.type);
+  return buildLayoutMatchText([
+    getNodeDisplayName(node),
+    getNodeResourceSummary(node),
+    typeInfo?.displayName,
+  ]);
+}
+
 function isNeuralModelNode(node: GraphNode): boolean {
   const resolvedType = EffectTypeRegistry.resolve(node.type);
   return resolvedType === EffectGuids.kAmpNam
     || resolvedType === EffectGuids.kAmpNamOptimized
     || resolvedType === EffectGuids.kFxNam;
 }
+
+function isNamOrCabIrNode(node: GraphNode): boolean {
+  const resolvedType = EffectTypeRegistry.resolve(node.type);
+  return resolvedType === EffectGuids.kAmpNam
+    || resolvedType === EffectGuids.kAmpNamOptimized
+    || resolvedType === EffectGuids.kFxNam
+    || resolvedType === EffectGuids.kCabIr;
+}
+
+/**
+ * Infers the resource type ("nam" | "ir" | null) from a dropped File's extension.
+ */
+function inferResourceTypeFromFile(file: File): "nam" | "ir" | null {
+  const lower = file.name.trim().toLowerCase();
+  if (lower.endsWith(".nam")) {
+    return "nam";
+  }
+  if (lower.endsWith(".wav") || lower.endsWith(".ir") || lower.endsWith(".flac")) {
+    return "ir";
+  }
+  return null;
+}
+
+/**
+ * Returns whether this node accepts a given resource type via file drop.
+ * NAM nodes accept .nam files; cab IR nodes accept IR files.
+ */
+function nodeAcceptsResourceType(node: GraphNode, resourceType: "nam" | "ir"): boolean {
+  const resolvedType = EffectTypeRegistry.resolve(node.type);
+  if (resourceType === "nam") {
+    return resolvedType === EffectGuids.kAmpNam
+      || resolvedType === EffectGuids.kAmpNamOptimized
+      || resolvedType === EffectGuids.kFxNam;
+  }
+  if (resourceType === "ir") {
+    return resolvedType === EffectGuids.kCabIr;
+  }
+  return false;
+}
+
+/**
+ * Saves a dropped NAM or IR file and loads it into the given node.
+ * The C++ side deduplicates by hash and calls updateNodeResource automatically
+ * when a nodeId is provided.
+ */
+async function handleNamIrFileDrop(file: File, nodeId: string, resourceIndex?: number): Promise<void> {
+  const resourceType = inferResourceTypeFromFile(file);
+  if (!resourceType) {
+    return;
+  }
+
+  const name = file.name.replace(/\.[^.]+$/, "");
+  const data = arrayBufferToBase64(await file.arrayBuffer());
+
+  postMessage({
+    type: "saveLocalLibraryResource",
+    resourceType,
+    data,
+    fileName: file.name,
+    name,
+    nodeId,
+    ...(resourceIndex !== undefined ? { resourceIndex } : {}),
+    category: "Local",
+    metadata: { provider: "local" },
+  });
+}
+
 
 function resolveResourceBrowserTone3000CategoryFilter(
   node: GraphNode,
@@ -1371,6 +1647,20 @@ function resolveResourceNavigationCategoryHint(
   }
 
   return resolveResourceBrowserLibraryCategoryHint(node, resourceType);
+}
+
+/// Identifies the kind of node a resource is being picked for, so folder browsing
+/// and next/prev navigation are remembered per effect role rather than globally.
+/// Deliberately coarser than the category hint: a NAM Amp keeps one remembered
+/// folder whether or not it is currently acting as a full rig.
+function resolveResourceContextKey(node: GraphNode, resourceType: "nam" | "ir"): string {
+  if (resourceType === "nam") {
+    return EffectTypeRegistry.resolve(node.type) === EffectGuids.kFxNam ? "nam-fx" : "nam-amp";
+  }
+
+  return resolveResourceBrowserLibraryCategoryHint(node, resourceType) === "reverb"
+    ? "ir-reverb"
+    : "ir-cab";
 }
 
 function hasCabIrInSameSignalPath(nodeId: string, preset: Preset): boolean {
@@ -2197,6 +2487,12 @@ function renderSignalPathBarContent(): void {
     if (sceneToolbarHost) sceneToolbarHost.innerHTML = "";
     toolbarRow?.classList.add("scene-toolbar-empty");
     updateSignalPathAddMenuAvailability(false);
+    // Pin the mixer to the same height as the full-size signal chain,
+    // independent of whichever compact/full density was active before
+    // switching to Mix (updateSignalPathLayoutAdapt() skips recomputing
+    // --signal-path-scroll-height while mixTabActive, so without this it
+    // would otherwise keep a stale, possibly-compact height).
+    signalPathBar?.style.setProperty("--signal-path-scroll-height", `${SIGNAL_PATH_FULL_HEIGHT}px`);
     renderInlineMixer();
     return;
   }
@@ -3151,9 +3447,14 @@ function renderNodeElement(node: GraphNode, options?: RenderNodeElementOptions):
     const params = node.params as Record<string, unknown> | undefined;
     return typeof params?.blend === "string" ? params.blend : "";
   })();
-  const nodeLayout = blendId
-    ? (getCustomLayout(node.type, blendId) ?? getCustomLayout(node.type))
-    : getCustomLayout(node.type);
+  // Honour the user's layout preference so the avatar matches what the params
+  // panel will actually render for this node.
+  const nodeLayout = resolveLayoutForNode({
+    effectType: node.type,
+    blendId: blendId || undefined,
+    matchText: buildNodeLayoutMatchText(node),
+    presetId: uiState.activePresetId,
+  });
   const thumbUrl = nodeLayout?.thumbnailDataUrl ?? nodeTypeInfo?.thumbnailDataUrl ?? null;
   const thumbAvatar = thumbUrl
     ? `<img class="node-layout-thumb" src="${thumbUrl.replace(/"/g, "&quot;")}" alt="" aria-hidden="true" />` 
@@ -3409,6 +3710,16 @@ function bindNodeClickHandlers(preset: Preset): void {
         if (e.dataTransfer) {
           e.dataTransfer.dropEffect = (fxEffectType || fxBlendType || fxCustomEffectType || fxResourceGroup) ? "copy" : "move";
         }
+      } else if (nodeId && Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+        // Accept file drops for NAM/IR nodes
+        const node = preset.graph?.nodes.find((n) => n.id === nodeId);
+        if (node && isNamOrCabIrNode(node)) {
+          dragOverNodeId = nodeId;
+          el.classList.add("drag-over");
+          if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = "copy";
+          }
+        }
       }
     });
     
@@ -3477,6 +3788,20 @@ function bindNodeClickHandlers(preset: Preset): void {
         if (draggedNode && targetNode && !blockedTypes.has(draggedNode.type) && !blockedTypes.has(targetNode.type)) {
           nodeDragDropHandled = true;
           sendSignalPathNodeReorder(draggedNodeId, targetNodeId);
+        }
+      } else if (targetNodeId && preset.graph) {
+        // File drop on NAM/IR node
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length > 0) {
+          const targetNode = preset.graph.nodes.find((n) => n.id === targetNodeId);
+          if (targetNode && isNamOrCabIrNode(targetNode)) {
+            const file = files[0];
+            const resourceType = inferResourceTypeFromFile(file);
+            if (resourceType && nodeAcceptsResourceType(targetNode, resourceType)) {
+              nodeDragDropHandled = true;
+              void handleNamIrFileDrop(file, targetNodeId);
+            }
+          }
         }
       }
       
@@ -3966,23 +4291,25 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   // Refresh the resource navigation cache in the background so prev/next buttons
   // become available without opening the browser, but do not block panel render.
   {
-    const navCacheRequests = new Map<string, { resourceType: "nam" | "ir"; categoryHint?: string }>();
+    const navCacheRequests = new Map<string, { resourceType: "nam" | "ir"; categoryHint?: string; contextKey: string }>();
     if (typeInfo?.requiresResource) {
       const rt = typeInfo.resourceType;
       if (rt === "nam" || rt === "ir") {
         const categoryHint = resolveResourceNavigationCategoryHint(node, preset, rt);
-        navCacheRequests.set(`${rt}:${categoryHint ?? ""}`, { resourceType: rt, categoryHint });
+        const contextKey = resolveResourceContextKey(node, rt);
+        navCacheRequests.set(`${rt}:${categoryHint ?? ""}`, { resourceType: rt, categoryHint, contextKey });
       }
     }
     (typeInfo?.exposedResources ?? []).forEach((er) => {
       if (er.resourceType === "nam" || er.resourceType === "ir") {
         const resourceType = er.resourceType as "nam" | "ir";
         const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-        navCacheRequests.set(`${resourceType}:${categoryHint ?? ""}`, { resourceType, categoryHint });
+        const contextKey = resolveResourceContextKey(node, resourceType);
+        navCacheRequests.set(`${resourceType}:${categoryHint ?? ""}`, { resourceType, categoryHint, contextKey });
       }
     });
-    navCacheRequests.forEach(({ resourceType, categoryHint }) => {
-      resourceBrowserModal.preloadLibraryNavigationCache(resourceType, { categoryHint });
+    navCacheRequests.forEach(({ resourceType, categoryHint, contextKey }) => {
+      resourceBrowserModal.preloadLibraryNavigationCache(resourceType, { categoryHint, contextKey });
     });
   }
 
@@ -4014,8 +4341,10 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             : "No resource selected";
         const current = getNodeResourceAtIndex(node, resourceIndex);
         const resolvedCurrentId = resolveResourceIdAlias(current.id ?? "", aliasById);
-        const displayName = current.id
-          ? getNodeResourceDisplayName(node, resourceIndex, resourceType)
+        // Folder navigation lands a file path with no library id, so key the
+        // label off either: id-only would render the empty state for it.
+        const displayName = current.id || current.filePath
+          ? getNodeResourceDisplayName(node, resourceIndex, resourceType) || emptyDisplayName
           : emptyDisplayName;
         const hasCurrentSelection = Boolean(current.id || current.filePath);
         const isMissing = Boolean(current.id)
@@ -4027,6 +4356,9 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         const isPluginPicker = resourceType === "plugin";
         const navigationCategoryHint = isLibraryPicker
           ? resolveResourceNavigationCategoryHint(node, preset, resourceType)
+          : undefined;
+        const navigationContextKey = isLibraryPicker
+          ? resolveResourceContextKey(node, resourceType)
           : undefined;
         const resourceOptions = resources.map((res: LibraryResource) => {
           const selected = resolvedCurrentId === res.id && !current.filePath ? "selected" : "";
@@ -4052,6 +4384,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           resourceIndex,
           exposedResourceId: exposedResource.resourceId,
           navigationCategoryHint,
+          navigationContextKey,
           allowBrowseFile: canBrowseFile,
           currentResourceId: current.id,
           currentDisplayName: displayName,
@@ -4060,7 +4393,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         });
 
         return `
-          <div class="node-resource-selector" data-node-id="${node.id}">
+          <div class="node-resource-selector" data-node-id="${node.id}" data-resource-index="${resourceIndex}" data-resource-type="${resourceType}">
             <label>${escapeHtml(exposedResource.displayName || exposedResource.resourceId)}</label>
             <div class="resource-controls">
               ${isLibraryPicker ? `
@@ -4132,6 +4465,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
             ${isPluginPicker ? buildHostedPluginListHtml(node, resourceIndex, exposedResource.resourceId) : ""}
             ${hostedPluginLoadError}
             ${current.filePath && !isPluginPicker ? `<div class="resource-path-info" title="${current.filePath}">${current.filePath}</div>` : ""}
+            ${isLibraryPicker ? `<div class="resource-drop-hint">Click to browse, or drag and drop a file here</div>` : ""}
           </div>
         `;
       })
@@ -4172,10 +4506,12 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       const indexAttr = includeIndexAttr ? `data-resource-index="${index}"` : "";
       const isLibraryPicker = resourceType === "nam" || resourceType === "ir";
       const isPluginPicker = resourceType === "plugin";
-      const displayName = current.id
-        ? getNodeResourceDisplayName(node, index)
-        : resourceType === "ir" ? "No IR selected" : "No model selected";
       const emptyDisplayName = resourceType === "ir" ? "No IR selected" : "No model selected";
+      // Folder navigation lands a file path with no library id, so key the
+      // label off either: id-only would render the empty state for it.
+      const displayName = current.id || current.filePath
+        ? getNodeResourceDisplayName(node, index) || emptyDisplayName
+        : emptyDisplayName;
       const hasCurrentSelection = Boolean(current.id || current.filePath);
       const isMissing = Boolean(current.id)
         && !current.filePath
@@ -4185,12 +4521,23 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       const navigationCategoryHint = navResourceType
         ? resolveResourceNavigationCategoryHint(node, preset, navResourceType)
         : undefined;
-      const prevSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1, { categoryHint: navigationCategoryHint })
+      const navigationContextKey = navResourceType
+        ? resolveResourceContextKey(node, navResourceType)
+        : undefined;
+      const navOptions = { categoryHint: navigationCategoryHint, contextKey: navigationContextKey };
+      // A Tone3000 result set always has a neighbour to step to (it wraps), but
+      // resolving it means fetching, so the buttons are enabled without asking.
+      const tone3000NavActive = navResourceType
+        ? resourceBrowserModal.isTone3000NavigationActive(navResourceType, navOptions)
+        : false;
+      const prevSelection = navResourceType && !tone3000NavActive
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", -1, navOptions)
         : null;
-      const nextSelection = navResourceType
-        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1, { categoryHint: navigationCategoryHint })
+      const nextSelection = navResourceType && !tone3000NavActive
+        ? resourceBrowserModal.getAdjacentResourceSelection(navResourceType, current.id ?? "", current.filePath ?? "", 1, navOptions)
         : null;
+      const canNavPrev = tone3000NavActive || Boolean(prevSelection);
+      const canNavNext = tone3000NavActive || Boolean(nextSelection);
       const navPrevButton = navResourceType ? `
         <button
           type="button"
@@ -4200,7 +4547,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${indexAttr}
           data-nav-direction="prev"
           title="Previous resource"
-          aria-label="Previous resource"${prevSelection ? "" : " disabled"}
+          aria-label="Previous resource"${canNavPrev ? "" : " disabled"}
         >${renderIcon("arrow-left", "resource-nav-icon")}</button>
       ` : "";
       const navNextButton = navResourceType ? `
@@ -4212,7 +4559,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${indexAttr}
           data-nav-direction="next"
           title="Next resource"
-          aria-label="Next resource"${nextSelection ? "" : " disabled"}
+          aria-label="Next resource"${canNavNext ? "" : " disabled"}
         >${renderIcon("arrow-right", "resource-nav-icon")}</button>
       ` : "";
       const hostedPluginOpenButton = resourceType === "plugin"
@@ -4231,6 +4578,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
         resourceType,
         resourceIndex: index,
         navigationCategoryHint,
+        navigationContextKey,
         allowBrowseFile: true,
         currentResourceId: current.id,
         currentDisplayName: displayName,
@@ -4239,7 +4587,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
       });
 
       return `
-        <div class="node-resource-selector">
+        <div class="node-resource-selector" data-node-id="${node.id}" data-resource-index="${index}" data-resource-type="${resourceType}">
           <label>${label}</label>
           <div class="resource-controls">
             ${isLibraryPicker ? `
@@ -4307,6 +4655,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
           ${isPluginPicker ? buildHostedPluginListHtml(node, index) : ""}
           ${hostedPluginLoadError}
           ${current.filePath && !isPluginPicker ? `<div class="resource-path-info" title="${current.filePath}">${current.filePath}</div>` : ""}
+          ${isLibraryPicker ? `<div class="resource-drop-hint">Click to browse, or drag and drop a file here</div>` : ""}
         </div>
       `;
     };
@@ -4340,15 +4689,22 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
     }
   }
 
-  // Check for custom layout (blend-aware: per-blend first, then fall back to effect type)
+  // Resolve the layout to render. Preference rules (preset > keyword > effect type)
+  // decide between the standard controls and any available custom layout; without
+  // rules this falls back to the layout library default, i.e. previous behaviour.
   const nodeBlendId = blendState?.blend?.id || "";
-  const customLayout = nodeBlendId
-    ? (getCustomLayout(node.type, nodeBlendId) ?? getCustomLayout(node.type))
-    : getCustomLayout(node.type);
+  const nodeLayoutMatchText = buildNodeLayoutMatchText(node);
+  const customLayout = resolveLayoutForNode({
+    effectType: node.type,
+    blendId: nodeBlendId || undefined,
+    matchText: nodeLayoutMatchText,
+    presetId: uiState.activePresetId,
+  });
 
   // When useDefaultControls is true the layout provides only the visual backdrop; the
   // standard auto-generated controls are rendered on top rather than positioned controls.
   const useDefaultControls = customLayout?.useDefaultControls === true;
+  const hasCustomLayoutPresentation = Boolean(customLayout);
 
   const customLayoutHtml = customLayout && !useDefaultControls
     ? renderCustomLayout(node, customLayout, paramDefs, customLayoutResourceControls)
@@ -4378,20 +4734,8 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   const fullRigCabModelNote = shouldShowFullRigCabModelNote(node, preset)
     ? `<div class="default-effect-shell-inline-note" role="status" aria-live="polite">Signal chain already includes a Cabinet Model (a "Full Rig").</div>`
     : "";
-  const shellLayoutButton = isFeatureEnabled(Features.EffectLayout) ? `
-    <button
-      class="effect-visualization-toolbar-btn node-customize-layout-btn"
-      data-node-id="${node.id}"
-      data-effect-type="${node.type}"
-      data-blend-id="${shellBlendId}"
-      type="button"
-      title="Customize layout"
-      aria-label="Customize layout"
-    >
-      ${renderIcon("gear", "effect-visualization-toolbar-icon customize-layout-icon")}
-    </button>
-  ` : "";
   const equipmentImage = getEffectVisualizationEquipmentImage(node);
+  const layoutSwitchButton = renderLayoutSwitchButtonHtml(node, shellBlendId, Boolean(customLayout));
   const amp3dToggleButton = renderAmp3dToggleButtonHtml(node);
     const useAmp3dView = shouldRenderChain3dView(Boolean(customLayoutHtml));
   const amp3dSplit = useAmp3dView ? splitAmp3dParamDefs(paramDefs) : null;
@@ -4429,10 +4773,16 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   ` : "";
   // The 3D amp is its own product shot, so the static equipment image is
   // dropped and the viewport takes the full shell width.
-  const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit;
+  const showEquipmentImage = Boolean(equipmentImage) && !amp3dSplit && !hasCustomLayoutPresentation;
+  // Capture artwork is remote, so keep the stock image as a fallback for when it
+  // cannot be fetched (offline, or the author removed it).
+  const stockEquipmentImage = getEffectVisualizationStockImage(node);
+  const equipmentImageFallbackAttr = stockEquipmentImage && stockEquipmentImage !== equipmentImage
+    ? ` data-fallback-src="${escapeHtml(stockEquipmentImage)}"`
+    : "";
   const shellEquipmentPanel = showEquipmentImage ? `
     <aside class="default-effect-shell-equipment-panel" aria-hidden="true">
-      <img class="default-effect-shell-equipment-image" src="${equipmentImage}" alt="" loading="lazy" decoding="async" />
+      <img class="default-effect-shell-equipment-image" src="${escapeHtml(equipmentImage)}" alt="" loading="lazy" decoding="async"${equipmentImageFallbackAttr} />
     </aside>
   ` : "";
   const shellMainContent = amp3dSplit ? `
@@ -4509,7 +4859,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   nodeParamsPanelElement.innerHTML = `
     
     <div class="node-params-body">
-      <section class="default-effect-shell${isNeuralModel ? " neural-model-effect" : ""}${isNodeBypassed(node) ? " is-bypassed" : ""}">
+      <section class="default-effect-shell${isNeuralModel ? " neural-model-effect" : ""}${isNodeBypassed(node) ? " is-bypassed" : ""}${hasCustomLayoutPresentation ? " has-custom-layout" : ""}">
         <div class="default-effect-shell-header">
           <div class="default-effect-shell-identity">
             <span class="default-effect-shell-led" aria-hidden="true"></span>
@@ -4544,7 +4894,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
               title="${shellBypassTitle}"
               aria-label="${shellBypassTitle}"
             ><span class="default-effect-shell-toggle-track" aria-hidden="true"></span><span class="default-effect-shell-toggle-label">${shellStatusLabel}</span></button>
-            ${shellLayoutButton}
+            ${layoutSwitchButton}
             ${amp3dToggleButton}
           </div>
         </div>
@@ -4570,6 +4920,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindGraphicEqControls(node, preset);
   bindLayoutOverlayBypassToggles(node, preset);
   bindResourceControls(node, preset);
+  bindEquipmentImageFallback();
   bindHostedPluginActionControls(node);
   bindHostedPluginListControls(node);
   bindCustomEffectActionControls(node);
@@ -4577,7 +4928,7 @@ function showNodeParamsPanel(node: GraphNode, preset: Preset): void {
   bindBlendModeOverride(node);
   bindBypassButton(node, preset);
   bindSelectedNodeDspStatusToggle();
-  bindCustomizeLayoutButton(node);
+  bindLayoutSwitchButton(node, preset);
   bindAmp3dToggleButton();
   setAmp3dImmersiveMode(Boolean(amp3dSplit));
   if (amp3dSplit) {
@@ -5349,6 +5700,45 @@ function bindGraphicEqControls(node: GraphNode, preset: Preset): void {  if (Eff
   });
 }
 
+/// Resource loads round-trip through the backend, and the params panel re-renders
+/// from whatever the graph says at that moment. Without this, holding down
+/// next/prev repeatedly recomputes "the one after the old resource" and appears
+/// to stick. Entries are dropped as soon as the graph catches up.
+const pendingResourceNavSelections = new Map<string, { resourceId: string; filePath: string; at: number }>();
+const PENDING_RESOURCE_NAV_TTL_MS = 5000;
+
+/// Navigation keys with a Tone3000 step in flight (fetch + import). Keyed the
+/// same way as the pending selections so prev and next share one guard and
+/// cannot race each other from the same starting resource.
+const inFlightTone3000NavKeys = new Set<string>();
+
+function buildResourceNavKey(
+  nodeId: string,
+  resourceType: string,
+  resourceIndex: number,
+  exposedResourceId: string | undefined,
+): string {
+  return `${nodeId}:${resourceType}:${resourceIndex}:${exposedResourceId ?? ""}`;
+}
+
+/// Remote capture artwork can fail to load (offline, image withdrawn): swap in
+/// the stock equipment image rather than leaving an empty panel.
+function bindEquipmentImageFallback(): void {
+  const images = nodeParamsPanelElement?.querySelectorAll<HTMLImageElement>(
+    ".default-effect-shell-equipment-image[data-fallback-src]",
+  ) ?? [];
+  images.forEach((image) => {
+    image.addEventListener("error", () => {
+      const fallback = image.dataset.fallbackSrc;
+      if (!fallback || image.src.endsWith(fallback)) {
+        return;
+      }
+      delete image.dataset.fallbackSrc;
+      image.src = fallback;
+    }, { once: true });
+  });
+}
+
 function bindResourceControls(node: GraphNode, preset: Preset): void {
   const syncResourceNavigationButtons = (
     nodeId: string,
@@ -5365,15 +5755,20 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       `.resource-nav-btn[data-node-id="${nodeId}"][data-resource-type="${resourceType}"][data-resource-index="${resourceIndex}"][data-nav-direction="next"]`,
     );
 
+    const navOptions = {
+      categoryHint: resolveResourceNavigationCategoryHint(node, preset, resourceType),
+      contextKey: resolveResourceContextKey(node, resourceType),
+    };
+    const tone3000NavActive = resourceBrowserModal.isTone3000NavigationActive(resourceType, navOptions);
     if (prevButton) {
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const prev = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1, { categoryHint });
+      const prev = tone3000NavActive
+        || Boolean(resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, -1, navOptions));
       prevButton.disabled = !prev;
       prevButton.setAttribute("aria-disabled", prev ? "false" : "true");
     }
     if (nextButton) {
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const next = resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1, { categoryHint });
+      const next = tone3000NavActive
+        || Boolean(resourceBrowserModal.getAdjacentResourceSelection(resourceType, currentResourceId, currentFilePath, 1, navOptions));
       nextButton.disabled = !next;
       nextButton.setAttribute("aria-disabled", next ? "false" : "true");
     }
@@ -5453,7 +5848,13 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
         exposedResourceId,
         libraryCategoryHint,
         tone3000CategoryFilter,
+        contextKey: resolveResourceContextKey(node, resourceType),
         onSelect: (resourceId) => {
+          // An explicit pick supersedes any in-flight next/prev step.
+          pendingResourceNavSelections.set(
+            buildResourceNavKey(nodeId, resourceType, resourceIndex, exposedResourceId),
+            { resourceId, filePath: "", at: performance.now() },
+          );
           sendNodeResourceUpdate(nodeId, resourceType, resourceId, "", resourceIndex, undefined, exposedResourceId);
           const label = getLibraryResourceName(resourceType, resourceId) || resourceId || "";
           const labelText = label || (resourceType === "ir" ? "No IR selected" : "No model selected");
@@ -5483,28 +5884,39 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
 
   const resourceNavButtons = nodeParamsPanelElement?.querySelectorAll(".resource-nav-btn") as NodeListOf<HTMLButtonElement> | null;
   resourceNavButtons?.forEach((navBtn) => {
-    navBtn.addEventListener("click", () => {
+    // This runs on every panel render, i.e. whenever the graph state we render
+    // from has moved: retire the in-flight selection once it has landed.
+    {
       const nodeId = navBtn.dataset.nodeId;
-      const resourceType = navBtn.dataset.resourceType as "nam" | "ir" | undefined;
+      const resourceType = navBtn.dataset.resourceType;
       const resourceIndex = navBtn.dataset.resourceIndex ? parseInt(navBtn.dataset.resourceIndex, 10) : 0;
-      const exposedResourceId = navBtn.dataset.exposedResourceId;
-      const direction = navBtn.dataset.navDirection === "prev" ? -1 : 1;
-      if (!nodeId || !resourceType || (resourceType !== "nam" && resourceType !== "ir")) {
-        return;
+      if (nodeId && resourceType) {
+        const navKey = buildResourceNavKey(nodeId, resourceType, resourceIndex, navBtn.dataset.exposedResourceId);
+        const pending = pendingResourceNavSelections.get(navKey);
+        if (pending) {
+          const live = getNodeResourceAtIndex(node, resourceIndex);
+          const landed = (pending.resourceId && pending.resourceId === (live.id ?? ""))
+            || (pending.filePath && pending.filePath === (live.filePath ?? ""));
+          if (landed || (performance.now() - pending.at) >= PENDING_RESOURCE_NAV_TTL_MS) {
+            pendingResourceNavSelections.delete(navKey);
+          }
+        }
       }
+    }
 
-      const current = getNodeResourceAtIndex(node, resourceIndex);
-      const categoryHint = resolveResourceNavigationCategoryHint(node, preset, resourceType);
-      const next = resourceBrowserModal.getAdjacentResourceSelection(
-        resourceType,
-        current.id ?? "",
-        current.filePath ?? "",
-        direction,
-        { categoryHint },
-      );
-      if (!next) {
-        return;
-      }
+    const applyResourceNavSelection = (
+      nodeId: string,
+      resourceType: "nam" | "ir",
+      resourceIndex: number,
+      exposedResourceId: string | undefined,
+      navKey: string,
+      next: ResourceNavigationSelection,
+    ): void => {
+      pendingResourceNavSelections.set(navKey, {
+        resourceId: next.resourceId ?? "",
+        filePath: next.filePath ?? "",
+        at: performance.now(),
+      });
 
       sendNodeResourceUpdate(
         nodeId,
@@ -5519,7 +5931,10 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       const nextResource = next.resourceId
         ? getLibraryResource(resourceType, next.resourceId)
         : undefined;
+      // A just-imported resource is not in the library snapshot yet, so fall
+      // back to the name the navigation step reported.
       const labelText = nextResource?.name
+        || next.displayName
         || (next.resourceId ?? "")
         || (next.filePath?.split(/[\\/]/).pop() ?? "");
 
@@ -5537,9 +5952,76 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       if (labelEl) {
         labelEl.textContent = labelText || (resourceType === "ir" ? "No IR selected" : "No model selected");
         labelEl.title = labelText || "";
-        labelEl.classList.toggle("is-missing", Boolean(next.resourceId) && !nextResource);
+        labelEl.classList.toggle("is-missing", Boolean(next.resourceId) && !nextResource && !next.displayName);
       }
       syncResourceNavigationButtons(nodeId, resourceType, resourceIndex, exposedResourceId, next.resourceId ?? "", next.filePath ?? "");
+    };
+
+    navBtn.addEventListener("click", () => {
+      const nodeId = navBtn.dataset.nodeId;
+      const resourceType = navBtn.dataset.resourceType as "nam" | "ir" | undefined;
+      const resourceIndex = navBtn.dataset.resourceIndex ? parseInt(navBtn.dataset.resourceIndex, 10) : 0;
+      const exposedResourceId = navBtn.dataset.exposedResourceId;
+      const direction = navBtn.dataset.navDirection === "prev" ? -1 : 1;
+      if (!nodeId || !resourceType || (resourceType !== "nam" && resourceType !== "ir")) {
+        return;
+      }
+
+      // Step from the last selection this button requested while it is still in
+      // flight, so repeated clicks keep advancing instead of recomputing the
+      // same neighbour of a resource we already navigated away from.
+      const navKey = buildResourceNavKey(nodeId, resourceType, resourceIndex, exposedResourceId);
+      const snapshot = getNodeResourceAtIndex(node, resourceIndex);
+      const pending = pendingResourceNavSelections.get(navKey);
+      const current = pending && (performance.now() - pending.at) < PENDING_RESOURCE_NAV_TTL_MS
+        ? { id: pending.resourceId, filePath: pending.filePath }
+        : { id: snapshot.id ?? "", filePath: snapshot.filePath ?? "" };
+
+      const navOptions = {
+        categoryHint: resolveResourceNavigationCategoryHint(node, preset, resourceType),
+        contextKey: resolveResourceContextKey(node, resourceType),
+      };
+
+      // Stepping a Tone3000 result set fetches (and imports) the neighbour, so
+      // it runs asynchronously with the button held busy meanwhile.
+      if (resourceBrowserModal.isTone3000NavigationActive(resourceType, navOptions)) {
+        if (inFlightTone3000NavKeys.has(navKey)) {
+          return;
+        }
+        inFlightTone3000NavKeys.add(navKey);
+        navBtn.setAttribute("aria-busy", "true");
+
+        void (async () => {
+          try {
+            const next = await resourceBrowserModal.stepTone3000Resource(
+              resourceType,
+              current.id ?? "",
+              direction,
+              navOptions,
+            );
+            if (next) {
+              applyResourceNavSelection(nodeId, resourceType, resourceIndex, exposedResourceId, navKey, next);
+            }
+          } finally {
+            inFlightTone3000NavKeys.delete(navKey);
+            navBtn.removeAttribute("aria-busy");
+          }
+        })();
+        return;
+      }
+
+      const next = resourceBrowserModal.getAdjacentResourceSelection(
+        resourceType,
+        current.id ?? "",
+        current.filePath ?? "",
+        direction,
+        navOptions,
+      );
+      if (!next) {
+        return;
+      }
+
+      applyResourceNavSelection(nodeId, resourceType, resourceIndex, exposedResourceId, navKey, next);
     });
   });
   
@@ -5590,6 +6072,10 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
         if (!nodeId || !resourceType) {
           return;
         }
+
+        pendingResourceNavSelections.delete(
+          buildResourceNavKey(nodeId, resourceType, resourceIndex ?? 0, exposedResourceId),
+        );
 
         let selectedPluginResourceId = "";
         if (resourceType === "plugin") {
@@ -5683,6 +6169,48 @@ function bindResourceControls(node: GraphNode, preset: Preset): void {
       if (nodeId && resourceIndex !== undefined && !Number.isNaN(value)) {
         sendNodeResourceUpdate(nodeId, "nam", "", "", resourceIndex, value);
       }
+    });
+  });
+
+  // Bind per-slot file drop on NAM/IR resource selector rows
+  const resourceSelectorEls = nodeParamsPanelElement?.querySelectorAll<HTMLElement>(
+    ".node-resource-selector[data-resource-index][data-resource-type]",
+  ) ?? [];
+  resourceSelectorEls.forEach((selectorEl) => {
+    const elResourceType = selectorEl.dataset.resourceType as "nam" | "ir" | undefined;
+    const elResourceIndex = selectorEl.dataset.resourceIndex !== undefined
+      ? parseInt(selectorEl.dataset.resourceIndex, 10)
+      : undefined;
+    const elNodeId = selectorEl.dataset.nodeId;
+    if (!elNodeId || (elResourceType !== "nam" && elResourceType !== "ir") || elResourceIndex === undefined) {
+      return;
+    }
+
+    selectorEl.addEventListener("dragover", (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      selectorEl.classList.add("drag-over");
+    });
+
+    selectorEl.addEventListener("dragleave", (e: DragEvent) => {
+      if (!selectorEl.contains(e.relatedTarget as Node | null)) {
+        selectorEl.classList.remove("drag-over");
+      }
+    });
+
+    selectorEl.addEventListener("drop", (e: DragEvent) => {
+      if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectorEl.classList.remove("drag-over");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const file = files[0];
+      if (!file) return;
+      const resourceType = inferResourceTypeFromFile(file);
+      if (resourceType !== elResourceType) return;
+      void handleNamIrFileDrop(file, elNodeId, elResourceIndex);
     });
   });
 }
@@ -5946,51 +6474,53 @@ function bindBypassButton(node: GraphNode, preset: Preset): void {
   });
 }
 
-function bindCustomizeLayoutButton(node: GraphNode): void {
-  const layoutButtons = document.querySelectorAll<HTMLButtonElement>("#node-params-panel .node-customize-layout-btn");
-  if (!layoutButtons.length) {
-    return;
+/**
+ * Opens the layout designer for a node, from the layout picker.
+ * `layoutId` is null to start a fresh auto-generated layout (so an effect type can
+ * hold several), or an existing layout id to edit that one.
+ */
+function openLayoutDesignerForNode(
+  node: GraphNode,
+  effectType: string,
+  blendId: string,
+  layoutId: string | null,
+): void {
+  let existingLayout: EffectLayout | null = null;
+  if (layoutId) {
+    existingLayout = findLayoutById(layoutId, effectType, blendId || undefined);
+    if (!existingLayout) {
+      showNotification("That layout is no longer available", "error");
+      return;
+    }
   }
 
-  layoutButtons.forEach((layoutBtn) => {
-    layoutBtn.addEventListener("click", () => {
-      const effectType = layoutBtn.dataset.effectType || node.type;
-      const blendId = layoutBtn.dataset.blendId || "";
+  // Resolve blend params so the designer shows all available controls
+  let blendName = "";
+  let blendParamDefs: Array<{ key: string; name: string; default: number; min: number; max: number; unit: string; step?: number }> | undefined;
+  if (blendId) {
+    const blendState = getBlendState(node);
+    if (blendState) {
+      blendName = blendState.blend?.name || blendId;
+      // Include ALL blend param specs so every possible knob is available in the designer
+      const allBlendParams = BLEND_PARAM_SPECS.map((spec) => ({
+        key: spec.id,
+        name: spec.label,
+        default: 0,
+        min: spec.min,
+        max: spec.max,
+        unit: "amount",
+        step: 0.1,
+      }));
+      const typeInfo = getNodeEffectInfo(node);
+      const baseParams = (typeInfo?.parameters || []).filter((p) => p.key !== "blend");
+      blendParamDefs = [...allBlendParams, ...baseParams];
+    }
+  }
 
-      // For blend effects, try per-blend layout first, then fall back to effect-type layout
-      const existingLayout = blendId
-        ? (getCustomLayout(effectType, blendId) ?? getCustomLayout(effectType))
-        : getCustomLayout(effectType);
-
-      // Resolve blend params so the designer shows all available controls
-      let blendName = "";
-      let blendParamDefs: Array<{ key: string; name: string; default: number; min: number; max: number; unit: string; step?: number }> | undefined;
-      if (blendId) {
-        const blendState = getBlendState(node);
-        if (blendState) {
-          blendName = blendState.blend?.name || blendId;
-          // Include ALL blend param specs so every possible knob is available in the designer
-          const allBlendParams = BLEND_PARAM_SPECS.map((spec) => ({
-            key: spec.id,
-            name: spec.label,
-            default: 0,
-            min: spec.min,
-            max: spec.max,
-            unit: "amount",
-            step: 0.1,
-          }));
-          const typeInfo = getNodeEffectInfo(node);
-          const baseParams = (typeInfo?.parameters || []).filter((p) => p.key !== "blend");
-          blendParamDefs = [...allBlendParams, ...baseParams];
-        }
-      }
-
-      layoutDesigner.open(effectType, existingLayout ?? undefined, {
-        blendId: blendId || undefined,
-        blendName: blendName || undefined,
-        blendParamDefs,
-      });
-    });
+  layoutDesigner.open(effectType, existingLayout ?? undefined, {
+    blendId: blendId || undefined,
+    blendName: blendName || undefined,
+    blendParamDefs,
   });
 }
 
@@ -6301,46 +6831,44 @@ function renderMixerPresetTabs(): void {
   const signalPathBar = document.getElementById("signal-path-bar");
   const mixer = uiState.mixer;
 
-  const renderedPreset = getSignalPathPreset();
-  const shouldShowTabs = !isCompositeEditMode()
-    && !!renderedPreset
+  // Show tabs whenever there are 2+ active mixer slots — do NOT require the
+  // preset to be in the cache first, because "+Mixer" list items are stubs
+  // without graph data and getSignalPathPreset() returns null until the C++
+  // round-trip completes.
+  const multiPresetMode = !isCompositeEditMode()
     && !!mixer
     && mixer.activePresetIds.length > 1;
 
-  if (!shouldShowTabs) {
+  if (!multiPresetMode) {
     if (tabBar) tabBar.remove();
     mixTabActive = false;
     return;
   }
 
-  const multiPresetMode = !!mixer && mixer.activePresetIds.length > 1;
-  const activePreset = getEditableSignalPathPreset(renderedPreset);
-
   if (!tabBar) {
     tabBar = document.createElement("div");
     tabBar.id = "mixer-preset-tabs";
     tabBar.className = "mixer-preset-tabs";
-    const scroll = signalPathBar?.querySelector(".signal-path-scroll");
-    if (scroll) {
-      signalPathBar!.insertBefore(tabBar, scroll);
+    // Insert as a sibling immediately before ".signal-path-visualizer" — NOT
+    // necessarily a direct child of #signal-path-bar. The current layout wraps
+    // everything in ".signal-path-body", so insertBefore() must target the
+    // actual parent of the reference node or it throws NotFoundError.
+    const visualizer = signalPathBar?.querySelector(".signal-path-visualizer");
+    if (visualizer?.parentElement) {
+      visualizer.parentElement.insertBefore(tabBar, visualizer);
     } else if (signalPathBar) {
       signalPathBar.prepend(tabBar);
     }
   }
 
-  const presetIds = multiPresetMode ? [...(mixer?.activePresetIds ?? [])] : [activePreset.id];
-  if (multiPresetMode) {
-    presetIds.sort((leftId, rightId) => {
-      const leftName = uiState.presetCache.get(leftId)?.name ?? mixer?.presets[leftId]?.name ?? leftId;
-      const rightName = uiState.presetCache.get(rightId)?.name ?? mixer?.presets[rightId]?.name ?? rightId;
-      const nameComparison = mixerPresetTabCollator.compare(leftName, rightName);
-      if (nameComparison !== 0) {
-        return nameComparison;
-      }
-      return mixerPresetTabCollator.compare(leftId, rightId);
-    });
-  }
-  const focusedId = multiPresetMode ? (uiState.focusedMixerPresetId ?? presetIds[0]) : activePreset.id;
+  const presetIds = [...mixer.activePresetIds];
+  // Determine the focused tab: prefer the explicitly focused slot, then the
+  // currently active preset if it's in the mixer, then the first slot.
+  const focusedId = (uiState.focusedMixerPresetId && presetIds.includes(uiState.focusedMixerPresetId))
+    ? uiState.focusedMixerPresetId
+    : (uiState.activePresetId && presetIds.includes(uiState.activePresetId))
+      ? uiState.activePresetId
+      : presetIds[0];
 
   const presetTabsHtml = presetIds.map((id) => {
     const name = uiState.presetCache.get(id)?.name ?? mixer?.presets[id]?.name ?? id;
@@ -6352,15 +6880,11 @@ function renderMixerPresetTabs(): void {
       muted ? `<span class="tab-indicator muted" title="Muted">M</span>` : "",
       soloed ? `<span class="tab-indicator soloed" title="Solo">S</span>` : "",
     ].join("");
-    const closeBtn = multiPresetMode
-      ? `<span class="mixer-tab-close" data-close-preset-id="${escapeHtml(id)}" title="Remove from mixer" role="button" aria-label="Remove ${escapeHtml(name)}">×</span>`
-      : "";
+    const closeBtn = `<span class="mixer-tab-close" data-close-preset-id="${escapeHtml(id)}" title="Remove from mixer" role="button" aria-label="Remove ${escapeHtml(name)}">×</span>`;
     return `<button class="mixer-preset-tab${active ? " active" : ""}" data-preset-id="${escapeHtml(id)}" type="button">${escapeHtml(name)}${indicators}${closeBtn}</button>`;
   }).join("");
 
-  const mixTabHtml = multiPresetMode
-    ? `<button class="mixer-preset-tab mixer-tab-mix${mixTabActive ? " active" : ""}" data-mix-tab="1" type="button">⚖ Mix</button>`
-    : "";
+  const mixTabHtml = `<button class="mixer-preset-tab mixer-tab-mix${mixTabActive ? " active" : ""}" data-mix-tab="1" type="button">⚖ Mix</button>`;
 
   tabBar.innerHTML = `<div class="mixer-preset-tab-row">${presetTabsHtml}${mixTabHtml}</div>`;
 
@@ -6373,6 +6897,7 @@ function renderMixerPresetTabs(): void {
         mixTabActive = false;
         uiState.activePresetId = pid;
         setFocusedMixerPresetId(pid);
+        focusMixerPreset(pid);
         document.dispatchEvent(new CustomEvent("mixerPresetTabSelected", {
           detail: { presetId: pid },
         }));
@@ -6395,6 +6920,10 @@ function renderMixerPresetTabs(): void {
       if (uiState.focusedMixerPresetId === pid) {
         uiState.focusedMixerPresetId = uiState.mixer?.activePresetIds[0] ?? null;
       }
+      // The mixer's membership no longer matches whatever Multi-Rig preset it
+      // was loaded from/saved as, if any — a subsequent Save should create a
+      // new one rather than silently overwrite the old one.
+      uiState.activeCompositePresetId = null;
       // Update any "✓ In Mixer" button in the preset list for this preset
       document.querySelectorAll<HTMLButtonElement>(`.preset-add-to-mixer-btn[data-preset-id="${CSS.escape(pid)}"]`).forEach((btn) => {
         btn.textContent = "+ Mixer";
@@ -6421,6 +6950,7 @@ function getEditableSignalPathPreset(sourcePreset: Preset): Preset {
   const draft = clonePreset(sourcePreset);
   uiState.activePresetId = sourcePreset.id;
   setFocusedMixerPresetId(sourcePreset.id);
+  focusMixerPreset(sourcePreset.id);
   uiState.activePresetSceneId = normalizePresetScenes(draft, uiState.activePresetSceneId ?? undefined);
   setActivePresetDraft(draft);
   return uiState.activePresetDraft ?? draft;
@@ -6439,22 +6969,58 @@ function pushScenePresetToBackend(preset: Preset): void {
   });
 }
 
+/** Matches the L/C/R pan convention used by node-param knobs elsewhere in the app. */
+function formatMixerPanValue(value: number): string {
+  if (Math.abs(value) < 0.01) return "C";
+  return value < 0 ? `L${Math.abs(value * 100).toFixed(0)}` : `R${(value * 100).toFixed(0)}`;
+}
+
+function formatMixerPercentValue(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
 function buildInlineMixerHtml(): string {
   const mixer = uiState.mixer;
   if (!mixer || !mixer.activePresetIds.length) return "";
 
-  const strips = mixer.activePresetIds.map((id) => {
+  const presetIds = [...mixer.activePresetIds].sort((leftId, rightId) => {
+    const leftName = uiState.presetCache.get(leftId)?.name ?? mixer.presets[leftId]?.name ?? leftId;
+    const rightName = uiState.presetCache.get(rightId)?.name ?? mixer.presets[rightId]?.name ?? rightId;
+    const nameComparison = mixerPresetTabCollator.compare(leftName, rightName);
+    if (nameComparison !== 0) {
+      return nameComparison;
+    }
+    return mixerPresetTabCollator.compare(leftId, rightId);
+  });
+
+  const strips = presetIds.map((id) => {
     const name = uiState.presetCache.get(id)?.name ?? mixer.presets[id]?.name ?? id;
     const ps = mixer.presets[id] ?? { id, mix: 1.0, pan: 0.0, mute: false, solo: false };
     return `
       <div class="iml-strip" data-preset-id="${escapeHtml(id)}" style="--accent:${idAccentColor(id)}">
-        <div class="iml-strip-name">${escapeHtml(name)}</div>
-        <div class="iml-strip-controls">
-          <label class="iml-label">Mix<input type="range" class="iml-mix" min="0" max="1" step="0.01" value="${ps.mix}"/></label>
-          <label class="iml-label">Pan<input type="range" class="iml-pan" min="-1" max="1" step="0.01" value="${ps.pan}"/></label>
+        <div class="iml-strip-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+        <div class="iml-strip-row">
+          <div class="iml-knobs">
+            <div class="knob-control iml-knob">
+              <span class="knob-label">Mix</span>
+              <div class="knob iml-mix-knob" data-value="${ps.mix}"><div class="knob-indicator"></div></div>
+              <span class="knob-value">${formatMixerPercentValue(ps.mix)}</span>
+            </div>
+            <div class="knob-control iml-knob">
+              <span class="knob-label">Pan</span>
+              <div class="knob iml-pan-knob" data-value="${ps.pan}"><div class="knob-indicator"></div></div>
+              <span class="knob-value">${formatMixerPanValue(ps.pan)}</span>
+            </div>
+          </div>
           <div class="iml-toggles">
-            <button type="button" class="iml-mute-btn${ps.mute ? " active" : ""}" title="Mute">M</button>
-            <button type="button" class="iml-solo-btn${ps.solo ? " active" : ""}" title="Solo">S</button>
+            <div class="toggle-control mini-toggle-control iml-mute-toggle">
+              <span class="toggle-label">Mute</span>
+              <label class="toggle-switch"><input type="checkbox" class="iml-mute"${ps.mute ? " checked" : ""}/><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-control mini-toggle-control iml-solo-toggle">
+              <span class="toggle-label">Solo</span>
+              <label class="toggle-switch"><input type="checkbox" class="iml-solo"${ps.solo ? " checked" : ""}/><span class="toggle-slider"></span></label>
+            </div>
           </div>
         </div>
       </div>`;
@@ -6463,9 +7029,26 @@ function buildInlineMixerHtml(): string {
   return `
     <div class="iml-strips">${strips}</div>
     <div class="iml-master">
-      <label class="iml-label">Master Gain<input type="range" id="iml-master-gain" min="0" max="2" step="0.01" value="${mixer.masterGain}"/></label>
-      <label class="iml-toggle"><input type="checkbox" id="iml-limiter" ${mixer.limiterEnabled ? "checked" : ""}/> Limiter</label>
-      <button type="button" id="iml-save-multi-rig" class="secondary-btn iml-save-multi-rig-btn" title="Save current mixer as a Multi-Rig preset">Save Multi-Rig…</button>
+      <div class="iml-strip-name">Master</div>
+      <div class="iml-strip-row">
+        <div class="iml-knobs">
+          <div class="knob-control iml-knob">
+            <span class="knob-label">Gain</span>
+            <div class="knob" id="iml-master-gain-knob" data-value="${mixer.masterGain}"><div class="knob-indicator"></div></div>
+            <span class="knob-value">${formatMixerPercentValue(mixer.masterGain)}</span>
+          </div>
+        </div>
+        <div class="iml-toggles">
+          <div class="toggle-control mini-toggle-control">
+            <span class="toggle-label">Limiter</span>
+            <label class="toggle-switch"><input type="checkbox" id="iml-limiter"${mixer.limiterEnabled ? " checked" : ""}/><span class="toggle-slider"></span></label>
+          </div>
+          <div class="iml-toolbar">
+            <button type="button" id="iml-save-multi-rig" class="btn btn-secondary btn-sm iml-toolbar-btn" title="Save current mixer as a Multi-Rig preset">Save</button>
+            <button type="button" id="iml-delete-multi-rig" class="btn btn-secondary btn-sm iml-toolbar-btn"${uiState.activeCompositePresetId ? "" : " disabled"} title="Delete this Multi-Rig preset">Delete</button>
+          </div>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -6478,8 +7061,10 @@ function renderInlineMixer(): void {
     panel.id = "inline-mixer-panel";
     panel.className = "inline-mixer-panel";
     // Place mixer where the scroll area sits (above the resize handle).
-    if (signalPathBar && resizeHandle) {
-      signalPathBar.insertBefore(panel, resizeHandle);
+    // resizeHandle lives inside ".signal-path-body", not directly inside
+    // #signal-path-bar, so insertBefore() must target its real parent.
+    if (resizeHandle?.parentElement) {
+      resizeHandle.parentElement.insertBefore(panel, resizeHandle);
     } else {
       signalPathBar?.appendChild(panel);
     }
@@ -6492,54 +7077,78 @@ function removeInlineMixer(): void {
   document.getElementById("inline-mixer-panel")?.remove();
 }
 
+/** Drag sensitivity matching the convention used for node-param knobs: full range over ~200px. */
+function knobSensitivity(minValue: number, maxValue: number): number {
+  return (maxValue - minValue) / 200;
+}
+
 function bindInlineMixerControls(panel: HTMLElement): void {
   panel.querySelectorAll<HTMLElement>(".iml-strip").forEach((strip) => {
     const pid = strip.dataset.presetId ?? "";
     if (!pid) return;
 
-    const mixInput = strip.querySelector<HTMLInputElement>(".iml-mix");
-    if (mixInput) {
-      enhanceRangeInput(mixInput);
-      mixInput.addEventListener("input", (e) => {
-        const v = parseFloat((e.target as HTMLInputElement).value);
-        setPresetMix(pid, isFinite(v) ? v : 1.0);
+    const mixKnob = strip.querySelector<HTMLElement>(".iml-mix-knob");
+    if (mixKnob) {
+      new GenericKnob({
+        knobElement: mixKnob,
+        paramId: `mixer_${pid}_mix`,
+        minValue: 0,
+        maxValue: 1,
+        defaultValue: 1,
+        displayFormat: formatMixerPercentValue,
+        valueDisplay: mixKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+        sensitivity: knobSensitivity(0, 1),
+        sendParameter: false,
+        onValueChange: (v) => setPresetMix(pid, v),
       });
     }
 
-    const panInput = strip.querySelector<HTMLInputElement>(".iml-pan");
-    if (panInput) {
-      enhanceRangeInput(panInput);
-      panInput.addEventListener("input", (e) => {
-        const v = parseFloat((e.target as HTMLInputElement).value);
-        setPresetPan(pid, isFinite(v) ? v : 0.0);
+    const panKnob = strip.querySelector<HTMLElement>(".iml-pan-knob");
+    if (panKnob) {
+      new GenericKnob({
+        knobElement: panKnob,
+        paramId: `mixer_${pid}_pan`,
+        minValue: -1,
+        maxValue: 1,
+        defaultValue: 0,
+        displayFormat: formatMixerPanValue,
+        valueDisplay: panKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+        sensitivity: knobSensitivity(-1, 1),
+        sendParameter: false,
+        onValueChange: (v) => setPresetPan(pid, v),
       });
     }
 
-    const muteBtn = strip.querySelector<HTMLButtonElement>(".iml-mute-btn");
-    muteBtn?.addEventListener("click", () => {
-      const nowMuted = !muteBtn.classList.contains("active");
+    const muteToggle = strip.querySelector<HTMLInputElement>(".iml-mute");
+    muteToggle?.addEventListener("change", () => {
+      const nowMuted = muteToggle.checked;
       setPresetMute(pid, nowMuted);
-      muteBtn.classList.toggle("active", nowMuted);
       if (uiState.mixer?.presets[pid]) uiState.mixer.presets[pid].mute = nowMuted;
       renderMixerPresetTabs(); // refresh M/S indicators in tabs
     });
 
-    const soloBtn = strip.querySelector<HTMLButtonElement>(".iml-solo-btn");
-    soloBtn?.addEventListener("click", () => {
-      const nowSolo = !soloBtn.classList.contains("active");
+    const soloToggle = strip.querySelector<HTMLInputElement>(".iml-solo");
+    soloToggle?.addEventListener("change", () => {
+      const nowSolo = soloToggle.checked;
       setPresetSolo(pid, nowSolo);
-      soloBtn.classList.toggle("active", nowSolo);
       if (uiState.mixer?.presets[pid]) uiState.mixer.presets[pid].solo = nowSolo;
       renderMixerPresetTabs();
     });
   });
 
-  const masterGainInput = panel.querySelector<HTMLInputElement>("#iml-master-gain");
-  if (masterGainInput) {
-    enhanceRangeInput(masterGainInput);
-    masterGainInput.addEventListener("input", (e) => {
-      const v = parseFloat((e.target as HTMLInputElement).value);
-      setMasterGain(isFinite(v) ? v : 1.0);
+  const masterGainKnob = panel.querySelector<HTMLElement>("#iml-master-gain-knob");
+  if (masterGainKnob) {
+    new GenericKnob({
+      knobElement: masterGainKnob,
+      paramId: "mixer_master_gain",
+      minValue: 0,
+      maxValue: 2,
+      defaultValue: 1,
+      displayFormat: formatMixerPercentValue,
+      valueDisplay: masterGainKnob.parentElement?.querySelector<HTMLElement>(".knob-value"),
+      sensitivity: knobSensitivity(0, 2),
+      sendParameter: false,
+      onValueChange: (v) => setMasterGain(v),
     });
   }
 
@@ -6549,6 +7158,10 @@ function bindInlineMixerControls(panel: HTMLElement): void {
 
   panel.querySelector<HTMLButtonElement>("#iml-save-multi-rig")?.addEventListener("click", () => {
     document.dispatchEvent(new CustomEvent("mixerSaveMultiRig"));
+  });
+
+  panel.querySelector<HTMLButtonElement>("#iml-delete-multi-rig")?.addEventListener("click", () => {
+    document.dispatchEvent(new CustomEvent("mixerDeleteMultiRig"));
   });
 }
 
@@ -6989,3 +7602,32 @@ export function initSignalPathResize(): void {
   scheduleSignalPathLayoutAdapt();
 }
 
+/**
+ * Returns a global file-drop handler for NAM/IR resource files.
+ * When a .nam or IR (.wav / .ir) file is dropped anywhere in the app while a
+ * compatible NAM or cab-IR node is selected, the file is saved to the local
+ * resource library and loaded into that node.  This should be registered with
+ * registerGlobalFileDropHandler at a priority below preset-pack drops.
+ */
+export function createNamIrGlobalFileDropHandler(): (files: File[], event: DragEvent) => Promise<boolean> {
+  return async (files: File[]): Promise<boolean> => {
+    const preset = getSignalPathPreset();
+    if (!preset?.graph || !selectedNodeId) {
+      return false;
+    }
+    const node = preset.graph.nodes.find((n) => n.id === selectedNodeId);
+    if (!node || !isNamOrCabIrNode(node)) {
+      return false;
+    }
+    const file = files[0];
+    if (!file) {
+      return false;
+    }
+    const resourceType = inferResourceTypeFromFile(file);
+    if (!resourceType || !nodeAcceptsResourceType(node, resourceType)) {
+      return false;
+    }
+    await handleNamIrFileDrop(file, node.id);
+    return true;
+  };
+}

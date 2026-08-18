@@ -1,7 +1,12 @@
 #include <cstdlib>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -10,6 +15,7 @@
 #include "PluginController.h"
 #include "presets/PresetStorage.h"
 #include "presets/PresetTypes.h"
+#include "util/PathEncoding.h"
 
 namespace fs = std::filesystem;
 
@@ -25,7 +31,9 @@ public:
 
     void SendMessageToUI(const std::string& jsonMessage) override
     {
+        std::lock_guard<std::mutex> lock(mMessageMutex);
         messages.push_back(jsonMessage);
+        mMessageCv.notify_all();
     }
 
     void BrowseFileAsync(guitarfx::BrowseFileType,
@@ -70,8 +78,48 @@ public:
 
     std::vector<std::string> messages;
 
+    bool WaitForMessageType(const std::string& type, std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mMessageMutex);
+        return mMessageCv.wait_for(lock, timeout, [&]()
+        {
+            for (const auto& message : messages)
+            {
+                try
+                {
+                    if (nlohmann::json::parse(message).value("type", "") == type)
+                        return true;
+                }
+                catch (const std::exception&)
+                {
+                }
+            }
+            return false;
+        });
+    }
+
+    std::optional<nlohmann::json> LastMessageOfType(const std::string& type)
+    {
+        std::lock_guard<std::mutex> lock(mMessageMutex);
+        for (auto it = messages.rbegin(); it != messages.rend(); ++it)
+        {
+            try
+            {
+                const auto parsed = nlohmann::json::parse(*it);
+                if (parsed.value("type", "") == type)
+                    return parsed;
+            }
+            catch (const std::exception&)
+            {
+            }
+        }
+        return std::nullopt;
+    }
+
 private:
     fs::path mRoot;
+    std::condition_variable mMessageCv;
+    std::mutex mMessageMutex;
 };
 
 void SetSettingsEnvRoot(const fs::path& root)
@@ -478,6 +526,40 @@ bool TestCancelWithoutActivePreviewNoMutation()
     return node->resources[0].resourceId == "steady-lib-id" && node->resources[0].filePath.empty();
 }
 
+bool TestFolderEnumerationPreservesUtf8Filename()
+{
+    const fs::path folder = fs::path(GUITARFX_TEST_RESOURCES_DIR)
+        / "assets" / "amps" / "Guitar" / "A2";
+    const std::string expectedName = "A2 -wth space an \xE2\x80\x94 _emdash.nam";
+
+    TestHost host(fs::temp_directory_path() / "guitarfx-folder-enumeration-tests");
+    guitarfx::PluginController controller(host);
+
+    nlohmann::json request;
+    request["type"] = "listResourceFolder";
+    request["path"] = guitarfx::util::PathToUtf8(folder);
+    controller.HandleUIMessage(request.dump());
+
+    if (!host.WaitForMessageType("resourceFolderListing", std::chrono::seconds(5)))
+    {
+        std::cerr << "Folder enumeration did not return a listing\n";
+        return false;
+    }
+
+    const auto listing = host.LastMessageOfType("resourceFolderListing");
+    if (!listing || !listing->contains("files") || !(*listing)["files"].is_array())
+        return false;
+
+    for (const auto& file : (*listing)["files"])
+    {
+        if (file.value("name", "") == expectedName)
+            return true;
+    }
+
+    std::cerr << "UTF-8 NAM filename was not returned by folder enumeration\n";
+    return false;
+}
+
 } // namespace
 
 int main()
@@ -497,6 +579,7 @@ int main()
     run("Preview missing data is no-op", TestPreviewMissingDataNoMutation());
     run("Preview missing nodeId is no-op", TestPreviewMissingNodeIdNoMutation());
     run("Cancel without preview is no-op", TestCancelWithoutActivePreviewNoMutation());
+    run("Folder enumeration preserves UTF-8 filename", TestFolderEnumerationPreservesUtf8Filename());
 
     std::cout << "\nResource preview workflow tests: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

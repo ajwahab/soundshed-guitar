@@ -2286,6 +2286,220 @@ bool TestReorderSignalPathNodeFailuresDoNotCorruptGraph()
     return true;
 }
 
+// A setlist step is a preset *switch*, not a Multi-Rig add. Stepping the cursor must leave
+// exactly one preset active in the mixer, no matter how many slots have been visited.
+bool TestSetlistCursorSwitchesPresetWithoutStackingMixer()
+{
+    try
+    {
+        const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "setlist-switch";
+        std::error_code ec;
+        fs::remove_all(sandbox, ec);
+        fs::create_directories(sandbox, ec);
+        SetSettingsEnvRoot(sandbox);
+
+        const fs::path presetDir = sandbox / "Soundshed Guitar" / "data" / "v1" / "presets" / "user";
+        fs::create_directories(presetDir, ec);
+
+        for (const auto& [id, name] : std::vector<std::pair<std::string, std::string>>{
+                 {"setlist-a", "Setlist A"}, {"setlist-b", "Setlist B"}})
+        {
+            auto preset = BuildPassthroughPreset(id, name);
+            guitarfx::NormalizePresetScenes(preset);
+            if (!guitarfx::PresetStorage::SaveToFile(preset, presetDir / (id + ".json")))
+            {
+                std::cerr << "Failed to write setlist preset fixture " << id << "\n";
+                return false;
+            }
+        }
+
+        TestHost host(sandbox);
+        guitarfx::PluginController controller(host);
+        controller.Initialize();
+
+        nlohmann::json slots = nlohmann::json::array();
+        slots.push_back(nlohmann::json{{"presetId", "setlist-a"}});
+        slots.push_back(nlohmann::json{{"presetId", "setlist-b"}});
+
+        nlohmann::json setlist;
+        setlist["id"] = "setlist-1";
+        setlist["name"] = "Set 1";
+        setlist["bank"] = 1;
+        setlist["slots"] = slots;
+
+        nlohmann::json setSetlists;
+        setSetlists["type"] = "setSetlists";
+        setSetlists["activeSetlistId"] = "setlist-1";
+        setSetlists["setlists"] = nlohmann::json::array({setlist});
+        controller.HandleUIMessage(setSetlists.dump());
+
+        const auto stepToSlot = [&](int index, const std::string& expectedPresetId) {
+            nlohmann::json cursor;
+            cursor["type"] = "setSetlistCursor";
+            cursor["cursorIndex"] = index;
+            controller.HandleUIMessage(cursor.dump());
+
+            const auto& active = controller.GetActivePreset();
+            if (!active || active->id != expectedPresetId)
+            {
+                std::cerr << "Setlist slot " << index << " did not become the active preset\n";
+                return false;
+            }
+
+            const auto activeIds = controller.GetMixer().GetActivePresetIds();
+            if (activeIds.size() != 1 || activeIds[0] != expectedPresetId)
+            {
+                std::cerr << "Setlist slot " << index << " left " << activeIds.size()
+                          << " presets in the mixer instead of switching to one\n";
+                return false;
+            }
+
+            const auto loadedMsg = FindLatestMessageOfType(host.sentMessages, "presetLoaded");
+            if (!loadedMsg || loadedMsg->value("preset", nlohmann::json::object()).value("id", "") != expectedPresetId)
+            {
+                std::cerr << "Setlist slot " << index << " did not report presetLoaded to the UI\n";
+                return false;
+            }
+
+            const auto cursorMsg = FindLatestMessageOfType(host.sentMessages, "setlistCursorChanged");
+            if (!cursorMsg || cursorMsg->value("cursorIndex", -1) != index)
+            {
+                std::cerr << "Setlist slot " << index << " did not report setlistCursorChanged\n";
+                return false;
+            }
+
+            return true;
+        };
+
+        if (!stepToSlot(0, "setlist-a")) return false;
+        if (!stepToSlot(1, "setlist-b")) return false;
+        if (!stepToSlot(0, "setlist-a")) return false;
+
+        if (controller.GetSetlistCursorIndex() != 0)
+        {
+            std::cerr << "Setlist cursor index was not tracked\n";
+            return false;
+        }
+
+        return true;
+    }
+    catch (const std::exception& ex)
+    {
+        std::cerr << "Exception in TestSetlistCursorSwitchesPresetWithoutStackingMixer: " << ex.what() << "\n";
+        return false;
+    }
+}
+
+// A preset switch cannot change the resource library, riff library, app settings or effect
+// catalog, so its state broadcast must not carry them — they are ~99% of the full payload.
+bool TestPresetSwitchBroadcastsLightState()
+{
+    try
+    {
+        const fs::path sandbox = fs::temp_directory_path() / "guitarfx-preset-management-tests" / "light-state";
+        std::error_code ec;
+        fs::remove_all(sandbox, ec);
+        fs::create_directories(sandbox, ec);
+        SetSettingsEnvRoot(sandbox);
+
+        TestHost host(sandbox);
+        guitarfx::PluginController controller(host);
+        controller.Initialize();
+
+        // "uiReady" marks the UI live and requests the initial full broadcast.
+        controller.HandleUIMessage(nlohmann::json{{"type", "uiReady"}}.dump());
+        controller.OnIdle();
+
+        const auto fullState = FindLatestMessageOfType(host.sentMessages, "state");
+        if (!fullState || !fullState->contains("resourceLibrary") || !fullState->contains("appSettings")
+            || !fullState->contains("riffLibrary"))
+        {
+            std::cerr << "Startup broadcast was not a full state payload\n";
+            return false;
+        }
+
+        host.sentMessages.clear();
+
+        const auto preset = BuildPassthroughPreset("light-state-preset", "Light State");
+        nlohmann::json load;
+        load["type"] = "loadPreset";
+        load["presetId"] = preset.id;
+        load["preset"] = nlohmann::json::parse(guitarfx::PresetStorage::SerializeToJson(preset));
+        controller.HandleUIMessage(load.dump());
+        controller.OnIdle();
+
+        const auto lightState = FindLatestMessageOfType(host.sentMessages, "state");
+        if (!lightState)
+        {
+            std::cerr << "Preset load emitted no state broadcast\n";
+            return false;
+        }
+
+        for (const char* heavyKey : {"resourceLibrary", "appSettings", "riffLibrary",
+                                     "blendLibrary", "customEffectLibrary", "uiSettings",
+                                     "uiViewState", "metronome", "environment", "automation"})
+        {
+            if (lightState->contains(heavyKey))
+            {
+                std::cerr << "Preset-switch state broadcast still carries '" << heavyKey << "'\n";
+                return false;
+            }
+        }
+
+        // The UI needs these on every switch: it reads activePresetId unconditionally,
+        // requests the global chain with an extra round trip when it is missing, and
+        // clears its archive-session state when that key is absent.
+        for (const char* requiredKey : {"preset", "activePresetId", "activeSceneId", "mixer",
+                                        "activePresetIds", "globalSignalChain", "presetArchiveSession"})
+        {
+            if (!lightState->contains(requiredKey))
+            {
+                std::cerr << "Preset-switch state broadcast is missing '" << requiredKey << "'\n";
+                return false;
+            }
+        }
+
+        if (FindLatestMessageOfType(host.sentMessages, "effectCatalog")
+            || FindLatestMessageOfType(host.sentMessages, "compositeLibrary"))
+        {
+            std::cerr << "Preset switch resent a static library the UI already has\n";
+            return false;
+        }
+
+        // An explicit state request must still produce the full payload.
+        host.sentMessages.clear();
+        controller.HandleUIMessage(nlohmann::json{{"type", "requestState"}}.dump());
+        controller.OnIdle();
+
+        const auto refreshed = FindLatestMessageOfType(host.sentMessages, "state");
+        if (!refreshed || !refreshed->contains("resourceLibrary") || !refreshed->contains("appSettings"))
+        {
+            std::cerr << "Explicit state request did not return the full payload\n";
+            return false;
+        }
+
+        // A full request queued alongside a preset switch must win.
+        host.sentMessages.clear();
+        controller.HandleUIMessage(load.dump());
+        controller.HandleUIMessage(nlohmann::json{{"type", "requestState"}}.dump());
+        controller.OnIdle();
+
+        const auto merged = FindLatestMessageOfType(host.sentMessages, "state");
+        if (!merged || !merged->contains("resourceLibrary"))
+        {
+            std::cerr << "Full state request was downgraded by a concurrent preset switch\n";
+            return false;
+        }
+
+        return true;
+    }
+    catch (const std::exception& ex)
+    {
+        std::cerr << "Exception in TestPresetSwitchBroadcastsLightState: " << ex.what() << "\n";
+        return false;
+    }
+}
+
 } // namespace
 
 int main()
@@ -2320,6 +2534,8 @@ int main()
     run("Riff library path normalization", TestRiffLibraryPathNormalization());
     run("Optimized NAM metadata alias parsing", TestOptimizedNamMetadataAliasParsing());
     run("Reorder signal path node failures do not corrupt graph", TestReorderSignalPathNodeFailuresDoNotCorruptGraph());
+    run("Setlist cursor switches preset without stacking mixer", TestSetlistCursorSwitchesPresetWithoutStackingMixer());
+    run("Preset switch broadcasts light state", TestPresetSwitchBroadcastsLightState());
 
     std::cout << "\nPreset management workflow tests: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

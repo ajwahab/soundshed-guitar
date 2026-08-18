@@ -207,6 +207,14 @@ function renderAutomationPanel(): void {
   wireSlotEvents(container);
 }
 
+/**
+ * MIDI channels are stored 0-15 on the wire (and -1 for "any"), but musicians
+ * and hardware label them 1-16 — always display the 1-based number.
+ */
+function formatMidiChannel(channel: number): string {
+  return channel < 0 ? "any" : String(channel + 1);
+}
+
 function renderSlotRow(slot: AutomationSlot, registry: AutomationRegistryEntry[]): string {
   const entry = registry.find((e) => e.address === slot.address);
   const rangeText = entry ? `(${entry.min}..${entry.max}${entry.unit ? " " + entry.unit : ""})` : "";
@@ -217,7 +225,7 @@ function renderSlotRow(slot: AutomationSlot, registry: AutomationRegistryEntry[]
   if (slot.midiMap) {
     const eventType = ["CC", "PC", "NoteOn", "NoteOff", "PBend"][slot.midiMap.eventType] || "CC";
     const mode = ["Abs", "Rel", "Toggle", "Pickup"][slot.midiMap.mode] || "Abs";
-    midiText = `${eventType} ${slot.midiMap.controller} ch${slot.midiMap.channel} ${mode}`;
+    midiText = `${eventType} ${slot.midiMap.controller} ch${formatMidiChannel(slot.midiMap.channel)} ${mode}`;
   }
 
   let keyText = "—";
@@ -542,7 +550,7 @@ export function handleMidiLogEntry(entry: { type: string; channel: number; data1
 
   const now = new Date();
   const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}.${String(now.getMilliseconds()).padStart(3, "0")}`;
-  const data = `ch=${entry.channel} d1=${entry.data1} d2=${entry.data2}`;
+  const data = `ch=${formatMidiChannel(entry.channel)} d1=${entry.data1} d2=${entry.data2}`;
 
   midiLogEntries.push({ time, type: entry.type, data });
   if (midiLogEntries.length > MAX_LOG_ENTRIES) {

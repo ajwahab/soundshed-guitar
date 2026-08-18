@@ -167,7 +167,7 @@ Runs multiple presets simultaneously with independent mix controls — used for 
 - **Global input stage**: mono/stereo input routing plus one fixed user input calibration gain before pre-chain and preset processing.
 - **Legacy mixer auto-level**: Simple peak-based input/output auto-level paths still exist in code but are forced off in current product flow.
 - **Mono/stereo input mode** selection.
-- **Signal diagnostics**: Streams raw input, processed input, output, and per-node levels plus DSP timing via `signalLevelDiagnostics` and `dspPerformance` messages.
+- **Signal diagnostics**: Streams raw input, processed input, output, and per-node levels plus DSP timing via `sld`/`sldRoster` and `dspPerformance` messages.
 - **Tuner callback**: DSP thread notifies tuner of pitch data.
 - **Metronome audio**: Mixed into output stream.
 
@@ -281,6 +281,8 @@ Integration with the Tone3000 cloud amp model library.
 - **Import**: Download individual NAM models or IR files into the local resource library.
 - **Blend creation**: Import multiple models from a single tone entry and combine into a blend definition.
 - **Content shown**: Title, description, tags, image, gear info, download count.
+- **Capture artwork**: The tone image is stored as `imageUrl` in the imported resource's metadata and shown in the effect visualisation panel in place of the generic category artwork. Resources imported before this was recorded are backfilled opportunistically whenever a tone listing is fetched; the stock image is used if the remote image cannot be loaded.
+- **Next/previous over a result set**: Selecting a model from the Tone3000 tab hands that result set to the node's next/previous resource controls (`core/ui/ts/tone3000Navigation.ts`). They then walk the search results model by model, tone by tone, in result order and wrapping at the ends. Each tone's model list is fetched, and the model itself downloaded and imported, only when navigation reaches it; anything already in the library is reused rather than re-downloaded. Browsing the Library or Folder tab again hands navigation back to that list.
 - **External API**: `https://www.tone3000.com/api/v1`.
 
 ---
@@ -416,7 +418,7 @@ Record and playback of user guitar takes for offline preset editing.
 
 Real-time performance and signal monitoring.
 
-- **Signal level meters**: Raw input, processed input, output, and per-node levels streamed as `signalLevelDiagnostics` messages.
+- **Signal level meters**: Raw input, processed input, output, and per-node levels streamed as `sld` frames resolved against an `sldRoster`.
 - **DSP performance**: CPU load %, per-block timing (µs), node-level timing breakdown — streamed as `dspPerformance` messages.
 - **Signal path test**: `runSignalPathTest` message triggers a test tone through the graph and reports frequency, duration, and elapsed time.
 - **Diagnostics**: Signal level diagnostics are always enabled and persisted as `diagnostics.signalLevelsEnabled: true` for compatibility.
@@ -485,7 +487,7 @@ Bidirectional JSON messages over the WebView bridge:
 { "type": "messageType", "payload": { ... }, "timestamp": 1704801234567 }
 ```
 
-**Key engine→UI messages**: `state`, `presetLoaded`, `presetSaved`, `presetList`, `error`, `tunerUpdate`, `dspPerformance`, `signalLevelDiagnostics`, `globalChain`, `effectCatalog`, `compositeLibrary`, `metronomeState`, `previewStarted`, `previewComplete`, `resourceImported`, `layoutLibraryLoaded`.
+**Key engine→UI messages**: `state`, `presetLoaded`, `presetSaved`, `presetList`, `error`, `tunerUpdate`, `dspPerformance`, `sldRoster`/`sld`, `globalChain`, `effectCatalog`, `compositeLibrary`, `metronomeState`, `previewStarted`, `previewComplete`, `resourceImported`, `layoutLibraryLoaded`.
 
 **Key UI→engine messages**: `uiReady`, `requestState`, `setParameter`, `loadPreset`, `savePreset`, `addSignalPathNode`, `deleteSignalPathNode`, `replaceSignalPathNode`, `reorderSignalPathNode`, `updateSignalPathNodeParam`, `updateSignalPathNodeBypass`, `updateNodeResource`, `addActivePreset`, `setPresetMix`, `setPresetMute`, `setPresetSolo`, `setMasterGain`, `tuner`, `setMetronome`, `runSignalPathTest`, `previewDemoAudio`, `importRemoteResource`, `saveCompositeDefinition`, `getEffectCatalog`, `getPresetList`, `openAudioPreferences`.
 

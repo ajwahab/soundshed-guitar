@@ -969,3 +969,41 @@
   border-color: var(--border-light);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
+/* Effect layout picker — the dark theme's white overlays vanish on light surfaces. */
+.theme-light .layout-picker-popover {
+  box-shadow: 0 18px 44px rgba(17, 19, 24, 0.18);
+}
+
+.theme-light .layout-picker-close:hover,
+.theme-light .layout-picker-option:hover,
+.theme-light .layout-picker-suggestion:hover,
+.theme-light .layout-picker-option-edit:hover,
+.theme-light .layout-picker-dropdown-trigger:hover,
+.theme-light .layout-picker-dropdown-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.theme-light .layout-picker-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+}
+
+.theme-light .layout-picker-master,
+.theme-light .layout-picker-option-thumb,
+.theme-light .layout-picker-rule,
+.theme-light .layout-picker-option-edit,
+.theme-light .layout-picker-btn {
+  background: var(--bg-tertiary);
+}
+
+.theme-light .layout-picker-dropdown {
+  background: var(--bg-primary);
+}
+
+.theme-light .layout-picker-keyword {
+  background: var(--bg-primary);
+}
+
+.theme-light .layout-picker-badge {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}

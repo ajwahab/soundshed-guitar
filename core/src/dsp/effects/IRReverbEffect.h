@@ -62,9 +62,39 @@ namespace guitarfx
 
     void Process(float **inputs, float **outputs, int numSamples) override
     {
-      // Clamp to allocated buffer size to prevent out-of-bounds writes
-      numSamples = std::min(numSamples, mMaxBlockSize);
+      if (!outputs || numSamples <= 0)
+        return;
 
+      // A host may hand over a block larger than the size we were prepared for. Clamping
+      // alone would leave the tail of the output buffer holding whatever was in it before,
+      // which is audible as a click every time it happens, so run the excess through as
+      // further chunks instead.
+      if (mMaxBlockSize > 0 && numSamples > mMaxBlockSize)
+      {
+        int offset = 0;
+        while (offset < numSamples)
+        {
+          const int chunk = std::min(mMaxBlockSize, numSamples - offset);
+          float *chunkIn[2] = {
+            inputs && inputs[0] ? inputs[0] + offset : nullptr,
+            inputs && inputs[1] ? inputs[1] + offset : nullptr
+          };
+          float *chunkOut[2] = {
+            outputs[0] ? outputs[0] + offset : nullptr,
+            outputs[1] ? outputs[1] + offset : nullptr
+          };
+          ProcessChunk(chunkIn, chunkOut, chunk);
+          offset += chunk;
+        }
+        return;
+      }
+
+      ProcessChunk(inputs, outputs, numSamples);
+    }
+
+  private:
+    void ProcessChunk(float **inputs, float **outputs, int numSamples)
+    {
       if (!mEnabled || !mConvolverLL.IsInitialized() || !mConvolverRR.IsInitialized()
           || mRebuilding.load(std::memory_order_acquire))
       {
@@ -152,6 +182,7 @@ namespace guitarfx
       }
     }
 
+  public:
     void SetParam(const std::string &key, double value) override
     {
       if (key == "mix")
@@ -168,6 +199,14 @@ namespace guitarfx
       else if (key == "quality")
       {
         const int q = static_cast<int>(std::clamp(value, 0.0, 3.0));
+        const int pending = mPendingQuality.load(std::memory_order_acquire);
+        const int effective = pending >= 0 ? pending : static_cast<int>(mQuality);
+        // Rebuilding drops the effect to dry until the new convolvers are ready, so a
+        // redundant write (preset re-apply, automation resending the same value) would
+        // be audible as a click for no reason. Match the lowLatency handler and ignore it.
+        if (q == effective)
+          return;
+
         mPendingQuality.store(q, std::memory_order_release);
         // Reinitialise immediately so quality changes take effect without requiring
         // a prepareToPlay() call. Only safe when called from non-audio thread (UI interaction).
@@ -256,6 +295,9 @@ namespace guitarfx
     [[nodiscard]] std::string GetCategory() const override { return "reverb"; }
 
   private:
+    // Host rate the IR normalisation gain is anchored to (see ComputeL2NormGain).
+    static constexpr double kNormalizationReferenceRate = 48000.0;
+
     static size_t FindEnergyTruncationPoint(const std::vector<float> &a, const std::vector<float> &b,
                                             const std::vector<float> *c, const std::vector<float> *d,
                                             float threshold = 0.001f)
@@ -325,7 +367,13 @@ namespace guitarfx
 
     // Energy-preserving (unity-gain) normalisation factor based on the combined L2 norm,
     // matching the IR cab path so reverb levels stay consistent across IR files.
-    static float ComputeL2NormGain(const std::vector<float> &a, const std::vector<float> &b,
+    // playbackRate is the rate the (already resampled) impulse runs at. Area-preserving
+    // resampling leaves ||h||_2 proportional to 1/sqrt(rate), so a bare 1/||h||_2 gain would
+    // make the same IR louder at higher host rates (+6 dB at 192 kHz versus 48 kHz).
+    // Anchoring to a reference rate removes that; 48 kHz is the anchor so the normalisation
+    // there is unchanged. Matches IRCabEffect::ComputeL2NormGain.
+    static float ComputeL2NormGain(double playbackRate,
+                                   const std::vector<float> &a, const std::vector<float> &b,
                                    const std::vector<float> *c = nullptr,
                                    const std::vector<float> *d = nullptr)
     {
@@ -340,7 +388,13 @@ namespace guitarfx
       // Average across the two output channels so mono/stereo/true-stereo IRs all
       // normalise to the same perceived level.
       sumSq *= 0.5;
-      return sumSq > 1e-12 ? static_cast<float>(1.0 / std::sqrt(sumSq)) : 1.0f;
+      if (sumSq <= 1e-12)
+        return 1.0f;
+
+      const double rateCompensation = playbackRate > 0.0
+        ? std::sqrt(kNormalizationReferenceRate / playbackRate)
+        : 1.0;
+      return static_cast<float>(rateCompensation / std::sqrt(sumSq));
     }
 
     static double Sinc(double x)
@@ -405,13 +459,68 @@ namespace guitarfx
       samples = std::move(resampled);
     }
 
+    // Resampling a long reverb IR costs ~130 sinc taps per output sample per channel --
+    // seconds of work for a multi-second true-stereo IR. Quality only changes where the
+    // tail is truncated, not the impulse itself, so the resampled copy is built once per
+    // (IR, playback rate) and reused. Without this, every quality change re-resampled the
+    // whole IR while holding the DSP lock, which silences the audio thread for the duration.
+    void EnsurePlaybackImpulses()
+    {
+      const bool needsResample = std::abs(mIRSampleRate - mSampleRate) > 1.0;
+      if (mPlaybackCacheValid && mPlaybackCacheRate == mSampleRate && mPlaybackCacheIRRate == mIRSampleRate)
+        return;
+
+      mPlaybackLL.clear();
+      mPlaybackRR.clear();
+      mPlaybackLR.clear();
+      mPlaybackRL.clear();
+      mPlaybackCacheResampled = needsResample;
+
+      if (needsResample)
+      {
+        mPlaybackLL = mImpulseLL;
+        mPlaybackRR = mImpulseRR;
+        ResampleImpulseForConvolution(mPlaybackLL, mIRSampleRate, mSampleRate);
+        ResampleImpulseForConvolution(mPlaybackRR, mIRSampleRate, mSampleRate);
+        if (mHasTrueStereo)
+        {
+          mPlaybackLR = mImpulseLR;
+          mPlaybackRL = mImpulseRL;
+          ResampleImpulseForConvolution(mPlaybackLR, mIRSampleRate, mSampleRate);
+          ResampleImpulseForConvolution(mPlaybackRL, mIRSampleRate, mSampleRate);
+        }
+      }
+
+      mPlaybackCacheValid = true;
+      mPlaybackCacheRate = mSampleRate;
+      mPlaybackCacheIRRate = mIRSampleRate;
+    }
+
+    void InvalidatePlaybackImpulses()
+    {
+      mPlaybackCacheValid = false;
+      mPlaybackCacheResampled = false;
+      mPlaybackLL.clear();
+      mPlaybackRR.clear();
+      mPlaybackLR.clear();
+      mPlaybackRL.clear();
+    }
+
+    // The impulses at playback rate. When no resampling is needed these are the raw
+    // impulses, so a matched-rate IR costs no extra memory.
+    const std::vector<float> &PlaybackLL() const { return mPlaybackCacheResampled ? mPlaybackLL : mImpulseLL; }
+    const std::vector<float> &PlaybackRR() const { return mPlaybackCacheResampled ? mPlaybackRR : mImpulseRR; }
+    const std::vector<float> &PlaybackLR() const { return mPlaybackCacheResampled ? mPlaybackLR : mImpulseLR; }
+    const std::vector<float> &PlaybackRL() const { return mPlaybackCacheResampled ? mPlaybackRL : mImpulseRL; }
+
     std::size_t GetMinimumImpulseLength() const
     {
       if (mHasTrueStereo)
-        return std::min({mImpulseLL.size(), mImpulseLR.size(), mImpulseRL.size(), mImpulseRR.size()});
-      return std::min(mImpulseLL.size(), mImpulseRR.size());
+        return std::min({PlaybackLL().size(), PlaybackLR().size(), PlaybackRL().size(), PlaybackRR().size()});
+      return std::min(PlaybackLL().size(), PlaybackRR().size());
     }
 
+    // Call only after EnsurePlaybackImpulses(): lengths are in playback-rate samples.
     std::size_t GetTruncationLength() const
     {
       const std::size_t minLength = GetMinimumImpulseLength();
@@ -421,19 +530,14 @@ namespace guitarfx
       if (mQuality == IRQuality::Full)
         return minLength;
 
-      // GetMaxReverbIRSamples returns a limit expressed in *playback-rate* samples.
-      // The raw impulse response is at mIRSampleRate, so convert to the same units
-      // before comparing, otherwise 96kHz IRs get half the expected truncation length.
-      const size_t maxSamplesPlayback = GetMaxReverbIRSamples(mQuality, mSampleRate);
-      const size_t maxSamples = (maxSamplesPlayback > 0 && mSampleRate > 1.0)
-          ? static_cast<size_t>(static_cast<double>(maxSamplesPlayback) * mIRSampleRate / mSampleRate)
-          : maxSamplesPlayback;
-
+      // GetMaxReverbIRSamples returns a limit expressed in playback-rate samples, which is
+      // the domain the cached impulses are already in.
+      const size_t maxSamples = GetMaxReverbIRSamples(mQuality, mSampleRate);
       if (maxSamples == 0 || minLength <= maxSamples)
         return minLength;
 
       const std::size_t energyTrunc = FindEnergyTruncationPoint(
-          mImpulseLL, mImpulseRR, mHasTrueStereo ? &mImpulseLR : nullptr, mHasTrueStereo ? &mImpulseRL : nullptr, 0.001f);
+          PlaybackLL(), PlaybackRR(), mHasTrueStereo ? &PlaybackLR() : nullptr, mHasTrueStereo ? &PlaybackRL() : nullptr, 0.001f);
 
       return std::min({minLength, maxSamples, energyTrunc});
     }
@@ -455,6 +559,7 @@ namespace guitarfx
 
       mIRSampleRate = data.sampleRate;
       mIRChannels = data.channels;
+      InvalidatePlaybackImpulses(); // new impulse data; the cached playback copy is stale
 
       if (data.channels >= 4)
       {
@@ -488,33 +593,30 @@ namespace guitarfx
       if (mImpulseLL.empty() || mImpulseRR.empty() || mMaxBlockSize == 0)
         return false;
 
+      // Resample once per (IR, playback rate); a quality change only re-truncates.
+      // Done before raising mRebuilding so a cache rebuild cannot leave the effect
+      // bypassed if anything below bails out.
+      EnsurePlaybackImpulses();
+
       // Signal the audio thread to bypass (dry copy) while convolvers are being rebuilt.
       mRebuilding.store(true, std::memory_order_release);
 
       const std::size_t truncLength = GetTruncationLength();
       if (truncLength == 0)
+      {
+        mRebuilding.store(false, std::memory_order_release);
         return false;
+      }
 
-      std::vector<float> processedLL = TruncateAndFade(mImpulseLL, truncLength);
-      std::vector<float> processedRR = TruncateAndFade(mImpulseRR, truncLength);
+      std::vector<float> processedLL = TruncateAndFade(PlaybackLL(), truncLength);
+      std::vector<float> processedRR = TruncateAndFade(PlaybackRR(), truncLength);
       std::vector<float> processedLR;
       std::vector<float> processedRL;
 
       if (mHasTrueStereo)
       {
-        processedLR = TruncateAndFade(mImpulseLR, truncLength);
-        processedRL = TruncateAndFade(mImpulseRL, truncLength);
-      }
-
-      if (std::abs(mIRSampleRate - mSampleRate) > 1.0)
-      {
-        ResampleImpulseForConvolution(processedLL, mIRSampleRate, mSampleRate);
-        ResampleImpulseForConvolution(processedRR, mIRSampleRate, mSampleRate);
-        if (mHasTrueStereo)
-        {
-          ResampleImpulseForConvolution(processedLR, mIRSampleRate, mSampleRate);
-          ResampleImpulseForConvolution(processedRL, mIRSampleRate, mSampleRate);
-        }
+        processedLR = TruncateAndFade(PlaybackLR(), truncLength);
+        processedRL = TruncateAndFade(PlaybackRL(), truncLength);
       }
 
       // Energy (L2-norm) normalisation for unity-gain convolution, mirroring the IR cab path.
@@ -522,11 +624,10 @@ namespace guitarfx
       // the loudest sample == 1.0) leaves the summed convolution energy proportional to the
       // tail density/length. Dense, bright IRs (e.g. EMT-140 style plates) then come out far
       // louder than sparse ones. Normalising by the combined L2 norm makes the wet output
-      // level consistent across IR files and equal-energy to the input. Done AFTER resampling
-      // so the normalisation reflects the impulse that is actually convolved at playback rate,
-      // making the level independent of the source IR sample rate.
+      // level consistent across IR files and equal-energy to the input. Computed on the
+      // playback-rate impulse so the level is independent of the source IR sample rate.
       {
-        const float normGain = ComputeL2NormGain(processedLL, processedRR,
+        const float normGain = ComputeL2NormGain(mSampleRate, processedLL, processedRR,
                                                   mHasTrueStereo ? &processedLR : nullptr,
                                                   mHasTrueStereo ? &processedRL : nullptr);
         for (float &s : processedLL) s *= normGain;
@@ -605,6 +706,18 @@ namespace guitarfx
     std::vector<float> mImpulseLR;
     std::vector<float> mImpulseRL;
     std::vector<float> mImpulseRR;
+
+    // Impulses resampled to the playback rate (see EnsurePlaybackImpulses). Populated only
+    // when the IR rate differs from the host rate; otherwise the raw impulses are used and
+    // these stay empty.
+    std::vector<float> mPlaybackLL;
+    std::vector<float> mPlaybackLR;
+    std::vector<float> mPlaybackRL;
+    std::vector<float> mPlaybackRR;
+    double mPlaybackCacheRate = 0.0;   // host rate the cache was built for
+    double mPlaybackCacheIRRate = 0.0; // IR rate it was built from
+    bool mPlaybackCacheValid = false;
+    bool mPlaybackCacheResampled = false;
 
     std::filesystem::path mIRPath;
     double mIRSampleRate = 48000.0;

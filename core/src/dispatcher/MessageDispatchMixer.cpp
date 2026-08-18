@@ -48,6 +48,13 @@ bool MessageDispatcher::DispatchMixerAndMonitoring(PluginController& c,
         c.BroadcastState();
         return true;
     }
+    if (type == "focusMixerPreset")
+    {
+        std::string presetId = msg.value("presetId", "");
+        if (!presetId.empty())
+            c.FocusMixerPreset(presetId);
+        return true;
+    }
     if (type == "setPresetMix")
     {
         std::string presetId = msg.value("presetId", "p1");

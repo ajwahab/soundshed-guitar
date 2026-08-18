@@ -28,7 +28,12 @@ import {
   extractTone3000Tones,
   parseTone3000Pagination,
 } from "./tone3000Api.js";
-import { fetchTone3000Models, getTone3000ImageUrl } from "./tone3000Shared.js";
+import { backfillTone3000ResourceImages, fetchTone3000Models, getTone3000ImageUrl } from "./tone3000Shared.js";
+import {
+  findAdjacentTone3000Model,
+  locateTone3000Position,
+  type Tone3000NavigationPosition,
+} from "./tone3000Navigation.js";
 import { getPlaySvg, getStopSvg } from "./iconAssets.js";
 
 type ResourceBrowserOptions = {
@@ -39,6 +44,9 @@ type ResourceBrowserOptions = {
   exposedResourceId?: string;
   libraryCategoryHint?: string;
   tone3000CategoryFilter?: "pedal" | "amp" | "full-rig";
+  /// Effect-role key ("ir-cab", "ir-reverb", "nam-amp", "nam-fx") used to scope
+  /// the remembered folder location and resource navigation to this kind of node.
+  contextKey?: string;
   toneGroupId?: string | null;
   toneGroupTitle?: string | null;
   onSelect: (resourceId: string) => void;
@@ -155,6 +163,10 @@ function getResourceLibraryFacets(resources: LibraryResource[]): { tags: string[
 const RESOURCE_FAVORITES_SETTING = "resources.favorites";
 const FOLDER_ROOTS_SETTING = "resources.folderBrowser.roots";
 const FOLDER_ACTIVE_ROOT_SETTING = "resources.folderBrowser.activeRootId";
+// Last browsed folder per effect role (e.g. "ir-cab", "nam-amp") so an IR Cab
+// picker reopens where IR Cab browsing left off, independent of NAM browsing.
+const FOLDER_LAST_LOCATIONS_SETTING = "resources.folderBrowser.lastLocationByContext";
+const DEFAULT_RESOURCE_CONTEXT_KEY = "default";
 const FOLDER_VIRTUAL_GAP = 6;
 const FOLDER_VIRTUAL_OVERSCAN = 6;
 const FOLDER_VIRTUAL_ESTIMATED_DIR_HEIGHT = 44;
@@ -166,6 +178,11 @@ type ResourceBrowserTab = "library" | "folder" | "tone3000";
 interface FolderRoot {
   id: string;
   label: string;
+  path: string;
+}
+
+interface FolderLocation {
+  rootId: string;
   path: string;
 }
 
@@ -224,9 +241,13 @@ interface ResourceImportedDetail {
   filePath?: string;
 }
 
-interface ResourceNavigationResult {
+export interface ResourceNavigationResult {
   resourceId?: string;
   filePath?: string;
+  /// Set for results that are not in the library yet when they are returned
+  /// (a Tone3000 model whose import is still landing), so callers can label the
+  /// picker without waiting for the library to come back.
+  displayName?: string;
 }
 
 interface ResourceNavigationState {
@@ -234,8 +255,22 @@ interface ResourceNavigationState {
   items: ResourceNavigationResult[];
 }
 
+/**
+ * The Tone3000 result set a selection was made from, so the node's next/prev
+ * controls keep walking that list once the modal is closed. Only the tone list
+ * is captured up front — each tone's models are fetched, and the model itself
+ * downloaded and imported, when navigation actually reaches it.
+ */
+interface Tone3000NavigationState {
+  resourceType: ResourceType;
+  tones: Tone3000Tone[];
+  architecture: Tone3000Architecture | null;
+  modelsByToneId: Map<string, Tone3000Model[]>;
+}
+
 interface NavigationCacheOptions {
   categoryHint?: string;
+  contextKey?: string;
 }
 
 interface LibraryFilterSnapshot {
@@ -324,13 +359,21 @@ export class ResourceBrowserModal {
   private folderVirtualWindowQueued = false;
   private folderVirtualMeasureQueued = false;
   private expandedFolderItemPath: string | null = null;
-  private libraryNavigationState: ResourceNavigationState | null = null;
   // Per-type cache so preloads for different resource types don't clobber each other.
   private libraryNavigationStates: Map<string, ResourceNavigationState> = new Map();
   private pendingLibraryNavigationRefreshes: Map<string, number> = new Map();
   private libraryResourceAliases: Map<string, Map<string, string>> = new Map(); // Maps resourceType -> (aliasId -> canonicalId)
-  private folderNavigationState: ResourceNavigationState | null = null;
-  private lastNavigationView: "library" | "folder" | null = null;
+  // Folder listings and the library/folder preference are tracked per effect-role
+  // context, so browsing a folder for one node type doesn't hijack next/prev on another.
+  private folderNavigationStates: Map<string, ResourceNavigationState> = new Map();
+  private tone3000NavigationStates: Map<string, Tone3000NavigationState> = new Map();
+  /// Imports land in the library asynchronously, so remember what navigation has
+  /// already pulled down ("<resourceType>:<modelId>" -> resource id) and never
+  /// re-download a model while stepping back and forth over a result set.
+  private tone3000ImportedResourceIds: Map<string, string> = new Map();
+  private lastNavigationViewByContext: Map<string, "library" | "folder" | "tone3000"> = new Map();
+  private folderContextKey: string = DEFAULT_RESOURCE_CONTEXT_KEY;
+  private folderListingFallbackAttempted = false;
   
   // Tone3000 tab elements
   private tone3000ModeSearchTab: HTMLButtonElement | null = null;
@@ -546,6 +589,8 @@ export class ResourceBrowserModal {
     this.folderVirtualHeights.clear();
     this.folderList?.scrollTo({ top: 0 });
     this.folderCurrentPath = listing.path;
+    this.folderListingFallbackAttempted = false;
+    this.rememberFolderLocation(listing.path);
     this.renderFolderPath();
     this.renderFolderList(true);
   };
@@ -597,6 +642,19 @@ export class ResourceBrowserModal {
   private handleFolderListingFailedEvent = (event: Event): void => {
     const detail = (event as CustomEvent<{ path?: string; message?: string }>).detail;
     this.folderLoading = false;
+    this.folderListing = null;
+
+    // A remembered folder can disappear between sessions (removable drive, moved
+    // library). Fall back to the root once rather than stranding the user.
+    const activeRoot = this.getActiveRoot();
+    if (activeRoot
+      && !this.folderListingFallbackAttempted
+      && this.normalizeFolderPath(this.folderCurrentPath) !== this.normalizeFolderPath(activeRoot.path)) {
+      this.folderListingFallbackAttempted = true;
+      this.requestFolderListing(activeRoot.path);
+      return;
+    }
+
     if (this.folderStatus) {
       this.folderStatus.textContent = detail?.message ? `Error: ${detail.message}` : "Unable to read folder.";
     }
@@ -1100,6 +1158,16 @@ export class ResourceBrowserModal {
     this.closeEditPopover();
     this.pendingFolderSelectPath = null;
     this.pendingFolderFavoritePaths.clear();
+
+    // Each effect role browses from its own remembered folder, so drop the
+    // in-session path when the picker is opened for a different kind of node.
+    const contextKey = options.contextKey || DEFAULT_RESOURCE_CONTEXT_KEY;
+    if (contextKey !== this.folderContextKey) {
+      this.folderContextKey = contextKey;
+      this.folderCurrentPath = "";
+      this.folderListing = null;
+    }
+    this.folderListingFallbackAttempted = false;
     if (this.title) {
       this.title.textContent = options.resourceType === "ir" 
         ? "Select IR Cabinet" 
@@ -1513,15 +1581,6 @@ export class ResourceBrowserModal {
       const state = this.buildLibraryNavigationState(resourceType, options);
       const previous = this.libraryNavigationStates.get(cacheKey) ?? null;
       this.libraryNavigationStates.set(cacheKey, state);
-      const modalCacheKey = this.options
-        ? this.buildLibraryNavigationCacheKey(
-          this.options.resourceType,
-          this.options.libraryCategoryHint ?? this.options.tone3000CategoryFilter,
-        )
-        : "";
-      if (!this.libraryNavigationState || (this.lastNavigationView !== "folder" && cacheKey === modalCacheKey)) {
-        this.libraryNavigationState = state;
-      }
 
       if (!this.navigationStatesEqual(previous, state)) {
         this.dispatchLibraryNavigationCacheUpdated(resourceType, categoryHint);
@@ -1750,13 +1809,21 @@ export class ResourceBrowserModal {
       return (a.filePath ?? "").localeCompare(b.filePath ?? "");
     });
     
-    this.libraryNavigationState = {
+    const navigationState: ResourceNavigationState = {
       resourceType,
       items: filtered.map((res) => ({ resourceId: res.id })),
     };
     const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, category);
-    this.libraryNavigationStates.set(cacheKey, this.libraryNavigationState);
-    this.lastNavigationView = "library";
+    this.libraryNavigationStates.set(cacheKey, navigationState);
+    // The caller looks this list up by category *hint* ("amp", "ir"), which the
+    // modal has already resolved to a concrete category ("Amps"). Register under
+    // the hint too so node-panel next/prev sees exactly what the modal is showing.
+    const hint = this.options.libraryCategoryHint ?? this.options.tone3000CategoryFilter;
+    const hintCacheKey = this.buildLibraryNavigationCacheKey(resourceType, hint);
+    if (hintCacheKey !== cacheKey) {
+      this.libraryNavigationStates.set(hintCacheKey, navigationState);
+    }
+    this.lastNavigationViewByContext.set(this.folderContextKey, "library");
     this.dispatchLibraryNavigationCacheUpdated(resourceType, category);
 
     if (!filtered.length) {
@@ -2327,7 +2394,8 @@ export class ResourceBrowserModal {
       
       const data = await response.json();
       const tones = extractTone3000Tones(data);
-      
+      backfillTone3000ResourceImages(tones);
+
       // No client-side filtering needed - the API gear param already filters
       this.tone3000Tones = tones;
       this.updateTone3000PaginationFromData(data, tones.length);
@@ -2806,7 +2874,11 @@ export class ResourceBrowserModal {
       }
       
       showNotification("Imported", modelName);
-      
+
+      // Hand the result set to next/prev before closing so the node's controls
+      // keep walking the list the user picked from.
+      this.captureTone3000NavigationState();
+
       // Select the imported resource and close
       this.selectedResourceId = resourceId;
       this.confirmSelection();
@@ -2879,6 +2951,7 @@ export class ResourceBrowserModal {
             platform: tone.platform ?? "",
             modelId: String(modelId),
             modelName: modelName ?? "",
+            imageUrl: getTone3000ImageUrl(tone) ?? "",
             architectureVersion: architectureVersion ?? "",
             entryName: entry.name,
             sourceUrl: `https://www.tone3000.com/tones/${tone.slug ?? tone.id}`,
@@ -2926,6 +2999,7 @@ export class ResourceBrowserModal {
           platform: tone.platform ?? "",
           modelId: String(modelId),
           modelName: modelName ?? "",
+          imageUrl: getTone3000ImageUrl(tone) ?? "",
           architectureVersion: architectureVersion ?? "",
           sourceUrl: `https://www.tone3000.com/tones/${tone.slug ?? tone.id}`,
           creatorId: tone.user?.id != null ? String(tone.user.id) : "",
@@ -2991,20 +3065,94 @@ export class ResourceBrowserModal {
     return roots.find((r) => r.id === activeId) ?? roots[0];
   }
 
+  private getFolderLastLocations(): Record<string, FolderLocation> {
+    const raw = uiState.appSettings?.[FOLDER_LAST_LOCATIONS_SETTING];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const locations: Record<string, FolderLocation> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const entry = value as { rootId?: unknown; path?: unknown };
+      if (typeof entry.rootId !== "string" || typeof entry.path !== "string") continue;
+      locations[key] = { rootId: entry.rootId, path: entry.path };
+    }
+    return locations;
+  }
+
+  private setFolderLastLocations(locations: Record<string, FolderLocation>): void {
+    if (!uiState.appSettings) uiState.appSettings = {};
+    const serialized = locations as unknown as AppSettingValue;
+    uiState.appSettings[FOLDER_LAST_LOCATIONS_SETTING] = serialized;
+    setAppSetting(FOLDER_LAST_LOCATIONS_SETTING, serialized);
+  }
+
+  /// Records where this effect role was last browsing, so the next IR Cab (or
+  /// NAM Amp, etc.) picker reopens there rather than wherever any other node type
+  /// happened to leave the shared folder browser.
+  private rememberFolderLocation(path: string): void {
+    if (!path) return;
+    const root = this.getActiveRoot();
+    if (!root) return;
+
+    const locations = this.getFolderLastLocations();
+    const existing = locations[this.folderContextKey];
+    if (existing && existing.rootId === root.id && existing.path === path) {
+      return;
+    }
+    locations[this.folderContextKey] = { rootId: root.id, path };
+    this.setFolderLastLocations(locations);
+  }
+
+  private normalizeFolderPath(value: string): string {
+    return value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+
+  private isPathWithinRoot(path: string, rootPath: string): boolean {
+    const normalizedPath = this.normalizeFolderPath(path);
+    const normalizedRoot = this.normalizeFolderPath(rootPath);
+    if (!normalizedPath || !normalizedRoot) return false;
+    return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+  }
+
+  /// Where the folder tab should open for the current effect role: the remembered
+  /// location if it still lives under a known root, otherwise the active root.
+  private resolveFolderStartLocation(): { root: FolderRoot | null; path: string } {
+    const roots = this.getFolderRoots();
+    if (!roots.length) {
+      return { root: null, path: "" };
+    }
+
+    const remembered = this.getFolderLastLocations()[this.folderContextKey];
+    if (remembered) {
+      const rememberedRoot = roots.find((r) => r.id === remembered.rootId);
+      if (rememberedRoot) {
+        const path = this.isPathWithinRoot(remembered.path, rememberedRoot.path)
+          ? remembered.path
+          : rememberedRoot.path;
+        return { root: rememberedRoot, path };
+      }
+    }
+
+    const activeRoot = this.getActiveRoot() ?? roots[0];
+    return { root: activeRoot, path: activeRoot.path };
+  }
+
   private initFolderTab(): void {
+    const { root, path } = this.resolveFolderStartLocation();
+    if (root && root.id !== this.getActiveRootId()) {
+      this.setActiveRootId(root.id);
+    }
     this.renderFolderRootOptions();
-    const activeRoot = this.getActiveRoot();
-    if (!activeRoot) {
+    if (!root) {
       this.folderListing = null;
       this.folderCurrentPath = "";
       this.renderFolderPath();
       this.renderFolderList();
       return;
     }
-    const path = this.folderCurrentPath && this.folderCurrentPath.length > 0
+    const target = this.folderCurrentPath && this.folderCurrentPath.length > 0
       ? this.folderCurrentPath
-      : activeRoot.path;
-    this.requestFolderListing(path);
+      : path;
+    this.requestFolderListing(target);
   }
 
   private renderFolderRootOptions(): void {
@@ -3060,6 +3208,16 @@ export class ResourceBrowserModal {
        
       const roots = this.getFolderRoots().filter((r) => r.id !== activeRoot.id);
       this.setFolderRoots(roots);
+
+      // Drop any per-effect-type positions that pointed into the removed root.
+      const locations = this.getFolderLastLocations();
+      const pruned = Object.fromEntries(
+        Object.entries(locations).filter(([, location]) => location.rootId !== activeRoot.id),
+      );
+      if (Object.keys(pruned).length !== Object.keys(locations).length) {
+        this.setFolderLastLocations(pruned);
+      }
+
       const next = roots[0] ?? null;
       this.setActiveRootId(next?.id ?? "");
       this.folderCurrentPath = next?.path ?? "";
@@ -3228,7 +3386,7 @@ export class ResourceBrowserModal {
       this.folderList.scrollTop = 0;
     }
 
-    this.folderNavigationState = {
+    this.folderNavigationStates.set(this.folderContextKey, {
       resourceType: this.options?.resourceType ?? "nam",
       items: files
         .filter((file) => file.resourceType === this.options?.resourceType)
@@ -3239,8 +3397,8 @@ export class ResourceBrowserModal {
             filePath: file.path,
           };
         }),
-    };
-    this.lastNavigationView = "folder";
+    });
+    this.lastNavigationViewByContext.set(this.folderContextKey, "folder");
     document.dispatchEvent(new CustomEvent("resource-browser:navigation-cache-updated", {
       detail: {
         resourceType: this.options?.resourceType ?? "nam",
@@ -3595,6 +3753,38 @@ export class ResourceBrowserModal {
     this.renderFolderList();
   }
 
+  /// Returns the library list this context navigates through, building it on
+  /// demand. Next/prev must work before the browser modal has ever been opened,
+  /// so we never rely on the modal having populated the cache first.
+  private getOrBuildLibraryNavigationState(
+    resourceType: ResourceType,
+    options?: NavigationCacheOptions,
+  ): ResourceNavigationState | null {
+    const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, options?.categoryHint);
+    let state = this.libraryNavigationStates.get(cacheKey) ?? null;
+    if (!state) {
+      state = this.buildLibraryNavigationState(resourceType, options);
+      this.libraryNavigationStates.set(cacheKey, state);
+    }
+    if (state.items.length) {
+      return state;
+    }
+
+    // A category hint that matches nothing (e.g. a library with no "Reverb" IRs)
+    // would otherwise leave the node with no next/prev at all, so widen to the
+    // full list for that resource type rather than dead-ending.
+    if (!options?.categoryHint) {
+      return null;
+    }
+    const unfilteredKey = this.buildLibraryNavigationCacheKey(resourceType);
+    let unfiltered = this.libraryNavigationStates.get(unfilteredKey) ?? null;
+    if (!unfiltered) {
+      unfiltered = this.buildLibraryNavigationState(resourceType);
+      this.libraryNavigationStates.set(unfilteredKey, unfiltered);
+    }
+    return unfiltered.items.length ? unfiltered : null;
+  }
+
   public getAdjacentResourceSelection(
     resourceType: ResourceType,
     currentResourceId: string,
@@ -3602,19 +3792,25 @@ export class ResourceBrowserModal {
     offset: number,
     options?: NavigationCacheOptions,
   ): ResourceNavigationResult | null {
-    // Prefer folder navigation only when the folder state actually matches the
-    // requested resource type; otherwise fall through to the per-type library cache.
-    const usingFolderState = this.lastNavigationView === "folder"
-      && this.folderNavigationState?.resourceType === resourceType;
-    const cacheKey = this.buildLibraryNavigationCacheKey(resourceType, options?.categoryHint);
+    // Folder browsing is remembered per effect role, so an IR Cab node keeps
+    // stepping through the folder it was last browsed from while a NAM Amp node
+    // elsewhere in the graph still steps through its own list.
+    const contextKey = options?.contextKey || DEFAULT_RESOURCE_CONTEXT_KEY;
+    const folderState = this.folderNavigationStates.get(contextKey) ?? null;
+    const usingFolderState = this.lastNavigationViewByContext.get(contextKey) === "folder"
+      && folderState?.resourceType === resourceType
+      && folderState.items.length > 0;
+
     const state = usingFolderState
-      ? this.folderNavigationState
-      : (this.libraryNavigationStates.get(cacheKey)
-        ?? this.libraryNavigationStates.get(resourceType)
-        ?? this.libraryNavigationState);
+      ? folderState
+      : this.getOrBuildLibraryNavigationState(resourceType, options);
     if (!state || state.resourceType !== resourceType || !state.items.length) {
       return null;
     }
+
+    const toResult = (item: ResourceNavigationResult): ResourceNavigationResult => (usingFolderState
+      ? { filePath: item.filePath, resourceId: item.resourceId }
+      : { resourceId: item.resourceId, filePath: item.filePath });
 
     const currentKeys = usingFolderState
       ? [currentFilePath, currentResourceId]
@@ -3627,19 +3823,215 @@ export class ResourceBrowserModal {
       key
       && (item.filePath === key || item.resourceId === key)
     )));
+
+    // Nothing loaded yet, or the loaded resource isn't part of this context's
+    // list (missing file, filtered out): enter the list from the matching end.
     if (currentIndex < 0) {
+      return toResult(offset >= 0 ? state.items[0] : state.items[state.items.length - 1]);
+    }
+
+    if (state.items.length < 2) {
       return null;
     }
 
-    const nextIndex = Math.max(0, Math.min(state.items.length - 1, currentIndex + offset));
+    // Wrap around so a next/previous is always available.
+    const count = state.items.length;
+    const nextIndex = (((currentIndex + offset) % count) + count) % count;
     if (nextIndex === currentIndex) {
       return null;
     }
 
-    const nextItem = state.items[nextIndex];
-    return usingFolderState
-      ? { filePath: nextItem.filePath, resourceId: nextItem.resourceId }
-      : { resourceId: nextItem.resourceId, filePath: nextItem.filePath };
+    return toResult(state.items[nextIndex]);
+  }
+
+  /// Remembers the Tone3000 result set the user just picked from. Called on a
+  /// successful select so navigation only follows a list the user actually chose
+  /// from, not merely browsed.
+  private captureTone3000NavigationState(): void {
+    if (!this.options || !this.tone3000Tones.length) {
+      return;
+    }
+
+    this.tone3000NavigationStates.set(this.folderContextKey, {
+      resourceType: this.options.resourceType,
+      tones: [...this.tone3000Tones],
+      architecture: this.getSelectedArchitecture(),
+      modelsByToneId: new Map(this.toneModelsCache),
+    });
+    this.lastNavigationViewByContext.set(this.folderContextKey, "tone3000");
+    document.dispatchEvent(new CustomEvent("resource-browser:navigation-cache-updated", {
+      detail: {
+        resourceType: this.options.resourceType,
+        view: "tone3000",
+      },
+    }));
+  }
+
+  /// True while next/prev for this context should walk a Tone3000 result set.
+  /// Those steps are asynchronous (models are fetched and imported on demand),
+  /// so callers must use `stepTone3000Resource` rather than the synchronous
+  /// `getAdjacentResourceSelection`.
+  public isTone3000NavigationActive(resourceType: ResourceType, options?: NavigationCacheOptions): boolean {
+    const contextKey = options?.contextKey || DEFAULT_RESOURCE_CONTEXT_KEY;
+    if (this.lastNavigationViewByContext.get(contextKey) !== "tone3000") {
+      return false;
+    }
+
+    const state = this.tone3000NavigationStates.get(contextKey);
+    return Boolean(state && state.resourceType === resourceType && state.tones.length);
+  }
+
+  /**
+   * Steps to the neighbouring model in the captured Tone3000 result set,
+   * downloading and importing it if it is not in the library yet. Walks tone by
+   * tone in result order and wraps around, so next/prev is always available.
+   * Returns null when the step cannot be resolved (no session, fetch failure,
+   * or a set with nowhere else to go).
+   */
+  public async stepTone3000Resource(
+    resourceType: ResourceType,
+    currentResourceId: string,
+    offset: number,
+    options?: NavigationCacheOptions,
+  ): Promise<ResourceNavigationResult | null> {
+    if (!this.isTone3000NavigationActive(resourceType, options)) {
+      return null;
+    }
+
+    const contextKey = options?.contextKey || DEFAULT_RESOURCE_CONTEXT_KEY;
+    const state = this.tone3000NavigationStates.get(contextKey);
+    if (!state) {
+      return null;
+    }
+
+    const direction = offset >= 0 ? 1 : -1;
+    const position = this.locateTone3000Position(state, currentResourceId);
+    const target = await findAdjacentTone3000Model(
+      state.tones,
+      position,
+      direction,
+      (tone) => this.ensureTone3000NavigationModels(state, tone),
+    );
+    if (!target || String(target.model.id) === position.modelId) {
+      return null;
+    }
+
+    return this.resolveTone3000ModelResource(state, target.tone, target.model);
+  }
+
+  /// The tone/model ids of the loaded resource are recorded in import metadata;
+  /// the resource id (`tone3000:<modelId>`) is the fallback for resources
+  /// imported before that metadata existed.
+  private locateTone3000Position(
+    state: Tone3000NavigationState,
+    currentResourceId: string,
+  ): Tone3000NavigationPosition {
+    const resource = findResourceById(uiState.resourceLibrary[state.resourceType] ?? [], currentResourceId);
+    const metadata = resource?.metadata ?? {};
+    const idParts = currentResourceId.startsWith("tone3000:") ? currentResourceId.split(":") : [];
+    const modelId = (metadata.modelId ?? "").trim() || (idParts[1] ?? "");
+    const toneId = (metadata.toneId ?? "").trim();
+
+    return locateTone3000Position(state.tones, state.modelsByToneId, toneId, modelId);
+  }
+
+  private async ensureTone3000NavigationModels(
+    state: Tone3000NavigationState,
+    tone: Tone3000Tone,
+  ): Promise<Tone3000Model[]> {
+    const toneId = String(tone.id);
+    const cached = state.modelsByToneId.get(toneId);
+    if (cached) {
+      return cached;
+    }
+
+    if (!isTone3000AuthReady()) {
+      state.modelsByToneId.set(toneId, []);
+      return [];
+    }
+
+    try {
+      const models = await fetchTone3000Models(tone, state.architecture ?? undefined);
+      state.modelsByToneId.set(toneId, models);
+      return models;
+    } catch {
+      state.modelsByToneId.set(toneId, []);
+      return [];
+    }
+  }
+
+  /// Reuses the already-imported copy when there is one, so stepping back and
+  /// forth over a set downloads each model at most once.
+  private async resolveTone3000ModelResource(
+    state: Tone3000NavigationState,
+    tone: Tone3000Tone,
+    model: Tone3000Model,
+  ): Promise<ResourceNavigationResult | null> {
+    const resourceType = state.resourceType;
+    const modelId = String(model.id);
+    const displayName = model.name?.trim() || tone.title?.trim() || modelId;
+
+    const importedId = this.findImportedTone3000ResourceId(resourceType, modelId);
+    if (importedId) {
+      return { resourceId: importedId, displayName };
+    }
+
+    if (!isTone3000AuthReady()) {
+      showNotification("Load failed", "No Tone3000 session");
+      return null;
+    }
+
+    try {
+      const response = await tone3000AuthenticatedFetch(model.model_url);
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      const contentType = response.headers.get("content-type") ?? "";
+      const isZip = contentType.includes("zip") || model.model_url.toLowerCase().endsWith(".zip");
+      const resourceId = await this.importTone3000Resource(
+        tone,
+        modelId,
+        displayName,
+        model.architecture_version ?? "",
+        buffer,
+        isZip,
+        resourceType,
+      );
+
+      this.tone3000ImportedResourceIds.set(`${resourceType}:${modelId}`, resourceId);
+      showNotification("Imported", displayName);
+      return { resourceId, displayName };
+    } catch (error) {
+      showNotification("Load failed", error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  }
+
+  private findImportedTone3000ResourceId(resourceType: ResourceType, modelId: string): string {
+    const justImported = this.tone3000ImportedResourceIds.get(`${resourceType}:${modelId}`);
+    if (justImported) {
+      return justImported;
+    }
+
+    const resources = uiState.resourceLibrary[resourceType] ?? [];
+    const direct = findResourceById(resources, `tone3000:${modelId}`);
+    if (direct) {
+      return direct.id;
+    }
+
+    const match = resources.find((resource) => resource.metadata?.provider === "tone3000"
+      && (resource.metadata?.modelId ?? "") === modelId);
+    return match?.id ?? "";
+  }
+
+  /// Navigation options describing the list the modal itself is showing.
+  private currentModalNavigationOptions(): NavigationCacheOptions {
+    return {
+      categoryHint: this.options?.libraryCategoryHint ?? this.options?.tone3000CategoryFilter,
+      contextKey: this.folderContextKey,
+    };
   }
 
   private updateLibraryNavigationButtons(): void {
@@ -3647,8 +4039,9 @@ export class ResourceBrowserModal {
       return;
     }
 
-    const prev = this.getAdjacentResourceSelection(this.options.resourceType, this.selectedResourceId, "", -1);
-    const next = this.getAdjacentResourceSelection(this.options.resourceType, this.selectedResourceId, "", 1);
+    const navOptions = this.currentModalNavigationOptions();
+    const prev = this.getAdjacentResourceSelection(this.options.resourceType, this.selectedResourceId, "", -1, navOptions);
+    const next = this.getAdjacentResourceSelection(this.options.resourceType, this.selectedResourceId, "", 1, navOptions);
 
     if (this.libraryNavPrevBtn) {
       this.libraryNavPrevBtn.disabled = !prev;
@@ -3665,7 +4058,13 @@ export class ResourceBrowserModal {
       return;
     }
 
-    const next = this.getAdjacentResourceSelection(this.options.resourceType, this.selectedResourceId, "", offset);
+    const next = this.getAdjacentResourceSelection(
+      this.options.resourceType,
+      this.selectedResourceId,
+      "",
+      offset,
+      this.currentModalNavigationOptions(),
+    );
     if (!next?.resourceId) {
       return;
     }
